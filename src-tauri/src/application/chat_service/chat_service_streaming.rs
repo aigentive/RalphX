@@ -3,10 +3,10 @@
 // Extracted from chat_service.rs to improve modularity and reduce file size.
 // Handles background stream processing and event emission.
 
+use ralphx_events::{emit_serialized, EventSink};
+use serde::Serialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{timeout, Duration};
 use tracing::info;
@@ -59,54 +59,17 @@ use super::{
     AgentThinkingPayload, AgentThinkingProgressPayload, AgentToolCallPayload,
     AgentToolCallPreviewFields,
 };
+use crate::application::plan_verification_service::PlanVerificationCompletionAdapter;
+use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
 use crate::utils::truncate_str;
-use crate::AppState;
 
-fn schedule_branch_status_refresh<R: Runtime>(
-    app_handle: Option<&AppHandle<R>>,
-    conversation_id: &ChatConversationId,
-    working_directory: Option<&std::path::Path>,
-) {
-    let (Some(handle), Some(working_directory)) = (app_handle, working_directory) else {
-        return;
-    };
-    let state = handle.state::<AppState>();
-    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
-    let cache = state.pr_poller_registry.branch_status_cache();
-    let conversation_id = conversation_id.clone();
-    let working_directory = working_directory.to_path_buf();
-    if !cache.claim_refresh(&working_directory) {
-        return;
+#[derive(Clone)]
+struct ChatEventEmitter(Arc<dyn EventSink>);
+
+impl ChatEventEmitter {
+    fn emit<T: Serialize>(&self, event: &str, payload: T) -> Result<(), ()> {
+        emit_serialized(self.0.as_ref(), event, &payload).map_err(|_| ())
     }
-
-    tokio::spawn(async move {
-        let base_ref = match workspace_repo
-            .get_by_conversation_id(&conversation_id)
-            .await
-        {
-            Ok(workspace) => workspace.map(|workspace| workspace.base_ref),
-            Err(error) => {
-                tracing::warn!(
-                    conversation_id = %conversation_id.as_str(),
-                    error = %error,
-                    "failed to resolve workspace for runtime branch-status refresh"
-                );
-                None
-            }
-        };
-        let refresh_result = cache
-            .refresh_local(&working_directory, base_ref.as_deref())
-            .await;
-        cache.finish_refresh(&working_directory);
-        if let Err(error) = refresh_result {
-            tracing::warn!(
-                conversation_id = %conversation_id.as_str(),
-                working_directory = %working_directory.display(),
-                error = %error,
-                "runtime branch-status refresh failed"
-            );
-        }
-    });
 }
 
 /// Returns the index `persist_timeline_snapshot` will assign to the text block
@@ -149,22 +112,18 @@ pub(crate) fn is_user_attended_turn_completion(
         )
 }
 
-async fn record_agent_waiting_if_user_attended<R: Runtime>(
-    app_handle: &AppHandle<R>,
+async fn record_agent_waiting_if_user_attended(
+    runtime_factory_deps: Option<&ChatRuntimeFactoryDeps>,
     context_type: ChatContextType,
     context_id: &str,
     conversation_id: &ChatConversationId,
     agent_run_id: Option<&str>,
 ) -> bool {
-    let Some(state) = app_handle.try_state::<AppState>() else {
+    let Some(deps) = runtime_factory_deps else {
         tracing::warn!("Agent turn completed without managed AppState; agent_waiting skipped");
         return false;
     };
-    let conversation = match state
-        .chat_conversation_repo
-        .get_by_id(conversation_id)
-        .await
-    {
+    let conversation = match deps.conversation_repo.get_by_id(conversation_id).await {
         Ok(Some(conversation)) => conversation,
         Ok(None) => return false,
         Err(error) => {
@@ -173,7 +132,7 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
         }
     };
     let backend_action_owned = if let Some(run_id) = agent_run_id {
-        match state
+        match deps
             .agent_run_repo
             .get_by_id(&AgentRunId::from_string(run_id.to_string()))
             .await
@@ -192,7 +151,7 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
     let (project_id, ideation_session_has_parent, context_title) = match context_type {
         ChatContextType::Ideation => {
             let session_id = crate::domain::entities::IdeationSessionId::from_string(context_id);
-            match state.ideation_session_repo.get_by_id(&session_id).await {
+            match deps.ideation_session_repo.get_by_id(&session_id).await {
                 Ok(Some(session)) => (
                     Some(session.project_id.to_string()),
                     session.parent_session_id.is_some(),
@@ -209,7 +168,7 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
         ChatContextType::Standalone => (None, false, None),
         ChatContextType::Task => {
             let task_id = TaskId::from_string(context_id.to_string());
-            match state.task_repo.get_by_id(&task_id).await {
+            match deps.task_repo.get_by_id(&task_id).await {
                 Ok(Some(task)) => (Some(task.project_id.to_string()), false, Some(task.title)),
                 Ok(None) => return false,
                 Err(error) => {
@@ -233,8 +192,10 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
     ) {
         return false;
     }
-    state
-        .notification_service()
+    let Some(notification_service) = deps.notification_service.as_ref() else {
+        return false;
+    };
+    notification_service
         .record_ephemeral(InteractiveNotificationProducer::agent_waiting(
             project_id,
             &conversation.id.as_str(),
@@ -414,22 +375,20 @@ async fn persist_usage_capture_run_first(
     true
 }
 
-fn emit_usage_updated_event<R: Runtime>(
-    app_handle: &Option<AppHandle<R>>,
+fn emit_usage_updated_event(
+    emitter: &ChatEventEmitter,
     conversation_id: &str,
     context_type: &str,
     context_id: &str,
 ) {
-    if let Some(handle) = app_handle.as_ref() {
-        let _ = handle.emit(
-            events::AGENT_USAGE_UPDATED,
-            AgentUsageUpdatedPayload {
-                conversation_id: conversation_id.to_string(),
-                context_type: context_type.to_string(),
-                context_id: context_id.to_string(),
-            },
-        );
-    }
+    let _ = emitter.emit(
+        events::AGENT_USAGE_UPDATED,
+        AgentUsageUpdatedPayload {
+            conversation_id: conversation_id.to_string(),
+            context_type: context_type.to_string(),
+            context_id: context_id.to_string(),
+        },
+    );
 }
 
 async fn persist_assistant_message_snapshot(
@@ -456,6 +415,24 @@ async fn persist_assistant_message_snapshot(
 }
 
 pub(super) async fn persist_timeline_snapshot(
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
+    conversation_id: &str,
+    assistant_message_id: &Option<String>,
+    content_blocks: &[ContentBlockItem],
+    status: ChatTimelineItemStatus,
+) -> Vec<ChatTimelineItem> {
+    persist_timeline_snapshot_for_run(
+        chat_timeline_repo,
+        conversation_id,
+        assistant_message_id,
+        content_blocks,
+        status,
+        None,
+    )
+    .await
+}
+
+pub(super) async fn persist_timeline_snapshot_for_run(
     chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
     conversation_id: &str,
     assistant_message_id: &Option<String>,
@@ -582,7 +559,6 @@ async fn flush_streaming_persistence_if_dirty(
     tool_calls: &[ToolCall],
     content_blocks: &[ContentBlockItem],
     status: ChatTimelineItemStatus,
-    agent_run_id: Option<&str>,
 ) {
     if !*dirty {
         return;
@@ -610,7 +586,6 @@ async fn flush_streaming_persistence_if_dirty(
         assistant_message_id,
         content_blocks,
         status,
-        agent_run_id,
     )
     .await;
     *dirty = false;
@@ -1326,6 +1301,66 @@ pub(super) fn completion_tool_result_accepted(result: Option<&serde_json::Value>
 // Background stream processing
 // ============================================================================
 
+#[cfg(feature = "test-utils")]
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub async fn process_stream_background_for_test(
+    child: tokio::process::Child,
+    harness: AgentHarnessKind,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id: &ChatConversationId,
+    events: Arc<dyn EventSink>,
+    activity_event_repo: Option<Arc<dyn ActivityEventRepository>>,
+    task_repo: Option<Arc<dyn TaskRepository>>,
+    chat_message_repo: Option<Arc<dyn ChatMessageRepository>>,
+    chat_timeline_repo: Option<Arc<dyn ChatTimelineRepository>>,
+    assistant_message_id: Option<String>,
+    question_state: Option<Arc<QuestionState>>,
+    cancellation_token: CancellationToken,
+    streaming_state_cache: StreamingStateCache,
+    running_agent_registry: Option<Arc<dyn RunningAgentRegistry>>,
+    agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
+    agent_run_id: Option<String>,
+    execution_state: Option<Arc<crate::commands::ExecutionState>>,
+    conversation_repo: Option<Arc<dyn ChatConversationRepository>>,
+    split_verification_transcript: bool,
+    persist_conversation_provider_session_ref: bool,
+    interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
+    interactive_process_key: Option<InteractiveProcessKey>,
+    interactive_process_token: Option<InteractiveProcessToken>,
+) -> Result<StreamOutcome, StreamError> {
+    process_stream_background(
+        child,
+        harness,
+        context_type,
+        context_id,
+        conversation_id,
+        events,
+        None,
+        None,
+        activity_event_repo,
+        task_repo,
+        chat_message_repo,
+        chat_timeline_repo,
+        assistant_message_id,
+        question_state,
+        cancellation_token,
+        streaming_state_cache,
+        running_agent_registry,
+        agent_run_repo,
+        agent_run_id,
+        execution_state,
+        conversation_repo,
+        split_verification_transcript,
+        persist_conversation_provider_session_ref,
+        interactive_process_registry,
+        interactive_process_key,
+        interactive_process_token,
+    )
+    .await
+}
+
 /// Process stream output in background, emitting events and persisting activity events
 ///
 /// # Arguments
@@ -1333,7 +1368,7 @@ pub(super) fn completion_tool_result_accepted(result: Option<&serde_json::Value>
 /// * `context_type` - The chat context type
 /// * `context_id` - The context ID (task_id, project_id, etc.)
 /// * `conversation_id` - The conversation ID
-/// * `app_handle` - Tauri app handle for events
+/// * `events` - transport-neutral event delivery for stream updates
 /// * `activity_event_repo` - Repository for persisting activity events (optional)
 /// * `task_repo` - Task repository for fetching current status (optional)
 /// * `chat_message_repo` - Chat message repository for incremental persistence (optional)
@@ -1341,14 +1376,15 @@ pub(super) fn completion_tool_result_accepted(result: Option<&serde_json::Value>
 /// * `assistant_message_id` - Pre-created assistant message ID for incremental updates (optional)
 /// * `question_state` - QuestionState for checking pending questions (optional)
 /// * `streaming_state_cache` - Cache for streaming state to hydrate frontend on navigation
-pub async fn process_stream_background<R: Runtime>(
+pub(crate) async fn process_stream_background(
     mut child: tokio::process::Child,
     harness: AgentHarnessKind,
     context_type: ChatContextType,
     context_id: &str,
     conversation_id: &ChatConversationId,
-    working_directory: Option<PathBuf>,
-    app_handle: Option<AppHandle<R>>,
+    events: Arc<dyn EventSink>,
+    plan_verification_completion: Option<Arc<PlanVerificationCompletionAdapter>>,
+    runtime_factory_deps: Option<ChatRuntimeFactoryDeps>,
     activity_event_repo: Option<Arc<dyn ActivityEventRepository>>,
     task_repo: Option<Arc<dyn TaskRepository>>,
     chat_message_repo: Option<Arc<dyn ChatMessageRepository>>,
@@ -1368,6 +1404,8 @@ pub async fn process_stream_background<R: Runtime>(
     interactive_process_key: Option<InteractiveProcessKey>,
     interactive_process_token: Option<InteractiveProcessToken>,
 ) -> Result<StreamOutcome, StreamError> {
+    let event_emitter = ChatEventEmitter(events);
+    let app_handle = Some(event_emitter.clone());
     streaming_state_cache
         .set_run_id(&conversation_id.as_str(), agent_run_id.clone())
         .await;
@@ -1377,8 +1415,9 @@ pub async fn process_stream_background<R: Runtime>(
             context_type,
             context_id,
             conversation_id,
-            working_directory,
-            app_handle,
+            event_emitter,
+            plan_verification_completion,
+            runtime_factory_deps,
             activity_event_repo,
             task_repo,
             chat_message_repo,
@@ -1446,7 +1485,7 @@ pub async fn process_stream_background<R: Runtime>(
     };
 
     // Spawn stderr reader
-    let _stderr_handle = app_handle.clone();
+    let _stderr_emitter = event_emitter.clone();
     let _stderr_conv_id = conversation_id_str.clone();
     let stderr_task = tokio::spawn(async move {
         let reader = BufReader::new(stderr);
@@ -1573,7 +1612,6 @@ pub async fn process_stream_background<R: Runtime>(
                     &processor.tool_calls,
                     &processor.content_blocks,
                     ChatTimelineItemStatus::Error,
-                    agent_run_id.as_deref(),
                 )
                 .await;
                 flush_content_before_error(
@@ -1586,7 +1624,6 @@ pub async fn process_stream_background<R: Runtime>(
                     &assistant_message_id,
                     &processor.content_blocks,
                     ChatTimelineItemStatus::Error,
-                    agent_run_id.as_deref(),
                 ).await;
                 return Err(StreamError::Cancelled {
                     turns_finalized,
@@ -1686,7 +1723,6 @@ pub async fn process_stream_background<R: Runtime>(
                                 &assistant_message_id,
                                 &processor.content_blocks,
                                 ChatTimelineItemStatus::Error,
-                                agent_run_id.as_deref(),
                             ).await;
                             return Err(StreamError::Timeout {
                                 context_type,
@@ -1725,7 +1761,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     "Stream timeout but child process alive — resetting"
                                 );
                                 emit_heartbeat(
-                                    &app_handle,
+                                    &event_emitter,
                                     &conversation_id_str,
                                     context_id,
                                     "pid_alive_bypass",
@@ -1747,7 +1783,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 active_count
                             );
                             emit_heartbeat(
-                                &app_handle,
+                                &event_emitter,
                                 &conversation_id_str,
                                 context_id,
                                 "active_tasks_bypass",
@@ -1924,14 +1960,13 @@ pub async fn process_stream_background<R: Runtime>(
                                 &processor.tool_calls,
                                 &processor.content_blocks,
                                 ChatTimelineItemStatus::Streaming,
-                                agent_run_id.as_deref(),
                             )
                             .await;
                         }
 
-                        if let Some(ref handle) = app_handle {
+                        if let Some(ref event_emitter) = app_handle {
                             // Unified event
-                            let _ = handle.emit(
+                            let _ = event_emitter.emit(
                                 events::AGENT_CHUNK,
                                 AgentChunkPayload {
                                     text: text.clone(),
@@ -1951,7 +1986,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 context_type,
                                 ChatContextType::TaskExecution | ChatContextType::Merge
                             ) {
-                                let _ = handle.emit(
+                                let _ = event_emitter.emit(
                                     events::AGENT_MESSAGE,
                                     serde_json::json!({
                                         "taskId": context_id_str,
@@ -1989,8 +2024,8 @@ pub async fn process_stream_background<R: Runtime>(
                         streaming_state_cache
                             .append_thinking(&conversation_id_str, block_index as usize, &text)
                             .await;
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
+                        if let Some(ref event_emitter) = app_handle {
+                            let _ = event_emitter.emit(
                                 events::AGENT_THINKING,
                                 AgentThinkingPayload {
                                     text: text.clone(),
@@ -2019,7 +2054,6 @@ pub async fn process_stream_background<R: Runtime>(
                             &processor.tool_calls,
                             &processor.content_blocks,
                             ChatTimelineItemStatus::Streaming,
-                            agent_run_id.as_deref(),
                         )
                         .await;
                         // Activity stream event for task execution and merge
@@ -2027,8 +2061,8 @@ pub async fn process_stream_background<R: Runtime>(
                             context_type,
                             ChatContextType::TaskExecution | ChatContextType::Merge
                         ) {
-                            if let Some(ref handle) = app_handle {
-                                let _ = handle.emit(
+                            if let Some(ref event_emitter) = app_handle {
+                                let _ = event_emitter.emit(
                                     events::AGENT_MESSAGE,
                                     serde_json::json!({
                                         "taskId": context_id_str,
@@ -2066,8 +2100,8 @@ pub async fn process_stream_background<R: Runtime>(
                         block_index,
                         duration_ms,
                     } => {
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
+                        if let Some(ref event_emitter) = app_handle {
+                            let _ = event_emitter.emit(
                                 events::AGENT_THINKING,
                                 AgentThinkingPayload {
                                     text: String::new(),
@@ -2090,8 +2124,8 @@ pub async fn process_stream_background<R: Runtime>(
                         estimated_tokens,
                         estimated_tokens_delta,
                     } => {
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
+                        if let Some(ref event_emitter) = app_handle {
+                            let _ = event_emitter.emit(
                                 events::AGENT_THINKING_PROGRESS,
                                 AgentThinkingProgressPayload {
                                     estimated_tokens,
@@ -2120,7 +2154,6 @@ pub async fn process_stream_background<R: Runtime>(
                             &processor.tool_calls,
                             &processor.content_blocks,
                             ChatTimelineItemStatus::Streaming,
-                            agent_run_id.as_deref(),
                         )
                         .await;
                         // Update streaming state cache with started tool call
@@ -2137,8 +2170,8 @@ pub async fn process_stream_background<R: Runtime>(
                             .upsert_tool_call(&conversation_id_str, cached_tool)
                             .await;
 
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
+                        if let Some(ref event_emitter) = app_handle {
+                            let _ = event_emitter.emit(
                                 events::AGENT_TOOL_CALL,
                                 AgentToolCallPayload {
                                     tool_name: name.clone(),
@@ -2225,7 +2258,6 @@ pub async fn process_stream_background<R: Runtime>(
                                 &assistant_message_id,
                                 &processor.content_blocks,
                                 ChatTimelineItemStatus::Streaming,
-                                agent_run_id.as_deref(),
                             )
                             .await;
                         }
@@ -2247,8 +2279,8 @@ pub async fn process_stream_background<R: Runtime>(
                             .upsert_tool_call(&conversation_id_str, cached_tool)
                             .await;
 
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
+                        if let Some(ref event_emitter) = app_handle {
+                            let _ = event_emitter.emit(
                                 events::AGENT_TOOL_CALL,
                                 AgentToolCallPayload::from_completed_tool_call(
                                     &tool_call,
@@ -2280,7 +2312,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     "arguments": tool_call.arguments,
                                 });
 
-                                let _ = handle.emit(
+                                let _ = event_emitter.emit(
                                     events::AGENT_MESSAGE,
                                     serde_json::json!({
                                         "taskId": context_id_str,
@@ -2320,11 +2352,6 @@ pub async fn process_stream_background<R: Runtime>(
                         // Captured in processor.finish()
                     }
                     StreamEvent::TurnComplete { session_id } => {
-                        schedule_branch_status_refresh(
-                            app_handle.as_ref(),
-                            conversation_id,
-                            working_directory.as_deref(),
-                        );
                         flush_streaming_persistence_if_dirty(
                             &mut streaming_persistence_dirty,
                             &mut last_streaming_persisted_at,
@@ -2336,7 +2363,6 @@ pub async fn process_stream_background<R: Runtime>(
                             &processor.tool_calls,
                             &processor.content_blocks,
                             ChatTimelineItemStatus::Streaming,
-                            agent_run_id.as_deref(),
                         )
                         .await;
                         tracing::info!(
@@ -2388,7 +2414,6 @@ pub async fn process_stream_background<R: Runtime>(
                                 &assistant_message_id,
                                 &processor.content_blocks,
                                 ChatTimelineItemStatus::Error,
-                                agent_run_id.as_deref(),
                             )
                             .await;
                             if let Some(capture) = processor.current_turn_capture() {
@@ -2402,7 +2427,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 .await;
                                 if persisted {
                                     emit_usage_updated_event(
-                                        &app_handle,
+                                        &event_emitter,
                                         &conversation_id_str,
                                         &context_type_str,
                                         &context_id_str,
@@ -2463,7 +2488,7 @@ pub async fn process_stream_background<R: Runtime>(
                             let persisted = super::chat_service_send_background::finalize_structured_assistant_message(
                                 repo,
                                 &chat_timeline_repo,
-                                app_handle.as_ref(),
+                                event_emitter.0.as_ref(),
                                 context_type,
                                 context_id,
                                 conversation_id,
@@ -2473,7 +2498,6 @@ pub async fn process_stream_background<R: Runtime>(
                                 &processor.tool_calls,
                                 &processor.content_blocks,
                                 split_verification_transcript,
-                                agent_run_id.as_deref(),
                             )
                             .await;
                             let turn_capture = processor.current_turn_capture();
@@ -2489,7 +2513,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 .await;
                                 if usage_persisted && turn_usage != last_emitted_usage {
                                     emit_usage_updated_event(
-                                        &app_handle,
+                                        &event_emitter,
                                         &conversation_id_str,
                                         &context_type_str,
                                         &context_id_str,
@@ -2561,15 +2585,23 @@ pub async fn process_stream_background<R: Runtime>(
 
                         turns_finalized += 1;
 
-                        // Interactive stdin turns are consumed in order. Once an
-                        // assistant turn finalizes, its matching pending user turn
-                        // no longer needs exit recovery.
+                        // The registry lock orders successful stdin delivery against
+                        // this boundary. One finalized assistant turn may consume a
+                        // whole burst, so settle every turn delivered before it.
                         if let (Some(registry), Some(key), Some(token)) = (
                             interactive_process_registry.as_ref(),
                             interactive_process_key.as_ref(),
                             interactive_process_token,
                         ) {
-                            let _ = registry.pop_pending_turn(key, token).await;
+                            let settled =
+                                registry.settle_delivered_turns_if_owner(key, token).await;
+                            if !settled.is_empty() {
+                                tracing::debug!(
+                                    conversation_id = %conversation_id_str,
+                                    settled = settled.len(),
+                                    "TurnComplete settled delivered stdin turns"
+                                );
+                            }
                         }
 
                         // Free the execution slot while process is idle between turns.
@@ -2587,9 +2619,10 @@ pub async fn process_stream_background<R: Runtime>(
                                     new_count,
                                     "TurnComplete: decremented running count (idle between turns)"
                                 );
-                                if let Some(ref handle) = app_handle {
-                                    exec_state.emit_status_changed(handle, "interactive_turn_idle");
-                                }
+                                exec_state.emit_status_changed_to_sink(
+                                    event_emitter.0.as_ref(),
+                                    "interactive_turn_idle",
+                                );
                             }
                         }
 
@@ -2606,73 +2639,58 @@ pub async fn process_stream_background<R: Runtime>(
 
                         let mut verification_pending = false;
                         if completion_applied && interactive_idle_applied {
-                            if let (Some(handle), Some(run_id)) =
-                                (app_handle.as_ref(), agent_run_id.as_ref())
-                            {
-                                if let Some(state) = handle.try_state::<AppState>() {
-                                    let chat_service = state.build_chat_service_for_runtime(
-                                        execution_state.clone(),
-                                        Some(handle.clone()),
-                                    );
-                                    match crate::application::plan_verification_service::admit_automatic_plan_verification(
-                                        state.inner(),
+                            if let (Some(adapter), Some(deps), Some(run_id)) = (
+                                plan_verification_completion.as_ref(),
+                                runtime_factory_deps.as_ref(),
+                                agent_run_id.as_ref(),
+                            ) {
+                                let chat_service =
+                                    build_chat_service_from_deps(execution_state.clone(), deps);
+                                match adapter
+                                    .admit_automatic(
                                         &chat_service,
                                         conversation_id,
                                         &AgentRunId::from_string(run_id),
                                         true,
                                     )
                                     .await
-                                    {
-                                        Ok(disposition) => {
-                                            verification_pending =
-                                                disposition.verification_pending();
-                                        }
-                                        Err(error) => {
-                                            tracing::error!(
-                                                error = %error,
-                                                conversation_id = %conversation_id_str,
-                                                run_id,
-                                                "TurnComplete: automatic plan verification admission failed"
-                                            );
-                                        }
+                                {
+                                    Ok(disposition) => {
+                                        verification_pending = disposition.verification_pending();
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(error = %error, conversation_id = %conversation_id_str, run_id, "TurnComplete: automatic plan verification admission failed");
                                     }
                                 }
                             }
                         }
 
-                        if completion_applied {
-                            if let (Some(handle), Some(run_id)) =
-                                (app_handle.as_ref(), agent_run_id.as_ref())
-                            {
-                                if let Some(state) = handle.try_state::<AppState>() {
-                                    if !verification_pending {
-                                        if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_conversation(
-                                            state.inner(),
-                                            conversation_id,
-                                        )
-                                        .await
-                                        {
-                                            tracing::warn!(error = %error, conversation_id = %conversation_id_str, "Failed to release deferred plan approval after automatic admission settled");
-                                        }
-                                    }
-                                    if let Err(error) = crate::application::plan_approval_notification_service::release_deferred_plan_approval_for_run(
-                                        state.inner(),
-                                        &AgentRunId::from_string(run_id),
-                                    )
-                                    .await
-                                    {
-                                        tracing::warn!(error = %error, run_id, "Failed to release deferred plan approval for terminal verification run");
-                                    }
+                        if let (true, Some(adapter), Some(run_id)) = (
+                            completion_applied,
+                            plan_verification_completion.as_ref(),
+                            agent_run_id.as_ref(),
+                        ) {
+                            if !verification_pending {
+                                if let Err(error) =
+                                    adapter.release_for_conversation(conversation_id).await
+                                {
+                                    tracing::warn!(error = %error, conversation_id = %conversation_id_str, "Failed to release deferred plan approval after automatic admission settled");
                                 }
+                            }
+                            if let Err(error) = adapter
+                                .release_for_run(&AgentRunId::from_string(run_id))
+                                .await
+                            {
+                                tracing::warn!(error = %error, run_id, "Failed to release deferred plan approval for terminal verification run");
                             }
                         }
 
                         // Emit turn_completed (NOT run_completed) for interactive turns.
                         // Only the guarded winning completion may publish success events.
                         if completion_applied {
-                            if let Some(ref handle) = app_handle {
+                            if let Some(ref event_emitter) = app_handle {
                                 let provider_session_id = session_id.clone();
-                                let _ = handle.emit(
+                                let _ = event_emitter.emit(
                                     super::chat_service_types::events::AGENT_TURN_COMPLETED,
                                     super::chat_service_types::AgentRunCompletedPayload::with_provider_session_and_run_id(
                                         agent_run_id.clone(),
@@ -2686,7 +2704,7 @@ pub async fn process_stream_background<R: Runtime>(
                                 );
                                 if !verification_pending {
                                     record_agent_waiting_if_user_attended(
-                                        handle,
+                                        runtime_factory_deps.as_ref(),
                                         context_type,
                                         context_id,
                                         conversation_id,
@@ -2716,12 +2734,11 @@ pub async fn process_stream_background<R: Runtime>(
                             };
 
                         if let Some(pending_turns) = retired_pending_turns {
-                            if let Some(handle) = app_handle.as_ref() {
-                                let state = handle.state::<crate::application::AppState>();
+                            if let Some(deps) = runtime_factory_deps.as_ref() {
                                 super::chat_service_queue::requeue_pending_stdin_turns(
-                                    Some(&state.queued_message_repo),
-                                    &state.message_queue,
-                                    Some(handle),
+                                    deps.queued_message_repo.as_ref(),
+                                    deps.message_queue.as_ref(),
+                                    event_emitter.0.as_ref(),
                                     context_type,
                                     interactive_process_key
                                         .as_ref()
@@ -2729,6 +2746,16 @@ pub async fn process_stream_background<R: Runtime>(
                                         .unwrap_or(context_id),
                                     Some(conversation_id.as_str()),
                                     pending_turns,
+                                    match (&chat_message_repo, &chat_timeline_repo) {
+                                        (Some(cmr), Some(ctr)) => {
+                                            Some(super::chat_service_queue::AnsweredTurnEvidence {
+                                                chat_message_repo: cmr,
+                                                chat_timeline_repo: ctr,
+                                                conversation_id,
+                                            })
+                                        }
+                                        _ => None,
+                                    },
                                 )
                                 .await;
                             }
@@ -2799,8 +2826,8 @@ pub async fn process_stream_background<R: Runtime>(
                             .add_task(&conversation_id_str, cached_task)
                             .await;
 
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
+                        if let Some(ref event_emitter) = app_handle {
+                            let _ = event_emitter.emit(
                                 events::AGENT_TASK_STARTED,
                                 AgentTaskStartedPayload {
                                     tool_use_id,
@@ -2860,8 +2887,8 @@ pub async fn process_stream_background<R: Runtime>(
                             )
                             .await;
 
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
+                        if let Some(ref event_emitter) = app_handle {
+                            let _ = event_emitter.emit(
                                 events::AGENT_TASK_COMPLETED,
                                 AgentTaskCompletedPayload {
                                     teammate_name: None,
@@ -2910,8 +2937,8 @@ pub async fn process_stream_background<R: Runtime>(
                         hook_name,
                         hook_event,
                     } => {
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
+                        if let Some(ref event_emitter) = app_handle {
+                            let _ = event_emitter.emit(
                                 events::AGENT_HOOK,
                                 AgentHookPayload {
                                     hook_type: "started".to_string(),
@@ -2938,8 +2965,8 @@ pub async fn process_stream_background<R: Runtime>(
                         exit_code,
                         outcome,
                     } => {
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
+                        if let Some(ref event_emitter) = app_handle {
+                            let _ = event_emitter.emit(
                                 events::AGENT_HOOK,
                                 AgentHookPayload {
                                     hook_type: "completed".to_string(),
@@ -2959,8 +2986,8 @@ pub async fn process_stream_background<R: Runtime>(
                         }
                     }
                     StreamEvent::HookBlock { reason } => {
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
+                        if let Some(ref event_emitter) = app_handle {
+                            let _ = event_emitter.emit(
                                 events::AGENT_HOOK,
                                 AgentHookPayload {
                                     hook_type: "block".to_string(),
@@ -3035,13 +3062,12 @@ pub async fn process_stream_background<R: Runtime>(
                                 &assistant_message_id,
                                 &processor.content_blocks,
                                 ChatTimelineItemStatus::Streaming,
-                                agent_run_id.as_deref(),
                             )
                             .await;
                         }
 
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
+                        if let Some(ref event_emitter) = app_handle {
+                            let _ = event_emitter.emit(
                                 events::AGENT_TOOL_CALL,
                                 AgentToolCallPayload::from_live_tool_result(
                                     &tool_use_id,
@@ -3068,7 +3094,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     &result_preview,
                                 );
 
-                                let _ = handle.emit(
+                                let _ = event_emitter.emit(
                                     events::AGENT_MESSAGE,
                                     serde_json::json!({
                                         "taskId": context_id_str,
@@ -3172,7 +3198,6 @@ pub async fn process_stream_background<R: Runtime>(
                     &assistant_message_id,
                     &processor.content_blocks,
                     ChatTimelineItemStatus::Error,
-                    agent_run_id.as_deref(),
                 )
                 .await;
                 return Err(StreamError::ParseStall {
@@ -3198,7 +3223,7 @@ pub async fn process_stream_background<R: Runtime>(
                             "Parse stall but child process alive — resetting"
                         );
                         emit_heartbeat(
-                            &app_handle,
+                            &event_emitter,
                             &conversation_id_str,
                             context_id,
                             "pid_alive_bypass_parse_stall",
@@ -3216,7 +3241,7 @@ pub async fn process_stream_background<R: Runtime>(
                         active_count
                     );
                     emit_heartbeat(
-                        &app_handle,
+                        &event_emitter,
                         &conversation_id_str,
                         context_id,
                         "active_tasks_bypass",
@@ -3256,7 +3281,6 @@ pub async fn process_stream_background<R: Runtime>(
                 &processor.tool_calls,
                 &processor.content_blocks,
                 ChatTimelineItemStatus::Streaming,
-                agent_run_id.as_deref(),
             )
             .await;
         }
@@ -3278,7 +3302,7 @@ pub async fn process_stream_background<R: Runtime>(
                 .await;
                 if usage_persisted && current_turn_usage != last_emitted_usage {
                     emit_usage_updated_event(
-                        &app_handle,
+                        &event_emitter,
                         &conversation_id_str,
                         &context_type_str,
                         &context_id_str,
@@ -3393,7 +3417,6 @@ pub async fn process_stream_background<R: Runtime>(
                 &assistant_message_id,
                 &result.content_blocks,
                 ChatTimelineItemStatus::Error,
-                agent_run_id.as_deref(),
             )
             .await;
 
@@ -3458,7 +3481,6 @@ pub async fn process_stream_background<R: Runtime>(
         &assistant_message_id,
         &outcome.content_blocks,
         ChatTimelineItemStatus::Finalized,
-        agent_run_id.as_deref(),
     )
     .await;
     if !outcome.usage.is_empty() {
@@ -3485,7 +3507,7 @@ pub async fn process_stream_background<R: Runtime>(
             && (turns_finalized == 0 || outcome.usage != last_emitted_usage)
         {
             emit_usage_updated_event(
-                &app_handle,
+                &event_emitter,
                 &conversation_id_str,
                 &context_type_str,
                 &context_id_str,
@@ -3643,13 +3665,14 @@ pub(super) fn is_armed_mode_handoff_disposition(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn process_codex_stream_background<R: Runtime>(
+async fn process_codex_stream_background(
     mut child: tokio::process::Child,
     context_type: ChatContextType,
     context_id: &str,
     conversation_id: &ChatConversationId,
-    working_directory: Option<PathBuf>,
-    app_handle: Option<AppHandle<R>>,
+    event_emitter: ChatEventEmitter,
+    _plan_verification_completion: Option<Arc<PlanVerificationCompletionAdapter>>,
+    _runtime_factory_deps: Option<ChatRuntimeFactoryDeps>,
     activity_event_repo: Option<Arc<dyn ActivityEventRepository>>,
     task_repo: Option<Arc<dyn TaskRepository>>,
     chat_message_repo: Option<Arc<dyn ChatMessageRepository>>,
@@ -3666,6 +3689,7 @@ async fn process_codex_stream_background<R: Runtime>(
     _split_verification_transcript: bool,
     persist_conversation_provider_session_ref: bool,
 ) -> Result<StreamOutcome, StreamError> {
+    let app_handle = Some(event_emitter.clone());
     let timeout_config = StreamTimeoutConfig::for_context(&context_type);
     let stdout = child
         .stdout
@@ -3886,12 +3910,11 @@ async fn process_codex_stream_background<R: Runtime>(
                     &assistant_message_id,
                     &content_blocks,
                     ChatTimelineItemStatus::Streaming,
-                    agent_run_id.as_deref(),
                 )
                 .await;
 
-                if let Some(ref handle) = app_handle {
-                    let _ = handle.emit(
+                if let Some(ref event_emitter) = app_handle {
+                    let _ = event_emitter.emit(
                         events::AGENT_CHUNK,
                         AgentChunkPayload {
                             text,
@@ -3934,12 +3957,11 @@ async fn process_codex_stream_background<R: Runtime>(
                     &assistant_message_id,
                     &content_blocks,
                     ChatTimelineItemStatus::Streaming,
-                    agent_run_id.as_deref(),
                 )
                 .await;
 
-                if let Some(ref handle) = app_handle {
-                    let _ = handle.emit(
+                if let Some(ref event_emitter) = app_handle {
+                    let _ = event_emitter.emit(
                         events::AGENT_THINKING,
                         AgentThinkingPayload {
                             text,
@@ -4031,7 +4053,6 @@ async fn process_codex_stream_background<R: Runtime>(
                     &assistant_message_id,
                     &content_blocks,
                     ChatTimelineItemStatus::Streaming,
-                    agent_run_id.as_deref(),
                 )
                 .await;
 
@@ -4054,8 +4075,8 @@ async fn process_codex_stream_background<R: Runtime>(
                     )
                 });
 
-                if let Some(ref handle) = app_handle {
-                    let _ = handle.emit(
+                if let Some(ref event_emitter) = app_handle {
+                    let _ = event_emitter.emit(
                         events::AGENT_TOOL_CALL,
                         AgentToolCallPayload::from_completed_tool_call(
                             &tool_call,
@@ -4168,12 +4189,11 @@ async fn process_codex_stream_background<R: Runtime>(
                             &assistant_message_id,
                             &content_blocks,
                             ChatTimelineItemStatus::Streaming,
-                            agent_run_id.as_deref(),
                         )
                         .await;
 
-                        if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
+                        if let Some(ref event_emitter) = app_handle {
+                            let _ = event_emitter.emit(
                                 events::AGENT_THINKING,
                                 AgentThinkingPayload {
                                     text: String::new(),
@@ -4220,7 +4240,7 @@ async fn process_codex_stream_background<R: Runtime>(
                     .await;
                     if persisted && last_emitted_capture.as_ref() != Some(&capture) {
                         emit_usage_updated_event(
-                            &app_handle,
+                            &event_emitter,
                             &conversation_id_str,
                             &context_type_str,
                             &context_id_str,
@@ -4231,11 +4251,6 @@ async fn process_codex_stream_background<R: Runtime>(
             }
 
             if event.event_type == "turn.completed" {
-                schedule_branch_status_refresh(
-                    app_handle.as_ref(),
-                    conversation_id,
-                    working_directory.as_deref(),
-                );
                 codex_turn_completed = true;
                 let _ = child.start_kill();
                 break;
@@ -4273,7 +4288,6 @@ async fn process_codex_stream_background<R: Runtime>(
                 &assistant_message_id,
                 &content_blocks,
                 ChatTimelineItemStatus::Streaming,
-                agent_run_id.as_deref(),
             )
             .await;
             last_flush = std::time::Instant::now();
@@ -4365,7 +4379,6 @@ async fn process_codex_stream_background<R: Runtime>(
         } else {
             ChatTimelineItemStatus::Error
         },
-        agent_run_id.as_deref(),
     )
     .await;
     if cancellation_token.is_cancelled() {
@@ -4524,30 +4537,26 @@ pub fn should_kill_on_timeout(
 ///
 /// Used by all timeout-bypass sites (PID-alive and active_tasks) to prevent
 /// the frontend watchdog from false-positive stall detection.
-fn emit_heartbeat<R: Runtime>(
-    app_handle: &Option<AppHandle<R>>,
+fn emit_heartbeat(
+    emitter: &ChatEventEmitter,
     conversation_id: &str,
     context_id: &str,
     reason: &str,
     extra: Option<serde_json::Value>,
 ) {
-    if let Some(ref handle) = app_handle {
-        let mut payload = serde_json::json!({
-            "conversation_id": conversation_id,
-            "context_id": context_id,
-            "reason": reason,
-        });
-        if let Some(extra_fields) = extra {
-            if let (Some(obj), Some(extra_obj)) =
-                (payload.as_object_mut(), extra_fields.as_object())
-            {
-                for (k, v) in extra_obj {
-                    obj.insert(k.clone(), v.clone());
-                }
+    let mut payload = serde_json::json!({
+        "conversation_id": conversation_id,
+        "context_id": context_id,
+        "reason": reason,
+    });
+    if let Some(extra_fields) = extra {
+        if let (Some(obj), Some(extra_obj)) = (payload.as_object_mut(), extra_fields.as_object()) {
+            for (k, v) in extra_obj {
+                obj.insert(k.clone(), v.clone());
             }
         }
-        let _ = handle.emit("agent:heartbeat", payload);
     }
+    let _ = emitter.emit("agent:heartbeat", payload);
 }
 
 #[cfg(test)]

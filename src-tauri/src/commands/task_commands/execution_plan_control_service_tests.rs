@@ -997,6 +997,50 @@ async fn resume_plan_preserves_halt_mode_when_plan_task_query_fails() {
     assert_eq!(stored.internal_status, InternalStatus::Paused);
 }
 
+#[tokio::test]
+async fn pause_plan_applies_agent_active_guard_in_both_directions() {
+    let fixture = setup_control_fixture().await;
+    let ready_task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Ready,
+        "Ready task remains queued",
+    )
+    .await;
+    let executing_task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Executing,
+        "Executing task is paused",
+    )
+    .await;
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let outcome = service.pause_plan(scope(&fixture)).await.unwrap();
+
+    assert_eq!(outcome.affected_count, 1);
+    assert_eq!(
+        stored_task(&fixture.state, &ready_task.id)
+            .await
+            .internal_status,
+        InternalStatus::Ready,
+        "non-agent-active tasks must not be transitioned"
+    );
+    assert_eq!(
+        stored_task(&fixture.state, &executing_task.id)
+            .await
+            .internal_status,
+        InternalStatus::Paused,
+        "agent-active tasks must transition through the control service"
+    );
+}
+
 struct FailingTaskRepository {
     inner: Arc<dyn TaskRepository>,
     transition_task_id: Option<TaskId>,

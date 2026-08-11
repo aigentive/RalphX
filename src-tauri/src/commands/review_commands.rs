@@ -204,7 +204,7 @@ pub async fn approve_fix_task(
     input: ApproveFixTaskInput,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
 ) -> Result<(), String> {
     let fix_task_id = TaskId::from_string(input.fix_task_id);
 
@@ -225,14 +225,13 @@ pub async fn approve_fix_task(
         ));
     }
 
-    let scheduler_concrete = Arc::new(
-        state.build_task_scheduler_for_runtime(Arc::clone(&execution_state), Some(app.clone())),
-    );
+    let scheduler_concrete =
+        Arc::new(state.build_task_scheduler_for_runtime(Arc::clone(&execution_state), None));
     scheduler_concrete.set_self_ref(Arc::clone(&scheduler_concrete) as Arc<dyn TaskScheduler>);
     let task_scheduler: Arc<dyn TaskScheduler> = scheduler_concrete;
 
     let transition_service = state
-        .build_transition_service_with_execution_state(Arc::clone(&execution_state))
+        .build_transition_service_for_runtime(Arc::clone(&execution_state), None)
         .with_task_scheduler(task_scheduler);
 
     transition_service
@@ -267,7 +266,7 @@ pub async fn reject_fix_task(
         .ok_or_else(|| format!("Fix task not found: {}", fix_task_id.as_str()))?;
 
     let transition_service =
-        state.build_transition_service_with_execution_state(Arc::clone(&execution_state));
+        state.build_transition_service_for_runtime(Arc::clone(&execution_state), None);
 
     transition_service
         .transition_task_corrective(&fix_task_id, InternalStatus::Failed, None, "review_fix")
@@ -432,15 +431,14 @@ pub async fn approve_task_for_review(
         .map_err(|e| e.to_string())?;
 
     // 3. Create scheduler for post-merge scheduling (Approved → PendingMerge path)
-    let scheduler_concrete = Arc::new(
-        state.build_task_scheduler_for_runtime(Arc::clone(&execution_state), Some(app.clone())),
-    );
+    let scheduler_concrete =
+        Arc::new(state.build_task_scheduler_for_runtime(Arc::clone(&execution_state), None));
     scheduler_concrete.set_self_ref(Arc::clone(&scheduler_concrete) as Arc<dyn TaskScheduler>);
     let task_scheduler: Arc<dyn TaskScheduler> = scheduler_concrete;
 
     // 4. Transition to Approved using TaskTransitionService
     let transition_service = state
-        .build_transition_service_with_execution_state(Arc::clone(&execution_state))
+        .build_transition_service_for_runtime(Arc::clone(&execution_state), None)
         .with_task_scheduler(task_scheduler);
 
     let old_status = task.internal_status.as_str().to_string();
@@ -504,7 +502,7 @@ pub async fn request_task_changes_for_review(
 
     // 3. Transition to RevisionNeeded (will auto-trigger re-execution)
     let transition_service =
-        state.build_transition_service_with_execution_state(Arc::clone(&execution_state));
+        state.build_transition_service_for_runtime(Arc::clone(&execution_state), None);
 
     let old_status = task.internal_status.as_str().to_string();
     transition_service
@@ -579,7 +577,7 @@ pub async fn re_review_task_from_escalated(
 
     // 2. Transition to PendingReview (state machine auto-triggers AI reviewer)
     let transition_service =
-        state.build_transition_service_with_execution_state(Arc::clone(&execution_state));
+        state.build_transition_service_for_runtime(Arc::clone(&execution_state), None);
 
     let old_status = task.internal_status.as_str().to_string();
     transition_service
@@ -730,7 +728,7 @@ pub async fn request_task_changes_from_reviewing(
 
     // 5. Transition to RevisionNeeded (auto-chain fires RevisionNeeded → ReExecuting)
     let transition_service =
-        state.build_transition_service_with_execution_state(Arc::clone(&execution_state));
+        state.build_transition_service_for_runtime(Arc::clone(&execution_state), None);
 
     if let Err(e) = transition_service
         .transition_task(&task_id, InternalStatus::RevisionNeeded)

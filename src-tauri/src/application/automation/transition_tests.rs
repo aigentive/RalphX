@@ -190,14 +190,14 @@ fn production_automation_transition_services_use_shared_event_emitter_factory() 
 
     assert!(
         offenders.is_empty(),
-        "NoopAutomationEventEmitter construction must stay in the API fallback; offenders: {offenders:?}"
+        "NoopAutomationEventEmitter must stay out of production automation wiring; offenders: {offenders:?}"
     );
     assert_eq!(
         API_SOURCE
-            .matches("Arc::new(NoopAutomationEventEmitter)")
+            .matches("Arc::new(SinkAutomationEventEmitter::new")
             .count(),
         1,
-        "automation API should own the single Noop event-emitter fallback"
+        "automation API should own the single shared sink-backed emitter factory"
     );
 }
 

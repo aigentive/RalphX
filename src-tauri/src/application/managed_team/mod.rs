@@ -1,12 +1,15 @@
 pub mod budgets;
 #[cfg(test)]
 mod budgets_tests;
+mod completion_signal;
 pub mod exit;
 #[cfg(test)]
 mod exit_tests;
 pub mod lifecycle;
 pub mod messaging;
 mod messaging_delivery;
+#[cfg(test)]
+mod messaging_delivery_tests;
 #[cfg(test)]
 mod messaging_tests;
 pub mod members;
@@ -27,6 +30,9 @@ mod team_prompt_contract_tests;
 pub mod team_prompt;
 #[cfg(test)]
 mod team_prompt_tests;
+pub mod wake_dispatch;
+#[cfg(test)]
+mod wake_dispatch_tests;
 
 pub use lifecycle::{new_coordinator_run_binding, new_team_session};
 pub use budgets::{ManagedTeamMemberUsage, ManagedTeamUsage};

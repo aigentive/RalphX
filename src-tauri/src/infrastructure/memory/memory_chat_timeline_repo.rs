@@ -168,6 +168,21 @@ impl ChatTimelineRepository for MemoryChatTimelineRepository {
         Ok(items)
     }
 
+    async fn latest_assistant_activity_at_for_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+        assistant_role: crate::domain::entities::MessageRole,
+    ) -> AppResult<Option<chrono::DateTime<Utc>>> {
+        Ok(self
+            .items
+            .read()
+            .unwrap()
+            .values()
+            .filter(|item| &item.conversation_id == conversation_id && item.role == assistant_role)
+            .map(|item| item.updated_at)
+            .max())
+    }
+
     async fn delete_message_items_except_block_indices(
         &self,
         message_id: &ChatMessageId,

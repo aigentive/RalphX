@@ -1197,12 +1197,12 @@ fn log_phase_does_not_panic_with_and_without_conversation_id() {
 
 #[test]
 fn emit_progress_does_not_panic_on_mock_app_handle() {
-    let app = crate::testing::create_mock_app_handle();
+    let events = ralphx_events::RecordingEventSink::new();
     let conversation_id = ChatConversationId::new();
     // The emit is best-effort (`let _ = ...`); this just exercises the payload
     // construction and emit path without asserting delivery.
     emit_start_agent_conversation_progress(
-        &app,
+        &events,
         "project",
         "project-1",
         &conversation_id,
@@ -1213,21 +1213,11 @@ fn emit_progress_does_not_panic_on_mock_app_handle() {
 
 #[test]
 fn emit_post_creation_progress_self_keys_standalone_context_id() {
-    use std::sync::Mutex;
-    use tauri::Listener;
-
-    let app = crate::testing::create_mock_app_handle();
+    let events = ralphx_events::RecordingEventSink::new();
     let conversation_id = ChatConversationId::new();
-    let captured = Arc::new(Mutex::new(None));
-    let captured_clone = Arc::clone(&captured);
-    app.listen("agent:startup_progress", move |event| {
-        let payload: serde_json::Value =
-            serde_json::from_str(event.payload()).expect("startup progress payload JSON");
-        *captured_clone.lock().expect("capture lock") = Some(payload);
-    });
 
     emit_start_agent_conversation_progress(
-        &app,
+        &events,
         "standalone",
         "standalone",
         &conversation_id,
@@ -1235,11 +1225,11 @@ fn emit_post_creation_progress_self_keys_standalone_context_id() {
         "Starting agent",
     );
 
-    let payload = captured
-        .lock()
-        .expect("capture lock")
-        .clone()
-        .expect("startup progress event");
+    let payload = events
+        .events()
+        .pop()
+        .expect("startup progress event")
+        .payload;
     assert_eq!(payload["context_type"], "standalone");
     assert_eq!(payload["context_id"], conversation_id.as_str());
     assert_eq!(payload["conversation_id"], conversation_id.as_str());

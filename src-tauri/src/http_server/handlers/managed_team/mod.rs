@@ -1,9 +1,12 @@
 //! HTTP handlers for the managed-Team lifecycle surface (`/api/managed_team/*`).
 
 pub mod authority;
+#[cfg(test)]
+mod authority_tests;
 pub mod lifecycle;
 pub mod members;
 pub mod messaging;
+pub mod status;
 #[cfg(test)]
 mod messaging_tests;
 
@@ -13,3 +16,4 @@ pub use members::{
     list_idle_managed_team_members, stop_managed_team_member,
 };
 pub use messaging::{get_managed_team_member_roster, send_managed_team_message};
+pub use status::get_managed_team_member_status;

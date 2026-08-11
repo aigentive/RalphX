@@ -1116,6 +1116,114 @@ async fn draft_pr_description_summarizes_tool_unavailable_output_when_agent_subm
     assert!(!error.contains(&raw_output));
 }
 
+#[tokio::test]
+async fn successful_empty_output_persists_and_caches_preserve_for_existing_pr() {
+    let (_temp_dir, repo, base) = create_reviewable_repo();
+    let project = project_for(&repo);
+    let conversation = conversation_for(&project);
+    let workspace = workspace_for(&conversation, &project, &repo, &base);
+    let target = existing_target(Some("existing body"));
+    let key = AgentWorkspacePrDescriptionCacheKey::for_target(
+        conversation.id.clone(),
+        &base,
+        run_git(&repo, &["rev-parse", "HEAD"]),
+        1,
+        &target,
+    )
+    .expect("existing PR cache key should be valid");
+    invalidate_agent_workspace_pr_description_cache(&conversation.id);
+    let state = AppState::new_test();
+    let client = Arc::new(SubmittingPrDescriptionClient::success_without_submission(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        conversation.id.clone(),
+        "  \n",
+    ));
+    let state = state.with_agent_client(client.clone());
+
+    let first = get_or_draft_agent_workspace_pr_metadata_decision(
+        &state,
+        &conversation,
+        &project,
+        &workspace,
+        &repo,
+        &base,
+        &target,
+        key.clone(),
+    )
+    .await
+    .expect("empty successful output should preserve existing PR metadata");
+
+    assert_eq!(
+        first.cache_status,
+        AgentWorkspacePrDescriptionCacheStatus::Miss
+    );
+    assert_eq!(first.decision, AgentWorkspacePrMetadataDecision::Preserve);
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_pr_metadata_decision(&conversation.id)
+            .await
+            .expect("persisted decision lookup should succeed"),
+        Some(AgentWorkspacePrMetadataDecision::Preserve)
+    );
+
+    let second = get_or_draft_agent_workspace_pr_metadata_decision(
+        &state,
+        &conversation,
+        &project,
+        &workspace,
+        &repo,
+        &base,
+        &target,
+        key,
+    )
+    .await
+    .expect("persisted preserve should populate the typed cache");
+    assert_eq!(
+        second.cache_status,
+        AgentWorkspacePrDescriptionCacheStatus::Hit
+    );
+    assert_eq!(second.decision, AgentWorkspacePrMetadataDecision::Preserve);
+    assert_eq!(client.spawned_configs().await.len(), 1);
+    invalidate_agent_workspace_pr_description_cache(&conversation.id);
+}
+
+#[tokio::test]
+async fn successful_empty_output_for_new_pr_remains_a_missing_submission_error() {
+    let (_temp_dir, repo, base) = create_reviewable_repo();
+    let project = project_for(&repo);
+    let conversation = conversation_for(&project);
+    let workspace = workspace_for(&conversation, &project, &repo, &base);
+    let state = AppState::new_test();
+    let client = Arc::new(SubmittingPrDescriptionClient::success_without_submission(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        conversation.id.clone(),
+        "",
+    ));
+    let state = state.with_agent_client(client);
+
+    let error = draft_agent_workspace_pr_description(
+        &state,
+        &conversation,
+        &project,
+        &workspace,
+        &repo,
+        &base,
+    )
+    .await
+    .expect_err("new PRs must still submit a complete metadata patch");
+
+    assert!(error
+        .to_string()
+        .contains("completed without submitting a PR description"));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_pr_metadata_decision(&conversation.id)
+        .await
+        .expect("persisted decision lookup should succeed")
+        .is_none());
+}
+
 fn existing_target_from_detail(detail: PrDetail) -> ResolvedAgentWorkspacePrTarget {
     ResolvedAgentWorkspacePrTarget::Existing(Box::new(ExistingPrMetadataSnapshot::from_detail(
         detail,

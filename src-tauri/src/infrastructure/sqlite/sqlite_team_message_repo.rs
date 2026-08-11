@@ -208,6 +208,24 @@ impl TeamMessageRepository for SqliteTeamMessageRepository {
             .await
     }
 
+    async fn get_delivery(
+        &self,
+        id: &TeamMessageDeliveryId,
+    ) -> AppResult<Option<TeamMessageDelivery>> {
+        let id = id.0.clone();
+        self.db
+            .run(move |conn| {
+                let mut stmt =
+                    conn.prepare("SELECT * FROM managed_team_message_deliveries WHERE id = ?1")?;
+                let mut rows = stmt.query([id])?;
+                match rows.next()? {
+                    Some(row) => Ok(Some(delivery_from_row(row)?)),
+                    None => Ok(None),
+                }
+            })
+            .await
+    }
+
     async fn get_envelope_by_idempotency_key(
         &self,
         team_id: &TeamSessionId,

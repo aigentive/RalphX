@@ -8,23 +8,23 @@ import type {
 import { formatBranchDisplay } from "@/lib/branch-utils";
 
 import { formatPullRequestUrlLabel } from "./agentPublishFormatting";
+import {
+  getAgentWorkspaceTerminalPublicationLabel,
+  getAgentWorkspaceTerminalPublicationStatus,
+} from "./agentWorkspacePublishState";
 
 function workspaceStatusLabel(
   workspace: AgentConversationWorkspace,
   freshness: AgentConversationWorkspaceFreshness | undefined,
 ) {
-  const terminalStatus =
-    workspace.publicationPrStatus === "merged" ||
-    workspace.publicationPrStatus === "closed"
-      ? workspace.publicationPrStatus
-      : null;
+  const terminalStatus = getAgentWorkspaceTerminalPublicationStatus(workspace);
   const isBaseBlocked = freshness?.baseStatus === "blocked";
   const isBehindBase =
     !isBaseBlocked && !terminalStatus && Boolean(freshness?.isBaseAhead);
 
   return {
     label: terminalStatus
-      ? terminalStatus.replace(/_/g, " ")
+      ? (getAgentWorkspaceTerminalPublicationLabel(workspace) ?? "")
       : isBaseBlocked
         ? "Base unavailable"
         : isBehindBase

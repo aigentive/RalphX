@@ -21,6 +21,33 @@ fn verification_runtime_coordination_is_arc_shared() {
 }
 
 #[test]
+fn event_sink_and_bus_are_physically_shared_between_app_states() {
+    use ralphx_events::catalog::AGENT_RUN_COMPLETED;
+    use ralphx_events::{EventEnvelope, EventSink, RecordingEventSink};
+
+    let mut source = crate::application::AppState::new_test();
+    let sink = std::sync::Arc::new(RecordingEventSink::new());
+    source.events = sink.clone() as std::sync::Arc<dyn EventSink>;
+    let mut target = crate::application::AppState::new_test();
+    super::runtime_wiring::share_event_runtime(&source, &mut target);
+    let mut target_subscriber = target.internal_event_bus.subscribe();
+    let envelope = EventEnvelope::new(AGENT_RUN_COMPLETED, serde_json::json!({"ok": true}));
+
+    source.events.emit(&envelope.name, envelope.payload.clone());
+    source
+        .internal_event_bus
+        .publish(envelope.clone())
+        .expect("shared target subscriber");
+
+    assert!(std::sync::Arc::ptr_eq(&source.events, &target.events));
+    assert_eq!(sink.events().len(), 1);
+    assert_eq!(
+        target_subscriber.try_recv().expect("shared bus envelope"),
+        envelope
+    );
+}
+
+#[test]
 fn repair_publish_continuation_is_pointer_identical_in_paired_app_states() {
     let source = crate::application::AppState::new_test();
     let mut target = crate::application::AppState::new_test();

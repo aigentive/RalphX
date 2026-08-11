@@ -304,9 +304,9 @@ wait "$stdin_drain_pid" 2>/dev/null || true
             .manage(app_state)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("mock app");
-        let service: AppChatService<tauri::test::MockRuntime> = app
+        let service: AppChatService = app
             .state::<AppState>()
-            .build_chat_service_for_runtime(Some(Arc::clone(&execution_state)), None)
+            .build_chat_service_with_execution_state(Arc::clone(&execution_state))
             .with_cli_path(cli_path)
             .with_working_directory(project_dir.path());
 

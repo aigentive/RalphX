@@ -64,10 +64,10 @@ Team must extend RalphX's durable, provider-neutral architecture:
 | Canonical authorization | `agents/<agent>/agent.yaml` owns MCP grants and `delegation.allowed_targets`; backend validates caller→target topology. | No Team-specific coordinator/member authorization surface. |
 | Delegated context | `DelegatedSession`, `ChatContextType::Delegation`, delegated conversations, provider session attribution, and session reuse exist. | No stable logical member binding or idle/re-task lifecycle. |
 | Delegate lifecycle | `native_delegation.rs` creates/reuses a delegated session, launches exact runs, snapshots jobs, and cancels. | Launch orchestration is handler-owned and projected as a job, not a member turn. |
-| Task coordination | `AgentTaskService` provides conversation-scoped tasks, blockers, claims, exact assignment reservation, completion/release, and recovery. | No member-addressed assignment command or roster projection. |
+| Task coordination | `AgentTaskService` provides conversation-scoped tasks, blockers, claims, exact assignment reservation, completion/release, and recovery. `team_assign`, `team_roster`, and coordinator-only `team_status` cover member-addressed assignment plus roster/liveness projection. | UI board/roster surface (Slice 4) is not yet built. |
 | Recovery | `AgentTaskAssignmentRecoveryService` reconciles reserved/active assignments against durable run/process authority. | No team/member/message reconciliation. |
-| Provider neutrality | `AgentClientBundle` resolves Claude/Codex through `AgentHarnessKind`; omitted child settings use delegated-role defaults. | No per-member capability/readiness projection or replacement flow. |
-| Messaging | Chat has durable queueing/events; `TeamMessageTarget` exists on domain/frontend send inputs. | The target is scaffolding only; there is no Team router or durable Team message record. |
+| Provider neutrality | `AgentClientBundle` resolves Claude/Codex through `AgentHarnessKind`; omitted child settings use delegated-role defaults. `team_add_member` now gates on `ensure_provider_spawn_enabled` at roster admission. | No per-member replacement flow; a provider disabled after a member is added still fails only at next dispatch. |
+| Messaging | `TeamMessage`/`TeamMessageDelivery` router, durable delivery projection, coordinator wake batching, `ManagedTeamWakeDispatcher`, and the settlement completion signal (`notify_coordinator_assignment_settled`) exist end-to-end. | `TeamWakeRecipientKind::Member` has no production producer yet (member-targeted automatic wakes are deliberately deferred); UI composer/recipient wiring is not yet built. |
 | UI activity | Delegated lifecycle events already carry session/conversation/run/provider attribution and render inline cards. | No roster, idle state, team inbox, aggregate progress, or control panel. |
 | Workspace | Conversation workspaces and shared-worktree delegation rules exist. | Writable ownership/resource serialization is policy, not a first-class Team reservation. |
 
@@ -210,6 +210,7 @@ any non-closed state → failed → suspended | draining
 - Switching the capability to Solo while members are active must be explicit:
   - suspend members and preserve roster/history, or
   - drain and close the team.
+- A Project conversation already in `RxNativeTeam` cannot leave Team mode through an ordinary send: `ChatService` rejects a send that tries to flip `coordination_mode` away from `RxNativeTeam`. Leaving requires the capability-change action, which stages the Team exit above; the send path is not a second, uncoordinated exit route.
 - Conversation archive/delete drains the team before final cleanup.
 - Closed teams remain historical records; runtime processes and active reservations do not.
 
@@ -245,12 +246,25 @@ Ordinary delegation remains available for disposable work. Team adds a small mem
 
 | Tool | Model supplies | Backend owns |
 |---|---|---|
-| `team_add_member` | Unique name, canonical agent, standing role; optional supported harness/model/effort | Team/session/member IDs, topology validation, runtime binding |
-| `team_list_members` | Optional status filter | Roster projection and safe status summary |
-| `team_assign_task` | Member name, task ref, bounded instruction, optional typed work scope | Exact assignment reservation, run creation/resume, current-attempt binding |
+| `team_add_member` | Unique name, canonical agent, standing role; optional supported harness/model/effort | Team/session/member IDs, topology validation, provider readiness pre-flight, runtime binding |
+| `team_list` | — | Idle-only assignment-target projection |
+| `team_assign` | Member name, task ref, bounded instruction, optional typed work scope | Exact assignment reservation, run creation/resume, current-attempt binding |
 | `team_send_message` | Member name or broadcast, content | Sender identity, routing, delivery, wake-up |
 | `team_stop_member` | Member name, reason | Drain deadline, cancellation, assignment reopening, process cleanup |
-| `team_suspend` / `team_close` | Optional reason | Whole-team transition, drain, cleanup, recovery-safe settlement |
+| `team_roster` | — | Bounded name/role/status projection scoped to the caller's Team; coordinator or member authority |
+| `team_status` | — | Coordinator-only liveness join (running state, last activity, latest run), capped at 32 entries |
+
+Whole-Team suspend/close is **not** a model-facing tool: it is a user-driven capability change that routes through `exit_team`, which stages the exit, drains members, and settles assignments. `TEAM_TOOL_NAMES` in `team-tool-policy.ts` is the exact live list.
+
+The `team_coordinator` profile now grants seven tools (previously five): `team_roster` and `team_status` were added so the coordinator has a bounded read surface for "who exists" and "is anyone stuck," not just member management.
+
+### Tool Selection
+
+| Tool | Use it to |
+|---|---|
+| `team_list` | Find idle assignment targets |
+| `team_roster` | See who exists — name/role/status, coordinator or member authority |
+| `team_status` | See if anyone is stuck — coordinator-only liveness join, capped at 32 entries, degrades a missing delegated session to a null `agent_state` |
 
 ### Member tools
 
@@ -260,7 +274,7 @@ Reuse trusted assignment tools where possible:
 - `complete_delegate_assignment`
 - `release_delegate_assignment`
 - `team_send_message`
-- optional `team_list_members` with a bounded roster/status view
+- `team_roster` — bounded roster/status view (member authority is accepted; `team_status` is not)
 
 Only the coordinator may add, assign, stop, suspend, or close members. A member may use ordinary `delegate_start` only when its canonical allowlist permits it; that child is an ephemeral delegate, not a roster member.
 
@@ -279,7 +293,7 @@ Only the coordinator may add, assign, stop, suspend, or close members. A member 
 
 1. Lead calls `team_add_member`.
 2. Backend resolves the caller's active Team from the conversation/run context.
-3. Validate unique name, coordinator authority, canonical target allowlist, provider readiness, and concurrency.
+3. Validate unique name, coordinator authority, canonical target allowlist, provider readiness, and concurrency. Provider readiness is a pre-flight gate (`ensure_provider_spawn_enabled`), resolved with the same unset-harness default as `team_assign`: a disabled provider fails admission with `409` and a Settings > Harness > Providers pointer instead of admitting the member and deferring the failure to first dispatch.
 4. Create an idle `TeamMember`; do not start a provider process merely to populate the roster.
 5. The first assignment creates its delegated-session binding through the shared delegation launch seam and injects:
    - stable member name and standing role
@@ -291,13 +305,25 @@ Only the coordinator may add, assign, stop, suspend, or close members. A member 
 ### Assign And Re-task
 
 1. Lead creates/refines a coordinator-ledger task.
-2. Lead calls `team_assign_task(member_name, task_ref, instruction, scope)`.
+2. Lead calls `team_assign(member_name, task_ref, instruction, scope)`.
 3. Backend transaction reserves the exact task, validates workspace/resource conflicts, and binds the member.
 4. If the member is idle, continue its delegated conversation using stored provider lineage.
 5. If busy, reject or queue according to explicit policy; never silently replace the active assignment.
 6. Member requests completion/release.
 7. Current run termination settles the exact attempt.
-8. Successful settlement → task `done`, member `idle`, result queued to lead.
+8. Successful settlement → task `done`, member `idle`, result queued to lead through the completion-signal contract below.
+
+### Completion Signal And Wake Dispatch
+
+Settlement notifies the coordinator instead of relying on polling:
+
+1. Member assignment settlement (`settle_member_assignment`) reaches a terminal status and the member returns to `idle`.
+2. The service sends a `System`-authored `TeamMessage` to the coordinator (`notify_coordinator_assignment_settled`) with a deterministic idempotency key on `(assignment_id, terminal_status)`; a replayed settlement returns the original envelope instead of a second wake. Notification failure is logged and swallowed — settlement authority never depends on it.
+3. Delivery projection queues a `TeamWakeBatch` row (`Queued`) for the coordinator.
+4. `ManagedTeamService::claim_next_actionable_wake_batch` durably CASes the batch to `Launching` and preallocates the coordinator `AgentRunId` binding.
+5. `ManagedTeamWakeDispatcher::dispatch_pending_wakes` claims and dispatches the batch. Dispatch is spawned in the background from the settlement path (`tokio::spawn`), never awaited, so a slow or failing dispatch cannot block settlement.
+6. If the coordinator is idle, the dispatcher sends a hidden `resume_in_place` turn on the coordinator conversation, bound to the preallocated run, and settles the batch to `Settled` on success or `Failed` (with retry, bounded by `park_wake_retry_max`) on send failure.
+7. If the coordinator already has an active run, the dispatcher cancels the batch instead of leaving it at `Launching` forever: the settlement message is already sitting in the coordinator's durable queue and drains at the coordinator's next turn boundary, so a second wake would only produce a duplicate turn.
 
 ### Message Delivery
 
@@ -306,7 +332,7 @@ Only the coordinator may add, assign, stop, suspend, or close members. A member 
 - Running lead → queue Team events/messages without interrupting its current model turn.
 - Idle lead → schedule one deduplicated continuation containing typed Team-origin envelopes.
 - Pure idle/status notifications update UI only; they do not wake the lead model.
-- Coalesce wake-ups and enforce configured concurrency/budget limits to prevent automatic-turn loops.
+- Coalesce wake-ups and enforce configured concurrency/budget limits to prevent automatic-turn loops. Only `WakeBatch` run bindings whose status is `Planned | Launching | Running` count against `TeamSession.automatic_wake_limit`; terminal (`Settled | Failed | Cancelled`) bindings persist for the row's history but do not count, so the budget recovers as batches finish instead of decaying to zero. Exhausting the live-binding budget emits `team:needs_attention` so a stalled Team is diagnosable from the UI, not only from a queue inspection.
 - Broadcast → create one recipient delivery per active member under one source message.
 - Member-to-member → allowed only inside the same Team; coordinator remains lifecycle/task authority.
 
@@ -443,7 +469,7 @@ Each slice is a vertical, testable increment. Do not land a prompt/UI fiction be
 
 ### Slice 2 — Standing Member Runtime
 
-- Add `team_add_member`, `team_list_members`, `team_assign_task`, `team_stop_member`.
+- Add `team_add_member`, `team_list`, `team_assign`, `team_stop_member`.
 - Bind stable members to reusable delegated sessions.
 - Re-task by starting a new run in the same delegated conversation.
 - Extend exact assignment rows with optional Team/member identity.
@@ -456,8 +482,8 @@ Each slice is a vertical, testable increment. Do not land a prompt/UI fiction be
 - Add Team message repository/router and idempotent chat-queue projection.
 - Activate `TeamMessageTarget`.
 - Add `team_send_message` for coordinator/member surfaces.
-- Add safe-boundary delivery, idle-member continuation, and deduplicated lead continuation.
-- Add typed Team message rendering/events.
+- Add safe-boundary delivery, idle-member continuation, and deduplicated lead continuation. Done: `ManagedTeamWakeDispatcher` is the consumer for claimed wake batches, and `notify_coordinator_assignment_settled` is the settlement completion signal — see Runtime Flows > Completion Signal And Wake Dispatch.
+- Add typed Team message rendering/events (UI still open, see Slice 4).
 
 **Proof:** busy/idle delivery, broadcast fan-out, cross-Team spoof rejection, restart replay without duplicate model injection, no user-role confusion.
 

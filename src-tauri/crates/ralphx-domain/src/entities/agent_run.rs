@@ -139,6 +139,7 @@ pub enum AgentRunActionKind {
     WorkspaceReviewFixer,
     PrAutofix,
     DelegationParkWake,
+    ManagedTeamWake,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +179,7 @@ impl fmt::Display for AgentRunActionKind {
             Self::WorkspaceReviewFixer => write!(f, "workspace_review_fixer"),
             Self::PrAutofix => write!(f, "pr_autofix"),
             Self::DelegationParkWake => write!(f, "delegation_park_wake"),
+            Self::ManagedTeamWake => write!(f, "managed_team_wake"),
         }
     }
 }
@@ -191,6 +193,7 @@ impl std::str::FromStr for AgentRunActionKind {
             "workspace_review_fixer" => Ok(Self::WorkspaceReviewFixer),
             "pr_autofix" => Ok(Self::PrAutofix),
             "delegation_park_wake" => Ok(Self::DelegationParkWake),
+            "managed_team_wake" => Ok(Self::ManagedTeamWake),
             _ => Err(format!("Invalid agent run action kind: {value}")),
         }
     }

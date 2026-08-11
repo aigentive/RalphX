@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use chrono::{Duration, Utc};
 use ralphx_events::RecordingEventSink;
 
+use crate::application::app_state::ApplicationExecutionState;
 use crate::application::automation::reopen::{
     reopen_automation_run_with_redriver, AutomationRunRedriver, AUTOMATION_RUN_CONTINUATION_PROMPT,
 };
@@ -39,6 +40,7 @@ impl AutomationRunRedriver for RecordingRedriver {
     async fn redrive(
         &self,
         _state: &AppState,
+        _execution_state: &Arc<ApplicationExecutionState>,
         conversation_id: &ChatConversationId,
         prompt: &str,
     ) -> AppResult<()> {
@@ -57,6 +59,7 @@ impl AutomationRunRedriver for PanickingRedriver {
     async fn redrive(
         &self,
         _state: &AppState,
+        _execution_state: &Arc<ApplicationExecutionState>,
         _conversation_id: &ChatConversationId,
         _prompt: &str,
     ) -> AppResult<()> {
@@ -67,6 +70,7 @@ impl AutomationRunRedriver for PanickingRedriver {
 pub(super) struct ReopenFixture {
     _temp: tempfile::TempDir,
     pub(super) state: AppState,
+    pub(super) execution_state: Arc<ApplicationExecutionState>,
     pub(super) automation: Automation,
     pub(super) run: AutomationRun,
     pub(super) conversation_id: ChatConversationId,
@@ -306,6 +310,7 @@ pub(super) async fn setup_smart_resume_fixture(
     ReopenFixture {
         _temp: temp,
         state,
+        execution_state: Arc::new(ApplicationExecutionState::new()),
         automation,
         run,
         conversation_id,
@@ -356,6 +361,7 @@ async fn reopen_automation_run_reuses_failed_run_conversation_and_resets_stale_s
 
     reopen_automation_run_with_redriver(
         &fixture.state,
+        &fixture.execution_state,
         &fixture.automation.id,
         &fixture.run.id,
         &redriver,
@@ -478,6 +484,7 @@ async fn reopen_automation_run_keeps_active_automation_active() {
 
     reopen_automation_run_with_redriver(
         &fixture.state,
+        &fixture.execution_state,
         &fixture.automation.id,
         &fixture.run.id,
         &redriver,
@@ -507,6 +514,7 @@ async fn reopen_automation_run_reactivates_stopped_automation_and_clears_termina
 
     reopen_automation_run_with_redriver(
         &fixture.state,
+        &fixture.execution_state,
         &fixture.automation.id,
         &fixture.run.id,
         &redriver,
@@ -567,6 +575,7 @@ async fn reopen_automation_run_corrective_transition_loss_preserves_failed_state
 
     let error = reopen_automation_run_with_redriver(
         &fixture.state,
+        &fixture.execution_state,
         &fixture.automation.id,
         &fixture.run.id,
         &PanickingRedriver,
@@ -622,6 +631,7 @@ async fn reopen_automation_run_rejects_non_latest_without_transition_or_redrive(
 
     let error = reopen_automation_run_with_redriver(
         &fixture.state,
+        &fixture.execution_state,
         &fixture.automation.id,
         &fixture.run.id,
         &redriver,
@@ -656,6 +666,7 @@ async fn reopen_automation_run_rejects_non_failed_latest_statuses_without_redriv
 
         let error = reopen_automation_run_with_redriver(
             &fixture.state,
+            &fixture.execution_state,
             &fixture.automation.id,
             &fixture.run.id,
             &redriver,
@@ -704,6 +715,7 @@ async fn reopen_automation_run_rejects_when_existing_conversation_agent_is_runni
 
     let error = reopen_automation_run_with_redriver(
         &fixture.state,
+        &fixture.execution_state,
         &fixture.automation.id,
         &fixture.run.id,
         &redriver,
@@ -723,5 +735,37 @@ async fn reopen_automation_run_rejects_when_existing_conversation_agent_is_runni
         .unwrap();
     assert_eq!(unchanged.status, AutomationRunStatus::AgentFailed);
     assert_eq!(unchanged.judge_state, AutomationJudgeState::Done);
+    assert_not_redriven(&fixture).await;
+}
+
+#[tokio::test]
+async fn reopen_automation_run_rejects_when_execution_launches_are_paused() {
+    let fixture = setup(AutomationRunStatus::AgentFailed).await;
+    fixture.execution_state.pause();
+
+    let error = reopen_automation_run_with_redriver(
+        &fixture.state,
+        &fixture.execution_state,
+        &fixture.automation.id,
+        &fixture.run.id,
+        &PanickingRedriver,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Conflict(ref detail) if detail == "agent launches are paused")
+    );
+    assert_eq!(
+        fixture
+            .state
+            .automation_run_repo
+            .get_by_id(&fixture.run.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationRunStatus::AgentFailed
+    );
     assert_not_redriven(&fixture).await;
 }

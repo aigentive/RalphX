@@ -1,7 +1,7 @@
 use super::*;
 
-impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
-    pub fn new(deps: AgentConversationStartDeps<'a, R>) -> Self {
+impl<'a> AgentConversationStartService<'a> {
+    pub fn new(deps: AgentConversationStartDeps<'a>) -> Self {
         Self { deps }
     }
 
@@ -477,7 +477,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         let workspace_prepare_started = Instant::now();
         if should_create_conversation {
             emit_start_agent_conversation_progress(
-                &self.deps.app_handle,
+                self.deps.events.as_ref(),
                 context_type_label,
                 &context_log_id,
                 &conversation.id,
@@ -487,7 +487,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         }
         if should_create_workspace {
             emit_start_agent_conversation_progress(
-                &self.deps.app_handle,
+                self.deps.events.as_ref(),
                 context_type_label,
                 &context_log_id,
                 &conversation.id,

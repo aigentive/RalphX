@@ -55,6 +55,7 @@ async fn setup_test_state() -> HttpServerState {
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 
@@ -64,6 +65,7 @@ fn setup_test_state_with_app_state(app_state: Arc<AppState>) -> HttpServerState 
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 
@@ -3787,6 +3789,7 @@ async fn setup_sqlite_test_state() -> HttpServerState {
         app_state,
         execution_state,
         delegation_service: Default::default(),
+        external_mcp_supervisor: None,
     }
 }
 

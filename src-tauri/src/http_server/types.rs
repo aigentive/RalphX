@@ -29,6 +29,9 @@ pub struct HttpServerState {
     pub app_state: Arc<AppState>,
     pub execution_state: Arc<ExecutionState>,
     pub delegation_service: Arc<DelegationService>,
+    pub external_mcp_supervisor: Option<
+        Arc<dyn Fn() -> Option<Arc<crate::infrastructure::ExternalMcpSupervisor>> + Send + Sync>,
+    >,
 }
 
 #[cfg(test)]
@@ -38,7 +41,24 @@ impl HttpServerState {
             app_state,
             execution_state: Arc::new(ExecutionState::new()),
             delegation_service: Default::default(),
+            external_mcp_supervisor: None,
         }
+    }
+}
+
+impl HttpServerState {
+    pub(crate) fn build_chat_service(&self) -> crate::application::AppChatService {
+        let mut service = self
+            .app_state
+            .build_chat_service_with_execution_state(Arc::clone(&self.execution_state));
+        if let Some(supervisor) = self
+            .external_mcp_supervisor
+            .as_ref()
+            .and_then(|resolve| resolve())
+        {
+            service = service.with_external_mcp_supervisor(supervisor);
+        }
+        service
     }
 }
 
@@ -2766,4 +2786,26 @@ pub struct ManagedTeamRosterEntry {
     pub normalized_name: String,
     pub role_summary: String,
     pub status: String,
+}
+
+/// One roster member joined to its delegated-session liveness. `agent_state`-derived
+/// fields stay `None` when the member has no delegated session yet, or when its
+/// delegated session was already cleared (degrade, never fail — the member entry
+/// itself always remains present).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedTeamMemberStatusEntry {
+    pub name: String,
+    pub normalized_name: String,
+    pub role_summary: String,
+    pub status: String,
+    pub canonical_agent_name: String,
+    pub generation: i64,
+    pub harness: Option<String>,
+    pub current_assignment_id: Option<String>,
+    pub last_activity_at: Option<String>,
+    pub is_running: Option<bool>,
+    pub last_active_at: Option<String>,
+    pub estimated_status: Option<String>,
+    pub latest_run: Option<DelegatedRunSummary>,
 }

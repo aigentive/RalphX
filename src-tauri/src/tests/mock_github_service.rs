@@ -29,6 +29,9 @@ pub struct MockGithubState {
     pub patch_pr_metadata_responses: VecDeque<AppResult<()>>,
     pub update_pr_base_result: Option<AppResult<()>>,
     pub check_pr_status_result: Option<AppResult<PrStatus>>,
+    /// Scriptable sequence of `check_pr_status` responses, popped front-first.
+    /// Falls back to `check_pr_status_result` semantics once exhausted.
+    pub check_pr_status_queue: VecDeque<AppResult<PrStatus>>,
     pub check_pr_sync_state_result: Option<AppResult<PrSyncState>>,
     pub check_pr_review_feedback_result: Option<AppResult<Option<PrReviewFeedback>>>,
     pub check_pr_review_feedback_delay_ms: u64,
@@ -57,6 +60,7 @@ pub struct MockGithubState {
     pub push_branch_with_expected_remote_oid_lease_delay_ms: u64,
     pub push_branch_with_expected_remote_oid_lease_started: Option<Arc<tokio::sync::Notify>>,
     pub close_pr_result: Option<AppResult<()>>,
+    pub reopen_pr_result: Option<AppResult<()>>,
     pub delete_remote_branch_result: Option<AppResult<()>>,
     pub fetch_remote_result: Option<AppResult<()>>,
     pub get_pr_diff_patch_result: Option<AppResult<String>>,
@@ -92,6 +96,7 @@ pub struct MockGithubState {
     pub push_branch_calls: u32,
     pub push_branch_with_expected_remote_oid_lease_calls: u32,
     pub close_pr_calls: u32,
+    pub reopen_pr_calls: u32,
     pub delete_remote_branch_calls: u32,
     pub fetch_remote_calls: u32,
     pub get_pr_diff_patch_calls: u32,
@@ -129,6 +134,7 @@ pub struct MockGithubState {
     pub last_push_branch_name: Option<String>,
     pub last_push_branch_with_expected_remote_oid_lease_args: Option<(String, String)>,
     pub last_close_pr_number: Option<i64>,
+    pub last_reopen_pr_number: Option<i64>,
     pub last_delete_remote_branch_name: Option<String>,
     /// All branches passed to delete_remote_branch (accumulated across all calls).
     pub all_deleted_remote_branch_names: Vec<String>,
@@ -180,6 +186,13 @@ impl MockGithubService {
     /// Shorthand: configure check_pr_status to return the given status.
     pub fn will_return_status(&self, status: PrStatus) {
         self.state().check_pr_status_result = Some(Ok(status));
+    }
+
+    /// Shorthand: queue a sequence of check_pr_status statuses, returned in order
+    /// (e.g. `[Closed, Open]` to express "closed then reopened").
+    #[allow(dead_code)]
+    pub fn with_pr_status_sequence(&self, statuses: Vec<PrStatus>) {
+        self.state().check_pr_status_queue = statuses.into_iter().map(Ok).collect();
     }
 
     /// Shorthand: configure check_pr_sync_state to return the given state.
@@ -429,6 +442,9 @@ impl GithubServiceTrait for MockGithubService {
         let mut s = self.state.lock().expect("lock poisoned");
         s.check_pr_status_calls += 1;
         s.last_check_pr_status_number = Some(pr_number);
+        if let Some(result) = s.check_pr_status_queue.pop_front() {
+            return result;
+        }
         s.check_pr_status_result
             .take()
             .unwrap_or(Ok(PrStatus::Open))
@@ -719,6 +735,13 @@ impl GithubServiceTrait for MockGithubService {
         s.close_pr_calls += 1;
         s.last_close_pr_number = Some(pr_number);
         s.close_pr_result.take().unwrap_or(Ok(()))
+    }
+
+    async fn reopen_pr(&self, _working_dir: &Path, pr_number: i64) -> AppResult<()> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.reopen_pr_calls += 1;
+        s.last_reopen_pr_number = Some(pr_number);
+        s.reopen_pr_result.take().unwrap_or(Ok(()))
     }
 
     async fn delete_remote_branch(&self, _working_dir: &Path, branch: &str) -> AppResult<()> {

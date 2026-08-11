@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures::{stream, StreamExt as _};
-use tauri::{AppHandle, Emitter};
+use ralphx_events::EventSink;
 
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, resolve_valid_agent_conversation_workspace_path,
@@ -47,7 +47,7 @@ use crate::domain::services::{GithubServiceTrait, PrStatus as GithubPrStatus, Pr
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 
-const STARTUP_PR_SUPERVISION_RECOVERY_LIMIT: usize = 25;
+pub(crate) const STARTUP_PR_SUPERVISION_RECOVERY_LIMIT: usize = 25;
 const STARTUP_PR_SUPERVISION_RECOVERY_CONCURRENCY: usize = 4;
 const PR_SUPERVISION_RECOVERED_STEP: &str = "pr_supervision_recovered";
 const PR_SUPERVISION_RECOVERED_SUMMARY: &str =
@@ -93,14 +93,16 @@ pub(crate) enum AgentWorkspacePrSupervisionRecoveryTrigger {
     WorkspaceLoad,
     AgentRunCompleted,
     Startup,
+    PeriodicScan,
 }
 
 impl AgentWorkspacePrSupervisionRecoveryTrigger {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::WorkspaceLoad => "workspace_load",
             Self::AgentRunCompleted => "agent_run_completed",
             Self::Startup => "startup",
+            Self::PeriodicScan => "periodic_scan",
         }
     }
 }
@@ -115,7 +117,7 @@ pub(crate) struct AgentWorkspacePrSupervisionRecoveryDeps {
     pub transition_service: Option<Arc<TaskTransitionService>>,
     pub chat_service: Option<Arc<dyn ChatService>>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
-    pub app_handle: Option<AppHandle>,
+    pub events: Arc<dyn EventSink>,
     pub pr_fix_review_publish_resumer: Option<Arc<dyn AgentWorkspacePrFixReviewPublishResumer>>,
     /// Production recovery reuses AppState so one canonical durable repair reconciler owns
     /// legacy import, attempt fencing, and continuation settlement before PR supervision.
@@ -123,9 +125,28 @@ pub(crate) struct AgentWorkspacePrSupervisionRecoveryDeps {
     pub durable_recovery_state: Option<Arc<AppState>>,
 }
 
+#[derive(Clone)]
+pub(crate) struct AgentWorkspacePrSupervisionRuntime {
+    pub transition_service: Arc<TaskTransitionService>,
+    pub chat_service: Arc<dyn ChatService>,
+}
+
+impl AgentWorkspacePrSupervisionRuntime {
+    pub(crate) fn from_state(
+        state: &AppState,
+        execution_state: Arc<crate::application::app_state::ApplicationExecutionState>,
+    ) -> Self {
+        Self {
+            transition_service: Arc::new(
+                state.build_transition_service_with_execution_state(Arc::clone(&execution_state)),
+            ),
+            chat_service: Arc::new(state.build_chat_service_with_execution_state(execution_state)),
+        }
+    }
+}
+
 pub(crate) fn build_agent_workspace_pr_supervision_recovery_deps(
     state: &AppState,
-    app_handle: Option<AppHandle>,
     transition_service: Option<Arc<TaskTransitionService>>,
     chat_service: Option<Arc<dyn ChatService>>,
     pr_fix_review_publish_resumer: Option<Arc<dyn AgentWorkspacePrFixReviewPublishResumer>>,
@@ -140,7 +161,7 @@ pub(crate) fn build_agent_workspace_pr_supervision_recovery_deps(
         transition_service,
         chat_service,
         agent_run_repo: Arc::clone(&state.agent_run_repo),
-        app_handle,
+        events: Arc::clone(&state.events),
         pr_fix_review_publish_resumer,
         durable_recovery_state: Some(Arc::new(state.clone())),
     })
@@ -191,7 +212,7 @@ pub(crate) fn schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps(
     trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
     force: bool,
 ) {
-    if !claim_recovery(&conversation_id, force) {
+    if !claim_recovery(&conversation_id, trigger, force) {
         tracing::debug!(
             conversation_id = conversation_id.as_str(),
             trigger = trigger.as_str(),
@@ -229,6 +250,67 @@ pub(crate) fn schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps(
             ),
         }
     });
+}
+
+/// Durable-only reconciliation, shared by GitHub and non-GitHub projects alike: it reuses the
+/// same `claim_recovery`/`InFlightRecoveryClaim` dedupe as PR supervision recovery so
+/// selection-driven, run-completion, and periodic-scan triggers cannot double-fire against the
+/// same conversation, but it never touches the PR-supervision path itself.
+pub(crate) fn schedule_agent_workspace_durable_repair_reconciliation(
+    state: AppState,
+    conversation_id: ChatConversationId,
+    trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
+    force: bool,
+) {
+    if !claim_recovery(&conversation_id, trigger, force) {
+        tracing::debug!(
+            conversation_id = conversation_id.as_str(),
+            trigger = trigger.as_str(),
+            "Agent workspace durable repair reconciliation skipped before scheduling"
+        );
+        return;
+    }
+
+    tokio::spawn(async move {
+        let _claim = InFlightRecoveryClaim {
+            conversation_id: conversation_id.clone(),
+        };
+        let started = Instant::now();
+        match recover_agent_workspace_durable_repair_reconciliation(&state, &conversation_id).await
+        {
+            Ok(()) => tracing::info!(
+                conversation_id = conversation_id.as_str(),
+                trigger = trigger.as_str(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "Agent workspace durable repair reconciliation completed"
+            ),
+            Err(error) => tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                trigger = trigger.as_str(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                error = %error,
+                "Agent workspace durable repair reconciliation failed"
+            ),
+        }
+    });
+}
+
+/// Core of the durable-only reconciliation, split out so tests can race it directly against
+/// `recover_agent_workspace_repair_attempts_for_state` without going through the fire-and-forget
+/// scheduling wrapper above.
+pub(crate) async fn recover_agent_workspace_durable_repair_reconciliation(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<()> {
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+    else {
+        return Ok(());
+    };
+    recover_stale_publish_repair_for_workspace_in_state(state, workspace).await?;
+    Ok(())
 }
 
 pub(crate) async fn recover_agent_workspace_pr_supervision(
@@ -431,7 +513,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                         None,
                     ))
                     .await?;
-                emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
+                emit_workspace_changed(deps.events.as_ref(), &conversation_id);
                 let terminalized = terminalize_agent_workspace_after_pr(
                     Arc::clone(&deps.workspace_repo),
                     Arc::clone(&deps.agent_run_repo),
@@ -493,7 +575,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
                 None,
             ))
             .await?;
-        emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
+        emit_workspace_changed(deps.events.as_ref(), &conversation_id);
         let terminalized = terminalize_agent_workspace_after_pr(
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
@@ -578,7 +660,7 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             )),
         ))
         .await?;
-    emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
+    emit_workspace_changed(deps.events.as_ref(), &conversation_id);
 
     start_recovered_pr_polling(&deps, &conversation_id, &project, &target);
 
@@ -627,7 +709,7 @@ async fn resume_passed_pr_fix_review_handoff_if_ready(
             let Some(pr_number) = workspace.publication_pr_number else {
                 return Ok(None);
             };
-            emit_workspace_changed(deps.app_handle.as_ref(), conversation_id);
+            emit_workspace_changed(deps.events.as_ref(), conversation_id);
             Ok(Some(
                 AgentWorkspacePrSupervisionRecoveryOutcome::ReviewPublished { pr_number },
             ))
@@ -638,7 +720,7 @@ async fn resume_passed_pr_fix_review_handoff_if_ready(
                 error = %error,
                 "Agent workspace PR supervision recovery failed to resume passed Workspace Review publish handoff"
             );
-            emit_workspace_changed(deps.app_handle.as_ref(), conversation_id);
+            emit_workspace_changed(deps.events.as_ref(), conversation_id);
             Ok(Some(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
                 "pr_fix_review_publish_failed",
             )))
@@ -897,28 +979,48 @@ pub(crate) async fn recover_recent_agent_workspace_pr_supervision_on_startup(
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let started = Instant::now();
-    let workspaces = match list_pr_supervision_recovery_candidates(&deps).await {
-        Ok(workspaces) => workspaces,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "Agent workspace PR supervision startup recovery failed to list candidates"
-            );
-            return;
-        }
-    };
+    let (exempt_workspaces, capped_workspaces) =
+        match list_startup_pr_supervision_recovery_batches(&deps).await {
+            Ok(batches) => batches,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Agent workspace PR supervision startup recovery failed to list candidates"
+                );
+                return;
+            }
+        };
 
-    let candidate_count = workspaces.len();
+    let candidate_count = exempt_workspaces.len() + capped_workspaces.len();
     if candidate_count == 0 {
         tracing::debug!("Agent workspace PR supervision startup recovery found no candidates");
         return;
     }
 
     let deps = Arc::new(deps);
+    // Unsettled repair attempts are real in-flight work and must never be silently dropped by
+    // the pure-poller cap, so they run first and uncapped before the capped budget is spent.
+    run_startup_pr_supervision_recovery_batch(&deps, &blocked_git_project_ids, exempt_workspaces)
+        .await;
+    run_startup_pr_supervision_recovery_batch(&deps, &blocked_git_project_ids, capped_workspaces)
+        .await;
+
+    tracing::info!(
+        candidate_count,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "Agent workspace PR supervision startup recovery completed"
+    );
+}
+
+async fn run_startup_pr_supervision_recovery_batch(
+    deps: &Arc<AgentWorkspacePrSupervisionRecoveryDeps>,
+    blocked_git_project_ids: &Arc<HashSet<ProjectId>>,
+    workspaces: Vec<AgentConversationWorkspace>,
+) {
     stream::iter(workspaces)
         .for_each_concurrent(STARTUP_PR_SUPERVISION_RECOVERY_CONCURRENCY, |workspace| {
-            let deps = Arc::clone(&deps);
-            let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
+            let deps = Arc::clone(deps);
+            let blocked_git_project_ids = Arc::clone(blocked_git_project_ids);
             async move {
                 if blocked_git_project_ids.contains(&workspace.project_id) {
                     tracing::info!(
@@ -929,7 +1031,11 @@ pub(crate) async fn recover_recent_agent_workspace_pr_supervision_on_startup(
                     return;
                 }
                 let conversation_id = workspace.conversation_id.clone();
-                if !claim_recovery(&conversation_id, true) {
+                if !claim_recovery(
+                    &conversation_id,
+                    AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
+                    true,
+                ) {
                     return;
                 }
                 let result = recover_agent_workspace_pr_supervision(
@@ -954,12 +1060,59 @@ pub(crate) async fn recover_recent_agent_workspace_pr_supervision_on_startup(
             }
         })
         .await;
+}
 
-    tracing::info!(
-        candidate_count,
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        "Agent workspace PR supervision startup recovery completed"
-    );
+/// Splits startup PR-supervision candidates into an uncapped exempt batch (workspaces with an
+/// unsettled durable repair attempt, bounded only by real in-flight work) and the existing
+/// capped pure-poller batch, with the exempt conversation ids removed from the capped batch so
+/// no workspace is recovered twice. `pub(crate)` for direct assertions in tests.
+pub(crate) async fn list_startup_pr_supervision_recovery_batches(
+    deps: &AgentWorkspacePrSupervisionRecoveryDeps,
+) -> AppResult<(
+    Vec<AgentConversationWorkspace>,
+    Vec<AgentConversationWorkspace>,
+)> {
+    let exempt = list_unsettled_repair_startup_recovery_candidates(deps).await?;
+    let exempt_ids: HashSet<ChatConversationId> = exempt
+        .iter()
+        .map(|workspace| workspace.conversation_id)
+        .collect();
+    let capped = list_pr_supervision_recovery_candidates(deps)
+        .await?
+        .into_iter()
+        .filter(|workspace| !exempt_ids.contains(&workspace.conversation_id))
+        .collect();
+    Ok((exempt, capped))
+}
+
+/// Uncapped: every workspace with an unsettled durable repair attempt. `durable_recovery_state`
+/// is `None` only in focused legacy-compatibility tests, where the exempt set is intentionally
+/// empty and startup recovery falls back to the pre-existing capped behavior.
+async fn list_unsettled_repair_startup_recovery_candidates(
+    deps: &AgentWorkspacePrSupervisionRecoveryDeps,
+) -> AppResult<Vec<AgentConversationWorkspace>> {
+    let Some(state) = deps.durable_recovery_state.as_deref() else {
+        return Ok(Vec::new());
+    };
+    let attempts = state
+        .agent_workspace_repair_repo
+        .list_recoverable_repair_attempts()
+        .await?;
+    let mut seen = HashSet::new();
+    let mut workspaces = Vec::with_capacity(attempts.len());
+    for attempt in attempts {
+        if !seen.insert(attempt.conversation_id) {
+            continue;
+        }
+        if let Some(workspace) = deps
+            .workspace_repo
+            .get_by_conversation_id(&attempt.conversation_id)
+            .await?
+        {
+            workspaces.push(workspace);
+        }
+    }
+    Ok(workspaces)
 }
 
 async fn list_pr_supervision_recovery_candidates(
@@ -1129,23 +1282,33 @@ fn terminal_pr_recovery_summary(pr_status: &str) -> &'static str {
     }
 }
 
-fn emit_workspace_changed(app_handle: Option<&AppHandle>, conversation_id: &ChatConversationId) {
-    if let Some(handle) = app_handle {
-        let _ = handle.emit(
-            "agent:workspace_changed",
-            serde_json::json!({ "conversation_id": conversation_id.as_str() }),
-        );
-    }
+fn emit_workspace_changed(events: &dyn EventSink, conversation_id: &ChatConversationId) {
+    let _ = ralphx_events::emit_serialized(
+        events,
+        "agent:workspace_changed",
+        &serde_json::json!({ "conversation_id": conversation_id.as_str() }),
+    );
 }
 
-fn claim_recovery(conversation_id: &ChatConversationId, force: bool) -> bool {
+fn claim_recovery(
+    conversation_id: &ChatConversationId,
+    trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
+    force: bool,
+) -> bool {
     let key = conversation_id.as_str();
     let in_flight = IN_FLIGHT_RECOVERIES.get_or_init(DashMap::new);
     if !force {
         let ttl = recovery_cache_ttl();
         if !ttl.is_zero() {
             if let Some(last_checked) = RECENT_RECOVERIES.get_or_init(DashMap::new).get(&key) {
-                if last_checked.elapsed() < ttl {
+                let elapsed = last_checked.elapsed();
+                if elapsed < ttl {
+                    tracing::debug!(
+                        conversation_id = conversation_id.as_str(),
+                        trigger = trigger.as_str(),
+                        remaining_ttl_ms = (ttl - elapsed).as_millis() as u64,
+                        "Agent workspace PR supervision recovery claim suppressed by TTL"
+                    );
                     return false;
                 }
             }

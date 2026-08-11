@@ -1,12 +1,16 @@
+use std::sync::Arc;
+
 use crate::application::AppState;
 use crate::commands::agent_conversation_mute_commands::{
     set_agent_conversation_muted_for_app_state, SetAgentConversationMutedInput,
 };
+use crate::commands::ExecutionState;
 use crate::domain::entities::ChatConversation;
 
 #[tokio::test]
 async fn mute_command_persists_current_fingerprint_then_unmute_clears_it() {
     let state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
     let conversation = state
         .chat_conversation_repo
         .create(ChatConversation::new_standalone())
@@ -19,6 +23,7 @@ async fn mute_command_persists_current_fingerprint_then_unmute_clears_it() {
             muted: true,
         },
         &state,
+        &execution_state,
     )
     .await
     .expect("mute should persist");
@@ -35,6 +40,7 @@ async fn mute_command_persists_current_fingerprint_then_unmute_clears_it() {
             muted: false,
         },
         &state,
+        &execution_state,
     )
     .await
     .expect("unmute should clear");
@@ -48,12 +54,15 @@ async fn mute_command_persists_current_fingerprint_then_unmute_clears_it() {
 
 #[tokio::test]
 async fn mute_command_rejects_unknown_conversation() {
+    let state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
     let error = set_agent_conversation_muted_for_app_state(
         SetAgentConversationMutedInput {
             conversation_id: uuid::Uuid::new_v4().to_string(),
             muted: true,
         },
-        &AppState::new_test(),
+        &state,
+        &execution_state,
     )
     .await
     .expect_err("unknown conversation cannot be muted");

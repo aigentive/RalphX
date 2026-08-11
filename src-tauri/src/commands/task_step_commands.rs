@@ -1,7 +1,8 @@
 // Tauri commands for TaskStep CRUD operations
 // Thin layer that delegates to TaskStepRepository
 
-use tauri::{Emitter, State};
+use ralphx_events::emit_serialized;
+use tauri::State;
 
 use crate::application::AppState;
 use crate::domain::entities::{StepProgressSummary, TaskId, TaskStep, TaskStepId};
@@ -14,16 +15,15 @@ pub use super::task_step_commands_types::{
 
 /// Emit step:updated event to frontend
 fn emit_step_updated(state: &AppState, step: &TaskStep) {
-    if let Some(app_handle) = &state.app_handle {
-        let response = TaskStepResponse::from(step.clone());
-        let _ = app_handle.emit(
-            "step:updated",
-            serde_json::json!({
-                "step": response,
-                "task_id": step.task_id.as_str()
-            }),
-        );
-    }
+    let response = TaskStepResponse::from(step.clone());
+    let _ = emit_serialized(
+        state.events.as_ref(),
+        "step:updated",
+        &serde_json::json!({
+            "step": response,
+            "task_id": step.task_id.as_str()
+        }),
+    );
 }
 
 /// Create a new task step

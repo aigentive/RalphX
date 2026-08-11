@@ -1159,7 +1159,14 @@ fn send_agent_message_rejects_team_flip_for_project_persona_builder() {
 
 #[tokio::test]
 async fn update_coordination_mode_rejects_builder_and_allows_project_chat() {
-    let state = AppState::new_test();
+    use ralphx_lib::application::managed_team::ManagedTeamService;
+    use ralphx_lib::infrastructure::memory::{
+        MemoryQueuedMessageRepository, MemoryTeamCoordinationTransitionRepository,
+        MemoryTeamMessageRepository, MemoryTeamRepository, MemoryTeamRunBindingRepository,
+        MemoryTeamWakeBatchRepository, MemoryTeamWorkspaceReservationRepository,
+    };
+
+    let mut state = AppState::new_test();
     state.agent_capability_gate.replace(
         ralphx_lib::application::agent_capability_gate::AgentCapabilities {
             team: true,
@@ -1167,6 +1174,24 @@ async fn update_coordination_mode_rejects_builder_and_allows_project_chat() {
             autopilot: false,
         },
     );
+    // Share managed Team repositories with the chat conversation repo so the
+    // staged-exit path below observes the same conversation/session graph
+    // that the command reads and writes.
+    let sessions = MemoryTeamRepository::new_shared_sessions();
+    state.managed_team = Arc::new(ManagedTeamService::new(
+        Arc::new(MemoryTeamRepository::with_sessions(Arc::clone(&sessions))),
+        Arc::new(MemoryTeamCoordinationTransitionRepository::with_sessions(
+            sessions,
+        )),
+        Arc::new(MemoryTeamRunBindingRepository::new()),
+        Arc::new(MemoryTeamMessageRepository::new()),
+        Arc::new(MemoryTeamWakeBatchRepository::new()),
+        Arc::new(MemoryQueuedMessageRepository::new()),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_run_repo),
+        Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
+        Arc::clone(&state.ui_feature_flag_overrides_repo),
+    ));
     let project_id = ProjectId::from_string("project-coordination-builder-guard".to_string());
     let mut builder = ChatConversation::new_project(project_id.clone());
     builder.set_agent_mode(Some(AgentConversationWorkspaceMode::PersonaBuilder));
@@ -1177,7 +1202,7 @@ async fn update_coordination_mode_rejects_builder_and_allows_project_chat() {
         .expect("builder conversation should persist");
     let chat = state
         .chat_conversation_repo
-        .create(ChatConversation::new_project(project_id))
+        .create(ChatConversation::new_project(project_id.clone()))
         .await
         .expect("chat conversation should persist");
     let app = tauri::test::mock_builder()
@@ -1216,6 +1241,152 @@ async fn update_coordination_mode_rejects_builder_and_allows_project_chat() {
     .await
     .expect("Project chat coordination should still update");
     assert_eq!(response.coordination_mode, "rx_native_team");
+
+    // Regression pin (RX-TEAM-004): the dedicated command is the correct
+    // staged-exit caller and must still be able to leave Team mode after the
+    // chat_service send-path fail-closed guard landed. Open a real Team
+    // session first so the staged exit does real work, not a no-op.
+    let session = app
+        .state::<AppState>()
+        .managed_team
+        .ensure_team(project_id, &chat.id)
+        .await
+        .expect("Team session should open for the staged-exit regression pin");
+
+    let downgraded = update_agent_conversation_coordination_mode(
+        UpdateAgentConversationCoordinationModeInput {
+            conversation_id: chat.id.as_str(),
+            coordination_mode: "solo".to_string(),
+            model_override: None,
+        },
+        app.state(),
+    )
+    .await
+    .expect("staged Team exit through the dedicated command must still succeed");
+    assert_eq!(downgraded.coordination_mode, "solo");
+    let stored_chat = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&chat.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_chat.coordination_mode, CoordinationMode::Solo);
+    let exited_session = app
+        .state::<AppState>()
+        .managed_team
+        .team_repo()
+        .get_session(&session.id)
+        .await
+        .expect("Team session query should succeed")
+        .expect("Team session should remain as durable history");
+    assert_eq!(
+        exited_session.status,
+        ralphx_lib::domain::entities::TeamSessionStatus::Closed
+    );
+    assert!(
+        exited_session.pending_exit_action.is_some(),
+        "staged exit must record a pending_exit_action marker"
+    );
+}
+
+/// RX-TEAM-004 residual: a send-path rx_native replay on an existing Team
+/// conversation must not be rejected by the new capability-downgrade guard,
+/// and must still reach the managed Team coordinator run binding
+/// preallocation that happens later in `send_message`.
+#[cfg(unix)]
+#[tokio::test]
+async fn rx_native_team_send_replay_preallocates_coordinator_run_binding() {
+    use ralphx_lib::application::chat_service::{ChatService, SendMessageOptions};
+    use ralphx_lib::application::managed_team::ManagedTeamService;
+    use ralphx_lib::domain::entities::{AgentRunId, TeamIntent};
+    use ralphx_lib::infrastructure::memory::{
+        MemoryQueuedMessageRepository, MemoryTeamCoordinationTransitionRepository,
+        MemoryTeamMessageRepository, MemoryTeamRepository, MemoryTeamRunBindingRepository,
+        MemoryTeamWakeBatchRepository, MemoryTeamWorkspaceReservationRepository,
+    };
+
+    let mut state = AppState::new_test();
+    let sessions = MemoryTeamRepository::new_shared_sessions();
+    state.managed_team = Arc::new(ManagedTeamService::new(
+        Arc::new(MemoryTeamRepository::with_sessions(Arc::clone(&sessions))),
+        Arc::new(MemoryTeamCoordinationTransitionRepository::with_sessions(
+            sessions,
+        )),
+        Arc::new(MemoryTeamRunBindingRepository::new()),
+        Arc::new(MemoryTeamMessageRepository::new()),
+        Arc::new(MemoryTeamWakeBatchRepository::new()),
+        Arc::new(MemoryQueuedMessageRepository::new()),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_run_repo),
+        Arc::new(MemoryTeamWorkspaceReservationRepository::new()),
+        Arc::clone(&state.ui_feature_flag_overrides_repo),
+    ));
+    state
+        .ui_feature_flag_overrides_repo
+        .update_agent_capabilities(Some(true), None, None)
+        .await
+        .expect("enable the Team capability flag");
+
+    let project_dir = tempfile::tempdir().expect("project dir should be created");
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "RX Native Team Send".to_string(),
+            project_dir.path().to_string_lossy().to_string(),
+        ))
+        .await
+        .expect("project should persist");
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.coordination_mode = CoordinationMode::RxNativeTeam;
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("Team conversation should persist");
+    state
+        .managed_team
+        .ensure_team(project.id.clone(), &conversation.id)
+        .await
+        .expect("Team session should open");
+
+    let fake_cli = super::support::fake_claude::FakeClaude::new();
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    let service = app
+        .state::<AppState>()
+        .build_chat_service()
+        .with_managed_team(Arc::clone(&app.state::<AppState>().managed_team))
+        .with_cli_path(fake_cli.cli_path.clone())
+        .with_working_directory(project_dir.path());
+
+    let result = service
+        .send_message(
+            ChatContextType::Project,
+            project.id.as_str(),
+            "team status check",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation.id),
+                team_intent: Some(TeamIntent::rx_native(None)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("rx_native replay on an existing Team conversation must still succeed");
+
+    let agent_run_id = AgentRunId::from_string(result.agent_run_id);
+    let binding = app
+        .state::<AppState>()
+        .managed_team
+        .run_binding_repo()
+        .get_by_agent_run_id(&agent_run_id)
+        .await
+        .expect("binding lookup should succeed")
+        .expect("coordinator run binding must be preallocated for the Team send");
+    assert_eq!(binding.conversation_id, conversation.id);
 }
 
 #[tokio::test]
@@ -3004,13 +3175,15 @@ mod ipc_contract {
             .expect("agent run should fail");
         let app = mock_builder()
             .manage(state)
+            .manage(Arc::new(ExecutionState::new()))
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
-        let response = get_agent_conversation_workspace(conversation_id.as_str(), app.state())
-            .await
-            .expect("workspace response should load")
-            .expect("workspace response should exist");
+        let response =
+            get_agent_conversation_workspace(conversation_id.as_str(), app.state(), app.state())
+                .await
+                .expect("workspace response should load")
+                .expect("workspace response should exist");
 
         assert_eq!(
             response.publication_push_status.as_deref(),
@@ -3948,7 +4121,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect("chat-mode start should succeed");
@@ -4045,7 +4217,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect("PR-backed chat-mode start should succeed");
@@ -4197,7 +4368,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect("edit-mode start should succeed");
@@ -4700,7 +4870,6 @@ mod ipc_contract {
                 },
                 state.clone(),
                 fix.app.state::<Arc<ExecutionState>>(),
-                fix.app.handle().clone(),
             )
             .await
             .unwrap_or_else(|error| panic!("{mode} plan-reference start should succeed: {error}"));
@@ -4883,7 +5052,6 @@ mod ipc_contract {
             },
             state.clone(),
             fix.app.state::<Arc<ExecutionState>>(),
-            fix.app.handle().clone(),
         )
         .await
         .expect_err("Review PR start without PR metadata should fail early");
@@ -4958,7 +5126,6 @@ mod ipc_contract {
             },
             state,
             fix.app.state::<Arc<ExecutionState>>(),
-            fix.app.handle().clone(),
         )
         .await
         .expect_err("multiple plan references should fail closed");
@@ -5057,7 +5224,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect("existing linked workspace should not self-conflict");
@@ -5155,7 +5321,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect_err("linked branch conflict should fail before creating a new chat");
@@ -5247,7 +5412,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect_err("linked primary checkout should fail setup");
@@ -5338,7 +5502,6 @@ mod ipc_contract {
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),
-            app.handle().clone(),
         )
         .await
         .expect("plan-mode start should succeed");

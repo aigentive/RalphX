@@ -7,6 +7,7 @@ use ralphx_lib::commands::automation_commands::{
     AutomationIdInput, AutomationRunScopedInput, CreateAutomationDraftInput, ListAutomationsInput,
     PauseAutomationInput, UpdateAutomationSettingsInput,
 };
+use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
     AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
@@ -14,11 +15,13 @@ use ralphx_lib::domain::entities::{
 };
 use serde_json::{json, Value};
 use std::process::Command;
+use std::sync::Arc;
 use tauri::Manager;
 
 fn automation_command_app() -> tauri::App<tauri::test::MockRuntime> {
     tauri::test::mock_builder()
         .manage(AppState::new_test())
+        .manage(Arc::new(ExecutionState::new()))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app should build")
 }
@@ -266,6 +269,7 @@ async fn ipc_contract_automation_command_wrappers_drive_draft_listing_and_contro
             id: active.id.as_str().to_string(),
         },
         app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
     )
     .await
     .expect("resume should succeed");

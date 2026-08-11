@@ -238,4 +238,16 @@ async fn test_transition_delivery_cas() {
         actionable.is_empty(),
         "queued deliveries are no longer actionable"
     );
+
+    let fetched = repo
+        .get_delivery(&id)
+        .await
+        .unwrap()
+        .expect("delivery exists");
+    assert_eq!(fetched.status, TeamMessageDeliveryStatus::Queued);
+    assert!(repo
+        .get_delivery(&TeamMessageDeliveryId::from_string("missing"))
+        .await
+        .unwrap()
+        .is_none());
 }

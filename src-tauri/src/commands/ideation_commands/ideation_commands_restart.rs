@@ -5,7 +5,8 @@ use std::sync::{Arc, OnceLock};
 
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
-use tauri::{Emitter, Manager, State};
+use ralphx_events::emit_serialized;
+use tauri::{Manager, State};
 
 use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::task_cleanup_service::StopMode;
@@ -680,7 +681,7 @@ pub async fn restart_ideation_implementation_core(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.project_repo),
         Arc::clone(&app_state.running_agent_registry),
-        None,
+        Arc::clone(&app_state.events),
     )
     .with_interactive_process_registry(Arc::clone(&app_state.interactive_process_registry));
     let preserved_branch = linked_plan_branch_context
@@ -893,16 +894,18 @@ pub async fn restart_ideation_implementation(
         .map_err(|error| error.to_string())?;
 
     let project_id = ProjectId::from_string(result.project_id.clone());
-    let _ = app.emit(
+    let _ = emit_serialized(
+        state.events.as_ref(),
         "ideation:session_accepted",
-        serde_json::json!({
+        &serde_json::json!({
             "sessionId": result.session_id,
             "projectId": result.project_id,
         }),
     );
-    let _ = app.emit(
+    let _ = emit_serialized(
+        state.events.as_ref(),
         "task:list_changed",
-        serde_json::json!({
+        &serde_json::json!({
             "projectId": project_id.as_str(),
         }),
     );
