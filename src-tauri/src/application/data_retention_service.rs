@@ -380,6 +380,7 @@ impl DataRetentionService {
     }
 
     async fn pause_between_batches(&self, batches: u64) {
+        #[allow(unknown_lints, clippy::manual_is_multiple_of)]
         if self.tuning.checkpoint_batches != 0 && batches % self.tuning.checkpoint_batches == 0 {
             self.checkpoint().await;
         }
