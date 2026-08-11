@@ -17,17 +17,17 @@ use crate::domain::entities::{
 use crate::domain::services::github_service::PrStatus as RemotePrStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EffectivePrSource {
+pub(crate) enum EffectivePrSource {
     PlanBranch,
     Workspace,
 }
 
 #[derive(Debug, Clone)]
-struct EffectivePrTarget {
-    number: i64,
-    url: Option<String>,
-    source: EffectivePrSource,
-    is_open: bool,
+pub(crate) struct EffectivePrTarget {
+    pub(crate) number: i64,
+    pub(crate) url: Option<String>,
+    pub(crate) source: EffectivePrSource,
+    pub(crate) is_open: bool,
 }
 
 /// Archive an agent conversation and clean up linked ideation execution state.
@@ -432,7 +432,7 @@ async fn close_remote_pr(
         .map_err(|error| format!("{operation}: failed to close remote PR #{pr_number}: {error}"))
 }
 
-async fn load_linked_plan_branch_for_pr(
+pub(crate) async fn load_linked_plan_branch_for_pr(
     workspace: &AgentConversationWorkspace,
     state: &AppState,
 ) -> Result<Option<PlanBranch>, String> {
@@ -451,7 +451,7 @@ async fn load_linked_plan_branch_for_pr(
         .map_err(|e| e.to_string())
 }
 
-fn resolve_effective_pr(
+pub(crate) fn resolve_effective_pr(
     workspace: &AgentConversationWorkspace,
     linked_plan_branch: Option<&PlanBranch>,
 ) -> Option<EffectivePrTarget> {

@@ -53,6 +53,10 @@ pub mod agent_workspace_local_commit;
 mod agent_workspace_local_commit_tests;
 pub mod agent_workspace_continuation;
 pub mod agent_workspace_external_pr_reconciliation;
+pub(crate) mod agent_workspace_pr_reopen;
+pub(crate) mod agent_workspace_pr_reopen_restore;
+#[cfg(test)]
+mod agent_workspace_pr_reopen_tests;
 pub mod agent_workspace_publication_reconciliation;
 pub(crate) mod agent_workspace_pr_autofix_attempt;
 #[cfg(test)]

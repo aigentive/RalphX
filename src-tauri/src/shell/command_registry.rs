@@ -430,6 +430,7 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::commit_agent_conversation_workspace_locally,
             commands::unified_chat_commands::precompute_agent_conversation_workspace_pr_description,
             commands::unified_chat_commands::close_agent_workspace_pr,
+            commands::unified_chat_commands::reopen_agent_workspace_pr,
             commands::unified_chat_commands::create_agent_conversation,
             commands::unified_chat_commands::update_agent_conversation_coordination_mode,
             commands::unified_chat_commands::update_agent_conversation_title,

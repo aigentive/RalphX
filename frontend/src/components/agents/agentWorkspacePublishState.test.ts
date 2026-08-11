@@ -146,6 +146,7 @@ describe("maintenance operation presentation", () => {
     source: "base_update" as const,
     stage: "repairing" as const,
     status: "active" as const,
+    recoveryAction: "none" as const,
     summary: "Resolving the base conflict",
     blocker: null,
     holdReason: null,
@@ -204,6 +205,7 @@ describe("maintenance operation presentation", () => {
         ...maintenanceOperation,
         stage: "ready",
         status: "ready",
+        recoveryAction: "resume_publish",
         automaticContinuation: false,
       },
     });
@@ -212,6 +214,7 @@ describe("maintenance operation presentation", () => {
         ...maintenanceOperation,
         stage: "blocked",
         status: "blocked",
+        recoveryAction: "retry_repair",
         blocker: "Resolve the protected branch policy.",
       },
     });
@@ -225,6 +228,24 @@ describe("maintenance operation presentation", () => {
       title: "Repair blocked",
       summary: "Resolve the protected branch policy.",
       action: "retry",
+    });
+  });
+
+  it("does not invent a recovery action for a non-retryable blocked operation", () => {
+    const blocked = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        stage: "blocked",
+        status: "blocked",
+        blocker: "Wait for backend recovery.",
+      },
+    });
+
+    expect(canResumeAgentWorkspacePublish(blocked)).toBe(false);
+    expect(getAgentWorkspaceMaintenancePresentation(blocked)).toMatchObject({
+      title: "Repair blocked",
+      action: "none",
+      busy: false,
     });
   });
 

@@ -1936,5 +1936,6 @@ async fn workspace_response_projects_only_the_unsettled_maintenance_operation() 
     assert_eq!(operation.generation, attempt.generation);
     assert_eq!(operation.stage.to_string(), "updating_base");
     assert_eq!(operation.status.to_string(), "active");
+    assert_eq!(operation.recovery_action.to_string(), "none");
     assert!(operation.automatic_continuation);
 }

@@ -30,6 +30,7 @@ import {
   type AgentConversationWorkspace,
   type AgentConversationWorkspacePublicationEvent,
   type AgentWorkspaceReviewContext,
+  type ReopenAgentWorkspacePrResult,
 } from "@/api/chat";
 import type {
   Commit as DiffViewerCommit,
@@ -685,6 +686,43 @@ export function AgentPublishPanel({
       );
     },
   });
+  const reopenPrMutation = useMutation<ReopenAgentWorkspacePrResult, Error, boolean>({
+    mutationFn: (reopenOnGithub) =>
+      chatApi.reopenAgentWorkspacePr(conversationId!, reopenOnGithub),
+    onSuccess: (result) => {
+      if (result.outcome === "confirmation_required") {
+        void confirm({
+          title: "Reopen pull request on GitHub?",
+          description: `GitHub reports PR #${result.prNumber} is still closed. Do you want to reopen it on GitHub?`,
+          confirmText: "Reopen on GitHub",
+          pendingText: "Reopening...",
+          onConfirm: () => reopenPrMutation.mutateAsync(true),
+        });
+        return; // confirmation_required writes NO cache — nothing changed server-side
+      }
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(result.workspace.conversationId),
+        result.workspace,
+      );
+      void invalidateWorkspaceQueries(queryClient, result.workspace.conversationId);
+      if (result.outcome === "already_merged") {
+        toast.info(result.message);
+      } else if (result.localWorkspace === "restore_failed") {
+        // The PR reopened, but the local checkout could not be rebuilt from origin.
+        toast.warning(result.message);
+      } else {
+        toast.success(result.message);
+      }
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to reopen pull request",
+      );
+    },
+  });
+  const reopenPr = (reopenOnGithub: boolean) => {
+    reopenPrMutation.mutate(reopenOnGithub);
+  };
   const heldRepairMutationOptions = {
     onError: (error: Error) => {
       toast.error(error.message);
@@ -1094,6 +1132,12 @@ export function AgentPublishPanel({
     !isMaintenanceActive &&
     !terminalPublicationStatus;
   const isClosingPr = closePrMutation.isPending;
+  const canReopenPr =
+    hasPublishedPr &&
+    terminalPublicationStatus === "closed" &&
+    !isRepairPending &&
+    !isMaintenanceActive;
+  const isReopeningPr = reopenPrMutation.isPending;
   const shouldShowPublishNotices = !isRepairPending && !maintenancePresentation;
   const canConfigurePrSupervision =
     shouldShowPrSupervisionControls &&
@@ -1540,7 +1584,7 @@ export function AgentPublishPanel({
                     )}
                     Re-check PR health
                   </Button>
-                ) : maintenancePresentation?.action === "none" ? (
+                ) : maintenancePresentation?.action === "none" && maintenancePresentation.busy ? (
                 <Button
                   type="button"
                   variant="ghost"
@@ -1552,7 +1596,7 @@ export function AgentPublishPanel({
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   {maintenancePresentation.title}
                 </Button>
-              ) : maintenancePresentation?.action === "retry" ? (
+              ) : maintenancePresentation?.action === "none" ? null : maintenancePresentation?.action === "retry" ? (
                 <Button
                   type="button"
                   className={primaryActionClassName}
@@ -1738,7 +1782,7 @@ export function AgentPublishPanel({
             }
             overflowAction={
               <>
-                {(canClosePr || isHeld) && (
+                {(canClosePr || isHeld || canReopenPr) && (
                   <DropdownMenu>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -1747,11 +1791,11 @@ export function AgentPublishPanel({
                           type="button"
                           variant="ghost"
                           className="h-9 w-7 p-0 border-0 bg-transparent hover:bg-[var(--bg-hover)]"
-                          disabled={isClosingPr || effectivePublishing}
+                          disabled={isClosingPr || isReopeningPr || effectivePublishing}
                           aria-label="Publish actions"
                           data-testid="agents-publish-actions-menu"
                         >
-                          {isClosingPr ? (
+                          {isClosingPr || isReopeningPr ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                           ) : (
                             <MoreVertical className="h-3.5 w-3.5" />
@@ -1771,17 +1815,32 @@ export function AgentPublishPanel({
                         Commit &amp; Publish
                       </DropdownMenuItem>
                     )}
-                    <DropdownMenuItem
-                      data-testid="agents-close-pr"
-                      onSelect={(event) => {
-                        event.preventDefault();
-                        confirmClosePr();
-                      }}
-                      disabled={isClosingPr || effectivePublishing}
-                    >
-                      <XCircle className="h-3.5 w-3.5" />
-                      Close PR
-                    </DropdownMenuItem>
+                    {canClosePr && (
+                      <DropdownMenuItem
+                        data-testid="agents-close-pr"
+                        onSelect={(event) => {
+                          event.preventDefault();
+                          confirmClosePr();
+                        }}
+                        disabled={isClosingPr || effectivePublishing}
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                        Close PR
+                      </DropdownMenuItem>
+                    )}
+                    {canReopenPr && (
+                      <DropdownMenuItem
+                        data-testid="agents-reopen-pr"
+                        onSelect={(event) => {
+                          event.preventDefault();
+                          reopenPr(false);
+                        }}
+                        disabled={isReopeningPr || effectivePublishing}
+                      >
+                        <GitPullRequestArrow className="h-3.5 w-3.5" />
+                        Reopen PR
+                      </DropdownMenuItem>
+                    )}
                   </DropdownMenuContent>
                   </DropdownMenu>
                 )}

@@ -661,6 +661,12 @@ pub trait GithubServiceTrait: Send + Sync {
     /// Close (without merging) a pull request.
     async fn close_pr(&self, working_dir: &Path, pr_number: i64) -> AppResult<()>;
 
+    /// Reopen a closed pull request.
+    ///
+    /// # Errors
+    /// Returns an error when the `gh` invocation fails or the PR cannot be reopened.
+    async fn reopen_pr(&self, working_dir: &Path, pr_number: i64) -> AppResult<()>;
+
     /// Delete a remote branch. Already-deleted branches are treated as no-op.
     async fn delete_remote_branch(&self, working_dir: &Path, branch: &str) -> AppResult<()>;
 
