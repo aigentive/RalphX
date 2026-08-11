@@ -38,7 +38,10 @@ export class AgentsChatPage extends BasePage {
   async seedConversation(conversationId: string, empty = false, messagePairs = 1): Promise<void> {
     await this.page.evaluate(async ({ id, isEmpty, pairCount }) => {
       const projectId = "project-mock-1";
-      const createdAt = "2026-08-04T12:00:00.000Z";
+      // Seed relative to now, like the other inbox fixtures. A fixed timestamp
+      // silently ages past the inbox stale cutoff, which moves the seeded row
+      // out of Recent into the Stale tab and hides it from the specs.
+      const createdAt = new Date().toISOString();
       const conversation = {
         id, contextType: "project", contextId: projectId, claudeSessionId: null,
         providerSessionId: `thread-${id}`, providerHarness: "codex",
