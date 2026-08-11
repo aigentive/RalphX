@@ -103,11 +103,11 @@ style={{ boxShadow: "none", outline: "none" }}
 ```
 
 ## Key Features
-- **Active Plan** — Project-scoped plan filtering for Graph/Kanban. Docs: `docs/features/active-plan.md` | `docs/architecture/active-plan-api.md`
-- **Session Recovery** — Expired Claude session recovery with history preservation. Docs: `docs/features/session-recovery.md`
-- **Plan Verification** — Automated adversarial review loop for ideation plans. Docs: `docs/features/plan-verification.md` | Architecture: `.claude/rules/ideation-verification-architecture.md`
-- **Agent Personas** — Conversation-bound prompt-only behavior profiles for Project Agent conversations. Docs: `docs/features/agent-personas.md`
-- **Atlassian MCP Access** — Role-tiered Jira/Confluence tools reusing the Atlassian integration credentials. Docs: `docs/features/atlassian-mcp-access.md`
+- **Active Plan** — Project-scoped plan filtering for Graph/Kanban. `docs/features/active-plan.md` | `docs/architecture/active-plan-api.md`
+- **Session Recovery** — Expired Claude sessions, history preserved. `docs/features/session-recovery.md`
+- **Plan Verification** — Adversarial review loop for ideation plans. `docs/features/plan-verification.md` | `.claude/rules/ideation-verification-architecture.md`
+- **Agent Personas** — Conversation-bound prompt-only profiles. `docs/features/agent-personas.md`
+- **Atlassian MCP Access** — Role-tiered Jira/Confluence tools. `docs/features/atlassian-mcp-access.md`
 
 ## Git Conventions
 ❌ git init/push/remotes | Prefixes: `docs:` | `feat:` | `fix:` | `chore:`
