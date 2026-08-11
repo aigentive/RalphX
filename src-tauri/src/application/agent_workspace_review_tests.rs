@@ -6731,6 +6731,13 @@ async fn degraded_settlement_passes_gate_without_arming_auto_merge() {
     assert!(monitor.last_error.is_none());
     // A timed-out reviewer must never trigger automatic publication.
     assert!(monitor.auto_merge_guard.is_none());
+    // Annotator dispatch runs inside settlement and cannot succeed against this test AppState.
+    // The settled gate above is the proof that a failed dispatch changes nothing.
+    assert_eq!(
+        monitor.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Passed,
+        "a failed annotator dispatch must leave the settled gate untouched"
+    );
 }
 
 /// The artifact write clears live blocking state, so degraded settlement has to restore a summary
@@ -7176,6 +7183,67 @@ async fn unchanged_file_annotations_carry_forward_to_the_new_artifact_version() 
     assert_eq!(current[0].path, "committed.rs");
     assert_eq!(current[0].diff_fingerprint, target.diff_fingerprint);
     assert_eq!(current[0].file_patch_hash.as_deref(), Some(live_hash.as_str()));
+}
+
+/// The annotator has no skip logic of its own: it works from the hunks the backend reports as
+/// uncovered. Carried rows must therefore make those hunks non-missing.
+#[tokio::test]
+async fn carried_annotations_cover_their_hunks_so_the_annotator_skips_them() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    seed_versioned_artifact_pair(&state, &workspace, &target).await;
+    let live_hash = crate::application::agent_workspace_review_diff::workspace_review_file_patch_hash(
+        &target,
+        "committed.rs",
+        crate::application::agent_workspace_review_diff::AgentWorkspaceReviewDiffSource::Committed,
+    )
+    .expect("file patch hash should compute");
+    let anchor = target
+        .review_packet
+        .hunk_anchors
+        .iter()
+        .find(|anchor| anchor.path == "committed.rs")
+        .cloned()
+        .expect("packet should carry an anchor for the changed file");
+    let mut carried = annotation_for(
+        &workspace,
+        &target,
+        "previous-artifact",
+        &anchor.path,
+        &anchor.source,
+        Some(&live_hash),
+    );
+    carried.hunk_header = anchor.hunk_header.clone();
+    carried.old_start = anchor.old_start;
+    carried.old_lines = anchor.old_lines;
+    carried.new_start = anchor.new_start;
+    carried.new_lines = anchor.new_lines;
+    state
+        .agent_conversation_workspace_repo
+        .replace_workspace_review_hunk_annotations(
+            &workspace.conversation_id,
+            &ArtifactId::from_string("previous-artifact"),
+            vec![carried],
+        )
+        .await
+        .expect("previous annotations should persist");
+
+    assert_eq!(
+        carry_forward_workspace_review_annotations(&state, &workspace, &target).await,
+        1
+    );
+
+    let current = carried_annotations(&state, &workspace).await;
+    let still_missing =
+        crate::http_server::handlers::agent_workspaces::missing_workspace_review_hunk_anchors_for_test(
+            &target, &current,
+        );
+    assert!(
+        !still_missing
+            .iter()
+            .any(|missing| missing.path == anchor.path
+                && missing.hunk_header == anchor.hunk_header),
+        "a carried annotation should make its hunk non-missing"
+    );
 }
 
 /// The base-move trap: a changed per-file patch must never carry, no matter what a head-delta

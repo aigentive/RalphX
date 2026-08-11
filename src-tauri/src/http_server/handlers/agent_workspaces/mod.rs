@@ -4950,6 +4950,16 @@ fn missing_workspace_review_hunk_anchors(
         .collect()
 }
 
+/// Test seam for the annotator's work-list contract: carried-forward annotations must make their
+/// hunks non-missing, which is what lets the annotator skip them without any skip logic.
+#[doc(hidden)]
+pub fn missing_workspace_review_hunk_anchors_for_test(
+    target: &AgentWorkspaceReviewTarget,
+    annotations: &[AgentWorkspaceReviewHunkAnnotation],
+) -> Vec<AgentWorkspaceReviewHunkAnchor> {
+    missing_workspace_review_hunk_anchors(target, annotations)
+}
+
 fn workspace_review_completion_requires_hunk_coverage(_outcome: Option<&str>) -> bool {
     false
 }
