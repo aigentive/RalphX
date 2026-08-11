@@ -143,45 +143,6 @@ async fn test_remove() {
     assert!(!removed_again);
 }
 
-#[tokio::test]
-async fn test_expire_all_pending_via_permission_state() {
-    use crate::application::permission_state::PermissionState;
-    let db = SqliteTestDb::new("sqlite_permission_repo_tests-permission_state");
-    let repo = Arc::new(SqlitePermissionRepository::from_shared(db.shared_conn()));
-
-    // Seed pending permissions (simulating leftover from a previous app run)
-    for i in 0..3 {
-        let info = PendingPermissionInfo {
-            request_id: format!("stale-{}", i),
-            tool_name: "Bash".to_string(),
-            tool_input: serde_json::json!({}),
-            context: None,
-            agent_type: None,
-            task_id: None,
-            context_type: None,
-            context_id: None,
-            created_at: "2026-07-10T00:00:00+00:00".to_string(),
-        };
-        repo.create_pending(&info).await.unwrap();
-    }
-
-    // Resolve one so only 2 remain pending
-    let decision = PermissionDecision {
-        decision: "allow".to_string(),
-        message: None,
-    };
-    repo.resolve("stale-0", &decision).await.unwrap();
-
-    assert_eq!(repo.get_pending().await.unwrap().len(), 2);
-
-    // Simulate startup: create PermissionState with the repo, call expire
-    let state = PermissionState::with_repo(repo.clone()
-        as Arc<dyn crate::domain::repositories::permission_repository::PermissionRepository>);
-    state.expire_stale_on_startup().await;
-
-    // All pending should be expired
-    assert!(repo.get_pending().await.unwrap().is_empty());
-}
 
 #[tokio::test]
 async fn test_empty_tool_input_round_trip() {

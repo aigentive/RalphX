@@ -1,20 +1,5 @@
 // Ideation commands module - aggregates all ideation-related submodules
 
-use crate::domain::entities::TaskProposal;
-use std::path::{Path, PathBuf};
-
-/// Returns true if the proposal belongs to the local project (not a foreign cross-project proposal).
-/// Uses canonicalized path comparison with fallback to raw PathBuf.
-pub(crate) fn is_local_proposal(proposal: &TaskProposal, project_dir: &Path) -> bool {
-    match &proposal.target_project {
-        None => true,
-        Some(tp) => {
-            let tp_path = std::fs::canonicalize(tp).unwrap_or_else(|_| PathBuf::from(tp));
-            tp_path == project_dir
-        }
-    }
-}
-
 mod ideation_commands_agent_lanes;
 mod ideation_commands_append;
 mod ideation_commands_apply;
@@ -31,14 +16,19 @@ mod ideation_commands_restart;
 mod ideation_commands_session;
 mod ideation_commands_types;
 
+// Re-export types from application ideation_apply_service (descended from commands layer)
+pub use crate::application::ideation_apply_service::{
+    apply_pending_proposals_core, apply_proposals_core, ApplyProposalsInput,
+    ApplyProposalsResult, TaskProposalResponse,
+};
+pub(crate) use crate::application::ideation_apply_service::is_local_proposal;
+
 // Re-export all types
 pub use ideation_commands_types::*;
 
 // Re-export all commands
 pub use ideation_commands_agent_lanes::*;
 pub use ideation_commands_append::*;
-#[doc(hidden)]
-pub use ideation_commands_apply::apply_proposals_core;
 pub use ideation_commands_apply::*;
 pub use ideation_commands_chat::*;
 pub use ideation_commands_cross_project::*;

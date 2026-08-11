@@ -17,6 +17,7 @@ pub mod message_queue;
 pub mod methodology_service;
 pub mod payload_enrichment;
 pub mod pr_publish_service;
+pub mod project_stats_invalidation;
 pub mod project_validation;
 pub mod research_service;
 pub mod rule_ingestion_service;

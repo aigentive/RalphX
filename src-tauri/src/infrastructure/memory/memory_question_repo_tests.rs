@@ -1,5 +1,5 @@
 use super::*;
-use crate::application::question_state::QuestionOption;
+use crate::domain::entities::question_request::QuestionOption;
 
 fn sample_question(request_id: &str) -> PendingQuestionInfo {
     PendingQuestionInfo {

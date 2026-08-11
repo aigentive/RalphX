@@ -9,10 +9,9 @@ use serde_json::Value;
 use tokio::time::Duration;
 use tokio_util::bytes::Bytes;
 
-use crate::application::granola_integration_service::is_valid_granola_note_id;
-use crate::application::{
-    GranolaApiClient, GranolaApiError, GranolaAuthContext, GranolaNoteDetail, GranolaNoteListPage,
-    GranolaNoteSummary, GranolaTranscriptEntry,
+use crate::domain::integrations::{
+    is_valid_granola_note_id, GranolaApiClient, GranolaApiError, GranolaAuthContext,
+    GranolaNoteDetail, GranolaNoteListPage, GranolaNoteSummary, GranolaTranscriptEntry,
 };
 
 const GRANOLA_API_BASE: &str = "https://public-api.granola.ai";

@@ -149,7 +149,7 @@ pub fn routing_role_for_spawner_agent(
 }
 
 #[async_trait::async_trait]
-impl crate::infrastructure::agents::spawner::StateMachineRoleResolver for ManualRoleDefaultService {
+impl crate::application::agents::spawner::StateMachineRoleResolver for ManualRoleDefaultService {
     async fn resolve_state_machine_role(
         &self,
         agent_name: &str,
@@ -157,7 +157,7 @@ impl crate::infrastructure::agents::spawner::StateMachineRoleResolver for Manual
         entity_status: Option<&str>,
         project_id: Option<&str>,
         project_root: Option<&Path>,
-    ) -> Result<Option<crate::infrastructure::agents::spawner::StateMachineRoleSettings>, String>
+    ) -> Result<Option<crate::application::agents::spawner::StateMachineRoleSettings>, String>
     {
         let Some(role) = routing_role_for_spawner_agent(agent_type, entity_status) else {
             return Ok(None);
@@ -175,7 +175,7 @@ impl crate::infrastructure::agents::spawner::StateMachineRoleResolver for Manual
         .await
         .map_err(|error| format!("Failed to resolve manual default for {role}: {error}"))?;
         Ok(Some(
-            crate::infrastructure::agents::spawner::StateMachineRoleSettings {
+            crate::application::agents::spawner::StateMachineRoleSettings {
                 harness: resolved.effective_harness,
                 model: resolved.model,
                 logical_effort: resolved.logical_effort,

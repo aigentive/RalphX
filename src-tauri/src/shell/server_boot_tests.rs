@@ -1,7 +1,7 @@
 use tokio::sync::oneshot;
 
 use super::server_boot::settle_listener_bind_handshake;
-use super::startup_status::{StartupCoordinator, StartupFailureCode, StartupStage};
+use crate::application::startup_status::{StartupCoordinator, StartupFailureCode, StartupStage};
 use crate::AppError;
 
 fn advance_to_bind(coordinator: &StartupCoordinator, attempt: u64) {

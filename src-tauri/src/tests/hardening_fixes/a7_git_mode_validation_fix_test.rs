@@ -3,7 +3,7 @@
 // After fix: change_project_git_mode checks for tasks in AGENT_ACTIVE_STATUSES
 // and returns an error if any are found.
 
-use crate::commands::execution_commands::AGENT_ACTIVE_STATUSES;
+use crate::application::execution_state::AGENT_ACTIVE_STATUSES;
 use crate::domain::entities::InternalStatus;
 
 #[test]

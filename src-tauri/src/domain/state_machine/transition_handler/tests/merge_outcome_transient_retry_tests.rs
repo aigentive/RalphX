@@ -12,7 +12,7 @@
 
 use super::helpers::*;
 use crate::application::{AppState, TaskTransitionService};
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{
     InternalStatus, MergeFailureSource, MergeRecoveryEventKind, MergeRecoveryMetadata,
     MergeValidationMode, Project, ProjectId, Task,

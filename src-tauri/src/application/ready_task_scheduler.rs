@@ -4,7 +4,7 @@ use tauri::AppHandle;
 
 use crate::application::harness_runtime_registry::default_scheduler_ready_settle_ms;
 use crate::application::AppState;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::state_machine::services::TaskScheduler;
 
 /// Spawn the canonical ready-task scheduler after proposal acceptance.

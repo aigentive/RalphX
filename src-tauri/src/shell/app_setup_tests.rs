@@ -1,4 +1,4 @@
-use crate::application::app_setup::{
+use crate::shell::app_setup::{
     configure_bundled_runtime_paths, generated_plugin_dir_for_app_data,
     generated_plugin_runtime_profile_component, resolve_bundled_runtime_paths, BundledRuntimePaths,
 };

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use crate::application::question_state::{PendingQuestionInfo, QuestionAnswer};
+use crate::domain::entities::question_request::{PendingQuestionInfo, QuestionAnswer};
 use crate::domain::repositories::QuestionRepository;
 use crate::error::AppResult;
 

@@ -12,12 +12,10 @@ use serde_json::{json, Value};
 use tokio::time::Duration;
 use tokio_util::bytes::Bytes;
 
-use crate::application::clickup_integration_service::{
-    ClickUpAttachment, ClickUpFolder, ClickUpList, ClickUpTaskListOptions,
-};
-use crate::application::{
-    ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpSpace, ClickUpStatus,
-    ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace,
+use crate::domain::integrations::{
+    ClickUpApiClient, ClickUpAttachment, ClickUpAuthContext, ClickUpComment, ClickUpFolder,
+    ClickUpList, ClickUpSpace, ClickUpStatus, ClickUpTaskContent, ClickUpTaskListOptions,
+    ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace,
 };
 
 const CLICKUP_API_BASE: &str = "https://api.clickup.com/api/v2";

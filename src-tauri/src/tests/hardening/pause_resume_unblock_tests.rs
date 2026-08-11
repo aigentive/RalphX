@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use super::helpers::*;
 use crate::application::chat_service::PauseReason;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{InternalStatus, ProjectId};
 use crate::domain::repositories::TaskRepository;
 use crate::domain::state_machine::events::TaskEvent;
