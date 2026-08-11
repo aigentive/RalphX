@@ -397,6 +397,67 @@ async fn build_issue_report_includes_untruncated_full_log_without_detail() {
 }
 
 #[tokio::test]
+async fn build_issue_report_collects_a_rotated_active_and_rolled_pair() {
+    let (state, conversation_id, project_id, _temp_dir, _project_root, _workspace_root) =
+        seeded_report_context().await;
+    let log_root = runtime_log_paths::app_log_dir();
+    std::fs::create_dir_all(&log_root).expect("app log directory");
+
+    // Oldest first, so the rotated pair is the newest by modification time —
+    // exactly how a launch that rotated appears on disk.
+    let seeded = [
+        "ralphx_2026-08-11_08-00-00.log",
+        "ralphx_2026-08-11_09-00-00.log",
+        "ralphx_2026-08-11_10-00-00_rolled.log",
+        "ralphx_2026-08-11_10-00-00.log",
+    ];
+    let mut _cleanups = Vec::new();
+    for name in seeded {
+        let path = log_root.join(name);
+        _cleanups.push(PathCleanup { path: path.clone() });
+        std::fs::write(&path, format!("warn diagnostic line from {name}\n"))
+            .expect("seeded launch log");
+    }
+
+    let draft = build_agent_issue_report_draft(
+        &state,
+        BuildAgentIssueReportInput {
+            conversation_id: conversation_id.as_str(),
+            project_id: Some(project_id.as_str().to_string()),
+            include_logs: true,
+            recent_errors_only: false,
+            max_log_bytes: 24 * 1024,
+        },
+        fixed_environment(),
+    )
+    .await
+    .expect("draft should build");
+
+    let labels: Vec<&str> = draft
+        .sources
+        .iter()
+        .map(|source| source.label.as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        vec![
+            "ralphx_2026-08-11_10-00-00.log",
+            "ralphx_2026-08-11_10-00-00_rolled.log",
+            "ralphx_2026-08-11_09-00-00.log",
+            "ralphx_2026-08-11_08-00-00.log",
+        ],
+        "the rotated pair must rank newest and keep its plain relative labels"
+    );
+    assert!(
+        draft.sources.iter().all(|source| source.included),
+        "every collected source must have a non-empty body"
+    );
+    assert!(draft
+        .markdown
+        .contains("warn diagnostic line from ralphx_2026-08-11_10-00-00_rolled.log"));
+}
+
+#[tokio::test]
 async fn build_issue_report_rejects_project_context_mismatch() {
     let (state, conversation_id, _project_id, _temp_dir, _project_root, _workspace_root) =
         seeded_report_context().await;
