@@ -9,5 +9,14 @@ export function transformDatabaseMaintenanceStats(
     reclaimableBytes: raw.reclaimable_bytes,
     headroomOk: raw.headroom_ok,
     pendingCompaction: raw.pending_compaction,
+    lastCompaction: raw.last_compaction
+      ? {
+        outcome: raw.last_compaction.outcome,
+        reason: raw.last_compaction.reason,
+        reclaimedBytes: raw.last_compaction.reclaimed_bytes,
+        databaseBytesBefore: raw.last_compaction.database_bytes_before,
+        atRfc3339: raw.last_compaction.at_rfc3339,
+      }
+      : null,
   };
 }

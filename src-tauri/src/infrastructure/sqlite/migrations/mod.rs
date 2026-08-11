@@ -590,6 +590,7 @@ mod v20260804073002_jira_link_acceptance_criteria_backfill;
 mod v20260804125852_delegated_session_job_identity;
 mod v20260806071104_agent_workspace_repair_effect_failed_completed_at;
 mod v20260806154753_add_agent_workspace_stale_base_detected_at;
+mod v20260811015146_data_retention_settings;
 mod v20260811023943_agent_runs_routing_role_and_project;
 #[cfg(test)]
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
@@ -624,6 +625,8 @@ mod v20260804125852_delegated_session_job_identity_tests;
 mod v20260806071104_agent_workspace_repair_effect_failed_completed_at_tests;
 #[cfg(test)]
 mod v20260806154753_add_agent_workspace_stale_base_detected_at_tests;
+#[cfg(test)]
+mod v20260811015146_data_retention_settings_tests;
 #[cfg(test)]
 mod v20260811023943_agent_runs_routing_role_and_project_tests;
 #[cfg(test)]
@@ -1970,6 +1973,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260806154753,
         name: "add_agent_workspace_stale_base_detected_at",
         migrate: v20260806154753_add_agent_workspace_stale_base_detected_at::migrate,
+    },
+    Migration {
+        version: 20260811015146,
+        name: "data_retention_settings",
+        migrate: v20260811015146_data_retention_settings::migrate,
     },
     Migration {
         version: 20260811023943,

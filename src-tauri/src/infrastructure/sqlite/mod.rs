@@ -4,6 +4,7 @@
 pub mod connection;
 pub mod db_connection;
 pub mod database_maintenance;
+pub mod database_maintenance_outcome;
 #[cfg(test)]
 mod database_maintenance_tests;
 pub mod migrations;
@@ -83,6 +84,9 @@ mod sqlite_chat_message_repo_tests;
 pub mod sqlite_chat_payload_retention_repo;
 #[cfg(test)]
 mod sqlite_chat_payload_retention_repo_tests;
+pub mod sqlite_data_retention_settings_repo;
+#[cfg(test)]
+mod sqlite_data_retention_settings_repo_tests;
 pub mod sqlite_chat_timeline_repo;
 #[cfg(test)]
 mod sqlite_chat_timeline_repo_tests;
@@ -230,6 +234,7 @@ pub use sqlite_memory_entry_repo::SqliteMemoryEntryRepository;
 pub use sqlite_memory_event_repository::SqliteMemoryEventRepository;
 pub use sqlite_methodology_repo::SqliteMethodologyRepository;
 pub use sqlite_notification_repo::SqliteNotificationRepository;
+pub use sqlite_data_retention_settings_repo::SqliteDataRetentionSettingsRepository;
 pub use sqlite_notification_settings_repo::SqliteNotificationSettingsRepository;
 pub use sqlite_orphan_worktree_cleanup_marker_repo::SqliteOrphanWorktreeCleanupMarkerRepository;
 pub use sqlite_permission_repo::SqlitePermissionRepository;

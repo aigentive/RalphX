@@ -12,4 +12,4 @@ export const databaseMaintenanceApi = {
   ).then(() => undefined),
 } as const;
 
-export type { DatabaseMaintenanceStats } from "./database-maintenance.types";
+export type { CompactionRecord, DatabaseMaintenanceStats } from "./database-maintenance.types";
