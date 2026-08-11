@@ -126,6 +126,11 @@ vi.mock("./UpdatesSettingsSection", () => ({
   UpdatesSettingsSection: () => <div data-testid="updates-section">Updates</div>,
 }));
 
+vi.mock("./DataRetentionSection", () => ({
+  DataRetentionSection: () => (
+    <div data-testid="data-retention-section">Data retention</div>
+  ),
+}));
 vi.mock("./DatabaseMaintenanceSection", () => ({
   DatabaseMaintenanceSection: () => (
     <div data-testid="database-maintenance-section">Database maintenance</div>
@@ -287,14 +292,17 @@ describe("SettingsDialog", () => {
   it("registers Database under Application and renders it through the live dialog path", async () => {
     expect(sectionMeta("database")?.label).toBe("Database");
     expect(navForSection("database").id).toBe("application");
-    await expect(sectionModuleLoaders.database()).resolves.toHaveProperty(
-      "DatabaseMaintenanceSection",
-    );
+    // One leaf preloads both modules so neither is the first thing a user waits on.
+    await expect(sectionModuleLoaders.database()).resolves.toMatchObject([
+      { DataRetentionSection: expect.anything() },
+      { DatabaseMaintenanceSection: expect.anything() },
+    ]);
 
     uiState.activeModal = "settings";
     uiState.modalContext = { section: "database" };
     render(<SettingsDialog {...defaultProps} />);
 
+    expect(await screen.findByTestId("data-retention-section")).toBeInTheDocument();
     expect(await screen.findByTestId("database-maintenance-section")).toBeInTheDocument();
   });
 
