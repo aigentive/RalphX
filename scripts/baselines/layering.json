@@ -1069,7 +1069,17 @@
       {
         "path": "src-tauri/src/shell/app_setup.rs",
         "target": "crate::infrastructure::sqlite::",
+        "text": "crate::infrastructure::sqlite::database_maintenance::DatabaseMaintenanceError::Integrity("
+      },
+      {
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
         "text": "crate::infrastructure::sqlite::database_maintenance::compact_before_pool_opens_at("
+      },
+      {
+        "path": "src-tauri/src/shell/app_setup.rs",
+        "target": "crate::infrastructure::sqlite::",
+        "text": "crate::infrastructure::sqlite::database_maintenance::compaction_will_execute("
       },
       {
         "path": "src-tauri/src/shell/shutdown.rs",
