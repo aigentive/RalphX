@@ -364,6 +364,22 @@ fn raw_path_validation_rejects_parent_directory_segments() {
 }
 
 #[test]
+fn raw_path_validation_rejects_percent_encoded_traversal() {
+    for path in [
+        "/rest/api/3/%2e%2e%2f%2e%2e%2fplugins/servlet/admin",
+        "/rest/api/3/%2E%2E/secrets",
+        "/wiki/api/v2/pages/%2f%2fetc",
+    ] {
+        assert!(validate_raw_path(path).is_err(), "{path} must be rejected");
+    }
+}
+
+#[test]
+fn raw_path_validation_still_accepts_percent_encoding_in_the_query_string() {
+    assert!(validate_raw_path("/wiki/rest/api/search?cql=type%3Dpage").is_ok());
+}
+
+#[test]
 fn raw_path_validation_rejects_non_allowlisted_prefixes() {
     for path in [
         "/plugins/servlet/admin",

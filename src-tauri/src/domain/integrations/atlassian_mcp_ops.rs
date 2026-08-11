@@ -174,6 +174,12 @@ pub fn validate_atlassian_raw_path(path: &str) -> Result<&str, String> {
     if route.split('/').any(|segment| segment == "..") {
         return Err("Atlassian API path must not contain '..' segments".to_string());
     }
+    let route_lower = route.to_ascii_lowercase();
+    if route_lower.contains("%2e") || route_lower.contains("%2f") || route_lower.contains("%5c") {
+        return Err(
+            "Atlassian API path must not contain percent-encoded path separators".to_string(),
+        );
+    }
     if !ATLASSIAN_RAW_PATH_PREFIXES
         .iter()
         .any(|prefix| route.starts_with(prefix))
