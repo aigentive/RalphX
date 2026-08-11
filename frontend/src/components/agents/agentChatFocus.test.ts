@@ -8,6 +8,7 @@ import {
   getFocusedAutomationRunConversationId,
   getFocusedArtifactIdeationSession,
   getFocusedChatSessionId,
+  getFocusedFixerConversationId,
   getFocusedWorkspaceReviewConversationId,
   type AgentsChatFocus,
 } from "./agentChatFocus";
@@ -60,6 +61,17 @@ const workspaceReviewFocus: Extract<
   type: "workspace_review",
   conversationId: "review-conversation-1",
 };
+const workspaceRepairFocus: Extract<
+  AgentsChatFocus,
+  { type: "workspace_repair" }
+> = {
+  type: "workspace_repair",
+  conversationId: "workspace-repair-conversation-1",
+};
+const prFixerFocus: Extract<AgentsChatFocus, { type: "pr_fixer" }> = {
+  type: "pr_fixer",
+  conversationId: "pr-fixer-conversation-1",
+};
 const automationRunFocus: Extract<AgentsChatFocus, { type: "automation_run" }> = {
   type: "automation_run",
   automationId: "automation-1",
@@ -75,6 +87,8 @@ describe("getAgentChatFocusSwitchOptions", () => {
       verificationFocusTarget: verificationFocus,
       taskRuntimeFocusTarget: null,
       workspaceReviewFocusTarget: null,
+      workspaceRepairFocusTarget: null,
+      prFixerFocusTarget: null,
       automationRunFocusTarget: null,
       hasPlanArtifact: true,
     });
@@ -93,6 +107,8 @@ describe("getAgentChatFocusSwitchOptions", () => {
       verificationFocusTarget: verificationFocus,
       taskRuntimeFocusTarget: null,
       workspaceReviewFocusTarget: null,
+      workspaceRepairFocusTarget: null,
+      prFixerFocusTarget: null,
       automationRunFocusTarget: null,
       hasPlanArtifact: true,
     });
@@ -110,6 +126,8 @@ describe("getAgentChatFocusSwitchOptions", () => {
       verificationFocusTarget: verificationFocus,
       taskRuntimeFocusTarget: null,
       workspaceReviewFocusTarget: null,
+      workspaceRepairFocusTarget: null,
+      prFixerFocusTarget: null,
       automationRunFocusTarget: null,
       hasPlanArtifact: false,
     });
@@ -124,6 +142,8 @@ describe("getAgentChatFocusSwitchOptions", () => {
       verificationFocusTarget: verificationFocus,
       taskRuntimeFocusTarget: null,
       workspaceReviewFocusTarget: null,
+      workspaceRepairFocusTarget: null,
+      prFixerFocusTarget: null,
       automationRunFocusTarget: null,
       hasPlanArtifact: true,
     });
@@ -138,6 +158,8 @@ describe("getAgentChatFocusSwitchOptions", () => {
       verificationFocusTarget: null,
       taskRuntimeFocusTarget: taskRuntimeFocus,
       workspaceReviewFocusTarget: null,
+      workspaceRepairFocusTarget: null,
+      prFixerFocusTarget: null,
       automationRunFocusTarget: null,
       hasPlanArtifact: false,
     });
@@ -160,6 +182,8 @@ describe("getAgentChatFocusSwitchOptions", () => {
       verificationFocusTarget: null,
       taskRuntimeFocusTarget: null,
       workspaceReviewFocusTarget: workspaceReviewFocus,
+      workspaceRepairFocusTarget: null,
+      prFixerFocusTarget: null,
       automationRunFocusTarget: null,
       hasPlanArtifact: false,
     });
@@ -182,6 +206,8 @@ describe("getAgentChatFocusSwitchOptions", () => {
       verificationFocusTarget: null,
       taskRuntimeFocusTarget: null,
       workspaceReviewFocusTarget: null,
+      workspaceRepairFocusTarget: null,
+      prFixerFocusTarget: null,
       automationRunFocusTarget: automationRunFocus,
       hasPlanArtifact: false,
     });
@@ -195,6 +221,41 @@ describe("getAgentChatFocusSwitchOptions", () => {
       description: "Show the automation run chat",
       tone: "accent",
     });
+  });
+
+  it("adds Fixer and PR Fixer focus only when their child chats exist", () => {
+    const options = getAgentChatFocusSwitchOptions({
+      mode: "edit",
+      focusSwitcherIdeationSessionId: null,
+      verificationFocusTarget: null,
+      taskRuntimeFocusTarget: null,
+      workspaceReviewFocusTarget: workspaceReviewFocus,
+      workspaceRepairFocusTarget: workspaceRepairFocus,
+      prFixerFocusTarget: prFixerFocus,
+      automationRunFocusTarget: null,
+      hasPlanArtifact: false,
+    });
+
+    expect(options.map((option) => option.type)).toEqual([
+      "workspace",
+      "workspace_review",
+      "workspace_repair",
+      "pr_fixer",
+    ]);
+    expect(options.slice(2)).toEqual([
+      {
+        type: "workspace_repair",
+        label: "Fixer",
+        description: "Show the workspace fixer chat",
+        tone: "warning",
+      },
+      {
+        type: "pr_fixer",
+        label: "PR Fixer",
+        description: "Show the PR fixer chat",
+        tone: "warning",
+      },
+    ]);
   });
 });
 
@@ -257,5 +318,34 @@ describe("workspace Review focus helpers", () => {
       type: "workspace_review",
       conversationId: "review-conversation-2",
     });
+  });
+});
+
+describe("fixer focus helpers", () => {
+  it("describes both fixer types and maps them to their child conversations", () => {
+    expect(getAgentsChatFocusDisplay(workspaceRepairFocus)).toEqual({
+      type: "workspace_repair",
+      label: "Fixer",
+      description: "Focused on a workspace fixer run",
+      tone: "warning",
+    });
+    expect(getAgentsChatFocusDisplay(prFixerFocus)).toEqual({
+      type: "pr_fixer",
+      label: "PR Fixer",
+      description: "Focused on a PR fixer run",
+      tone: "warning",
+    });
+    expect(getFocusedFixerConversationId(workspaceRepairFocus)).toBe(
+      "workspace-repair-conversation-1",
+    );
+    expect(getFocusedFixerConversationId(prFixerFocus)).toBe(
+      "pr-fixer-conversation-1",
+    );
+  });
+
+  it("leaves fixer availability to the controller reconciler", () => {
+    expect(
+      getConversationScopedChatFocus(workspaceRepairFocus, "conversation-2"),
+    ).toEqual(workspaceRepairFocus);
   });
 });

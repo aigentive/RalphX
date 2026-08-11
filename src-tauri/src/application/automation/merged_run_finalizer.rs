@@ -66,6 +66,7 @@ impl AutomationMergedRunFinalizer for AppStateAutomationMergedRunFinalizer {
             let chat_service: Arc<dyn ChatService> = Arc::new(self.state.build_chat_service());
             let terminalized = terminalize_agent_workspace_after_pr(
                 Arc::clone(&self.state.agent_conversation_workspace_repo),
+                Arc::clone(&self.state.agent_workspace_repair_repo),
                 Arc::clone(&self.state.agent_run_repo),
                 Some(Arc::clone(&self.state.plan_branch_repo)),
                 Some(chat_service),

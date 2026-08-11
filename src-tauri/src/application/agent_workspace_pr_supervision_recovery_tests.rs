@@ -150,7 +150,8 @@ fn recovery_deps(
     agent_run_repo: Arc<MemoryAgentRunRepository>,
 ) -> AgentWorkspacePrSupervisionRecoveryDeps {
     AgentWorkspacePrSupervisionRecoveryDeps {
-        workspace_repo: workspace_repo as Arc<dyn AgentConversationWorkspaceRepository>,
+        workspace_repo: Arc::clone(&workspace_repo)
+            as Arc<dyn AgentConversationWorkspaceRepository>,
         project_repo,
         plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new())
             as Arc<dyn PlanBranchRepository>,
@@ -159,6 +160,7 @@ fn recovery_deps(
         transition_service: None,
         chat_service: None,
         agent_run_repo,
+        agent_workspace_repair_repo: workspace_repo,
         events: Arc::new(ralphx_events::NullEventSink),
         pr_fix_review_publish_resumer: None,
         durable_recovery_state: None,
@@ -710,6 +712,7 @@ async fn startup_recovery_exempts_unsettled_repair_workspaces_from_the_capped_pu
         transition_service: None,
         chat_service: None,
         agent_run_repo: Arc::clone(&state.agent_run_repo),
+        agent_workspace_repair_repo: Arc::clone(&state.agent_workspace_repair_repo),
         events: Arc::new(ralphx_events::NullEventSink),
         pr_fix_review_publish_resumer: None,
         durable_recovery_state: Some(Arc::new(state.clone())),
@@ -781,6 +784,7 @@ async fn recovers_blocked_pr_supervision_when_remote_head_matches_local_workspac
             transition_service: None,
             chat_service: Some(Arc::new(MockChatService::new())),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            agent_workspace_repair_repo: workspace_repo.clone(),
             events: Arc::new(ralphx_events::NullEventSink),
             pr_fix_review_publish_resumer: None,
             durable_recovery_state: None,
@@ -859,6 +863,7 @@ async fn matching_remote_head_with_failing_health_stays_blocked_and_never_report
             transition_service: None,
             chat_service: Some(Arc::new(MockChatService::new())),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            agent_workspace_repair_repo: workspace_repo.clone(),
             events: Arc::new(ralphx_events::NullEventSink),
             pr_fix_review_publish_resumer: None,
             durable_recovery_state: None,
@@ -960,6 +965,7 @@ async fn recovers_linked_plan_pr_supervision_without_workspace_publication_pr() 
             transition_service: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            agent_workspace_repair_repo: workspace_repo.clone(),
             events: Arc::new(ralphx_events::NullEventSink),
             pr_fix_review_publish_resumer: None,
             durable_recovery_state: None,
@@ -1059,6 +1065,7 @@ async fn marks_terminal_linked_plan_pr_status_and_workspace_authority() {
                 transition_service: None,
                 chat_service: None,
                 agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+                agent_workspace_repair_repo: workspace_repo.clone(),
                 events: Arc::new(ralphx_events::NullEventSink),
                 pr_fix_review_publish_resumer: None,
                 durable_recovery_state: None,
@@ -1148,7 +1155,8 @@ async fn skips_linked_plan_pr_supervision_when_plan_branch_is_not_current() {
 
         let outcome = recover_agent_workspace_pr_supervision(
             AgentWorkspacePrSupervisionRecoveryDeps {
-                workspace_repo: workspace_repo as Arc<dyn AgentConversationWorkspaceRepository>,
+                workspace_repo: Arc::clone(&workspace_repo)
+                    as Arc<dyn AgentConversationWorkspaceRepository>,
                 project_repo: Arc::new(MemoryProjectRepository::with_projects(vec![project])),
                 plan_branch_repo: plan_branch_repo as Arc<dyn PlanBranchRepository>,
                 github: Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
@@ -1156,6 +1164,7 @@ async fn skips_linked_plan_pr_supervision_when_plan_branch_is_not_current() {
                 transition_service: None,
                 chat_service: None,
                 agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+                agent_workspace_repair_repo: workspace_repo,
                 events: Arc::new(ralphx_events::NullEventSink),
                 pr_fix_review_publish_resumer: None,
                 durable_recovery_state: None,
@@ -1712,6 +1721,7 @@ async fn retry_eligible_stale_pr_autofix_settlement_restarts_pr_polling() {
             transition_service: None,
             chat_service: Some(Arc::new(MockChatService::new())),
             agent_run_repo,
+            agent_workspace_repair_repo: workspace_repo.clone(),
             events: Arc::new(ralphx_events::NullEventSink),
             pr_fix_review_publish_resumer: None,
             durable_recovery_state: None,
@@ -1913,6 +1923,7 @@ async fn exhausted_stale_pr_autofix_stays_blocked_without_pr_polling() {
             transition_service: None,
             chat_service: Some(Arc::new(MockChatService::new())),
             agent_run_repo,
+            agent_workspace_repair_repo: workspace_repo.clone(),
             events: Arc::new(ralphx_events::NullEventSink),
             pr_fix_review_publish_resumer: None,
             durable_recovery_state: None,
@@ -2124,6 +2135,7 @@ async fn skips_blocked_pr_supervision_recovery_when_worktree_is_dirty() {
             transition_service: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            agent_workspace_repair_repo: workspace_repo.clone(),
             events: Arc::new(ralphx_events::NullEventSink),
             pr_fix_review_publish_resumer: None,
             durable_recovery_state: None,
@@ -2515,6 +2527,7 @@ async fn active_run_does_not_hide_terminal_linked_plan_pr_during_supervision_rec
             Arc::clone(&chat) as Arc<dyn crate::application::chat_service::ChatService>
         ),
         agent_run_repo: Arc::clone(&active_run_repo) as Arc<dyn AgentRunRepository>,
+        agent_workspace_repair_repo: workspace_repo.clone(),
         events: Arc::new(ralphx_events::NullEventSink),
         pr_fix_review_publish_resumer: None,
         durable_recovery_state: None,
@@ -2799,6 +2812,7 @@ async fn startup_recovery_resumes_passed_pr_fix_workspace_review_handoff() {
             transition_service: None,
             chat_service: None,
             agent_run_repo,
+            agent_workspace_repair_repo: workspace_repo.clone(),
             events: Arc::new(ralphx_events::NullEventSink),
             pr_fix_review_publish_resumer: Some(
                 Arc::clone(&publish_resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>
@@ -2913,6 +2927,7 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
             transition_service: None,
             chat_service: None,
             agent_run_repo,
+            agent_workspace_repair_repo: workspace_repo.clone(),
             events: Arc::new(ralphx_events::NullEventSink),
             pr_fix_review_publish_resumer: Some(
                 Arc::clone(&publish_resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>
@@ -2990,6 +3005,7 @@ async fn startup_recovery_processes_linked_plan_pr_supervision_candidates() {
             transition_service: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            agent_workspace_repair_repo: workspace_repo.clone(),
             events: Arc::new(ralphx_events::NullEventSink),
             pr_fix_review_publish_resumer: None,
             durable_recovery_state: None,

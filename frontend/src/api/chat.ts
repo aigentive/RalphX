@@ -2556,6 +2556,8 @@ export interface AgentWorkspaceReviewContext {
   events: AgentConversationWorkspacePublicationEvent[];
   target: AgentWorkspaceReviewTarget | null;
   monitor: AgentWorkspaceReviewMonitor;
+  repairRuntimeConversationId: string | null;
+  repairFixerKind: "workspace_repair" | "pr_fixer" | null;
   reviewArtifactIsCurrent: boolean;
   reviewArtifactIsOutdated: boolean;
   canMutateReviewState: boolean;
@@ -3089,6 +3091,12 @@ const AgentWorkspaceReviewContextResponseSchema = z.object({
   events: AgentConversationWorkspacePublicationEventListResponseSchema,
   target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
   monitor: AgentWorkspaceReviewMonitorResponseSchema,
+  repair_runtime_conversation_id: z.string().nullable().optional().default(null),
+  repair_fixer_kind: z
+    .enum(["workspace_repair", "pr_fixer"])
+    .nullable()
+    .optional()
+    .default(null),
   review_artifact_is_current: z.boolean().optional(),
   review_artifact_is_outdated: z.boolean().optional(),
   can_mutate_review_state: z.boolean().optional().default(false),
@@ -3816,6 +3824,8 @@ function transformAgentWorkspaceReviewContext(
     events: raw.events.map(transformAgentConversationWorkspacePublicationEvent),
     target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
     monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+    repairRuntimeConversationId: raw.repair_runtime_conversation_id,
+    repairFixerKind: raw.repair_fixer_kind,
     reviewArtifactIsCurrent: raw.review_artifact_is_current ?? raw.is_current,
     reviewArtifactIsOutdated:
       raw.review_artifact_is_outdated ?? raw.is_outdated,
@@ -5214,6 +5224,8 @@ export async function getAgentRunningStates(
 const AgentConversationRuntimeSourceSchema = z.enum([
   "workspace",
   "workspace_review",
+  "workspace_repair",
+  "pr_fixer",
   "ideation",
   "verification",
   "task_execution",
@@ -5327,6 +5339,8 @@ export type AgentConversationRuntimeIndexGroup = z.infer<
 const AgentConversationRuntimeIndexKindSchema = z.enum([
   "workspace",
   "workspace_review",
+  "workspace_repair",
+  "pr_fixer",
   "ideation",
   "verification",
   "delegation",

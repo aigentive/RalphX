@@ -579,6 +579,7 @@ mod v20260730161032_agent_workspace_pr_autofix_completion_evidence;
 mod v20260731023949_agent_run_identity;
 mod v20260731111346_purge_empty_thinking_blocks;
 mod v20260731125157_add_workspace_repair_fingerprint_state;
+mod v20260731170447_agent_workspace_repair_runtime_conversation;
 mod v20260801021420_delegation_parks;
 mod v20260801211636_delegation_park_wake_claimed_at;
 mod v20260802031156_delegate_context_inheritance;
@@ -598,6 +599,8 @@ mod v20260731023949_agent_run_identity_tests;
 mod v20260731111346_purge_empty_thinking_blocks_tests;
 #[cfg(test)]
 mod v20260731125157_add_workspace_repair_fingerprint_state_tests;
+#[cfg(test)]
+mod v20260731170447_agent_workspace_repair_runtime_conversation_tests;
 #[cfg(test)]
 mod v20260801021420_delegation_parks_tests;
 #[cfg(test)]
@@ -1907,6 +1910,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260731125157,
         name: "add_workspace_repair_fingerprint_state",
         migrate: v20260731125157_add_workspace_repair_fingerprint_state::migrate,
+    },
+    Migration {
+        version: 20260731170447,
+        name: "agent_workspace_repair_runtime_conversation",
+        migrate: v20260731170447_agent_workspace_repair_runtime_conversation::migrate,
     },
     Migration {
         version: 20260801021420,

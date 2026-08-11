@@ -101,6 +101,7 @@ pub async fn archive_agent_conversation_for_state(
     let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
     let outcome = terminalize_agent_workspace_after_pr(
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.agent_run_repo),
         Some(Arc::clone(&state.plan_branch_repo)),
         Some(chat_service),
@@ -163,6 +164,7 @@ pub async fn close_agent_workspace_pr_for_state(
     let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
     let outcome = terminalize_agent_workspace_after_pr(
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.agent_run_repo),
         Some(Arc::clone(&state.plan_branch_repo)),
         Some(chat_service),

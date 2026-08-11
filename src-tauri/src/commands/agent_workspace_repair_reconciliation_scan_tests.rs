@@ -791,6 +791,15 @@ impl ListingErrorRepairRepository {
 
 #[async_trait]
 impl AgentWorkspaceRepairRepository for ListingErrorRepairRepository {
+    async fn get_unsettled_attempt_by_runtime_conversation(
+        &self,
+        runtime_conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        self.inner
+            .get_unsettled_attempt_by_runtime_conversation(runtime_conversation_id)
+            .await
+    }
+
     async fn get_current_repair_attempt(
         &self,
         conversation_id: &ChatConversationId,

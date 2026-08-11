@@ -55,6 +55,9 @@ fn row_to_repair_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentWorks
         reserved_agent_run_id: row
             .get::<_, Option<String>>("reserved_agent_run_id")?
             .map(crate::domain::entities::AgentRunId::from_string),
+        runtime_conversation_id: row
+            .get::<_, Option<String>>("runtime_conversation_id")?
+            .map(ChatConversationId::from_string),
         target_base_ref: row.get("target_base_ref")?,
         target_base_commit: row.get("target_base_commit")?,
         pending_reasons: serde_json::from_str(&pending_reasons_json)
@@ -174,6 +177,21 @@ fn load_current_repair_attempt(
     .map_err(Into::into)
 }
 
+fn load_unsettled_repair_attempt_by_runtime_conversation(
+    conn: &Connection,
+    runtime_conversation_id: &str,
+) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+    conn.query_row(
+        "SELECT * FROM agent_workspace_repair_attempts
+         WHERE runtime_conversation_id = ?1 AND settled_at IS NULL
+         LIMIT 1",
+        rusqlite::params![runtime_conversation_id],
+        row_to_repair_attempt,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 fn load_latest_repair_attempt(
     conn: &Connection,
     conversation_id: &str,
@@ -194,7 +212,8 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
     conn.execute(
         "INSERT INTO agent_workspace_repair_attempts (
             id, conversation_id, generation, source, phase, continuation,
-            reserved_agent_run_id, target_base_ref, target_base_commit, pending_reasons_json,
+            reserved_agent_run_id, runtime_conversation_id, target_base_ref, target_base_commit,
+            pending_reasons_json,
             review_required, auto_publish_enabled, auto_merge_desired, auto_merge_method,
             dispatch_count, next_dispatch_at, ci_rerun_count, ci_rerun_fingerprint,
             pr_autofix_dispatch_head_commit, pr_autofix_health_fingerprint, base_update_target_commit,
@@ -204,7 +223,7 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
             ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
-            ?32, ?33
+            ?32, ?33, ?34
          )",
         rusqlite::params![
             attempt.id.as_str(),
@@ -216,6 +235,10 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             attempt.phase.to_string(),
             attempt.continuation.to_string(),
             attempt.reserved_agent_run_id.as_ref().map(|id| id.as_str()),
+            attempt
+                .runtime_conversation_id
+                .as_ref()
+                .map(|id| id.as_str()),
             attempt.target_base_ref,
             attempt.target_base_commit,
             serde_json::to_string(&attempt.pending_reasons)
@@ -276,34 +299,35 @@ fn update_repair_attempt(
          SET phase = ?4,
              continuation = ?5,
              reserved_agent_run_id = ?6,
-             target_base_ref = ?7,
-             target_base_commit = ?8,
-             pending_reasons_json = ?9,
-             review_required = ?10,
-             auto_publish_enabled = ?11,
-             auto_merge_desired = ?12,
-             auto_merge_method = ?13,
-             dispatch_count = ?14,
-             next_dispatch_at = ?15,
-             ci_rerun_count = ?16,
-             ci_rerun_fingerprint = ?17,
-             pr_autofix_dispatch_head_commit = ?18,
-             pr_autofix_health_fingerprint = ?19,
-             base_update_target_commit = ?20,
-             repair_head_commit = ?21,
-             summary = ?22,
-             blocker = ?23,
-             git_common_dir = ?24,
-             target_ref = ?25,
-             target_identity_version = ?26,
-             target_lease_epoch = ?27,
-             outcome = ?28,
-             updated_at = ?29,
-             settled_at = ?30,
-             explicit_publish_requested = ?31
+             runtime_conversation_id = ?7,
+             target_base_ref = ?8,
+             target_base_commit = ?9,
+             pending_reasons_json = ?10,
+             review_required = ?11,
+             auto_publish_enabled = ?12,
+             auto_merge_desired = ?13,
+             auto_merge_method = ?14,
+             dispatch_count = ?15,
+             next_dispatch_at = ?16,
+             ci_rerun_count = ?17,
+             ci_rerun_fingerprint = ?18,
+             pr_autofix_dispatch_head_commit = ?19,
+             pr_autofix_health_fingerprint = ?20,
+             base_update_target_commit = ?21,
+             repair_head_commit = ?22,
+             summary = ?23,
+             blocker = ?24,
+             git_common_dir = ?25,
+             target_ref = ?26,
+             target_identity_version = ?27,
+             target_lease_epoch = ?28,
+             outcome = ?29,
+             updated_at = ?30,
+             settled_at = ?31,
+             explicit_publish_requested = ?32
          WHERE id = ?1 AND generation = ?2 AND phase = ?3
-           AND (?32 IS NULL OR updated_at = ?32)
-           AND (?33 = 0 OR settled_at IS NULL)",
+           AND (?33 IS NULL OR updated_at = ?33)
+           AND (?34 = 0 OR settled_at IS NULL)",
         rusqlite::params![
             attempt.id.as_str(),
             i64::try_from(attempt.generation).map_err(|_| {
@@ -313,6 +337,10 @@ fn update_repair_attempt(
             attempt.phase.to_string(),
             attempt.continuation.to_string(),
             attempt.reserved_agent_run_id.as_ref().map(|id| id.as_str()),
+            attempt
+                .runtime_conversation_id
+                .as_ref()
+                .map(|id| id.as_str()),
             attempt.target_base_ref,
             attempt.target_base_commit,
             serde_json::to_string(&attempt.pending_reasons)
@@ -566,6 +594,21 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
             .await
     }
 
+    async fn get_unsettled_attempt_by_runtime_conversation(
+        &self,
+        runtime_conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceRepairAttempt>> {
+        let runtime_conversation_id = runtime_conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                load_unsettled_repair_attempt_by_runtime_conversation(
+                    conn,
+                    &runtime_conversation_id,
+                )
+            })
+            .await
+    }
+
     async fn get_latest_repair_attempt_for_conversation(
         &self,
         conversation_id: &ChatConversationId,
@@ -757,9 +800,11 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
 
                 let rows = conn.execute(
                     "UPDATE agent_workspace_repair_attempts
-                     SET reserved_agent_run_id = ?4, updated_at = ?5
+                     SET reserved_agent_run_id = ?4,
+                         runtime_conversation_id = COALESCE(runtime_conversation_id, ?5),
+                         updated_at = ?6
                      WHERE id = ?1 AND generation = ?2 AND phase = ?3
-                       AND updated_at = ?6 AND reserved_agent_run_id IS NULL
+                       AND updated_at = ?7 AND reserved_agent_run_id IS NULL
                        AND settled_at IS NULL",
                     rusqlite::params![
                         current.id.as_str(),
@@ -770,6 +815,10 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                         })?,
                         request.expected_phase.to_string(),
                         request.run_id.as_str(),
+                        request
+                            .runtime_conversation_id
+                            .as_ref()
+                            .map(|id| id.as_str()),
                         request.updated_at.to_rfc3339(),
                         request.expected_updated_at.to_rfc3339(),
                     ],
@@ -782,6 +831,9 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
                     return Ok(AgentWorkspaceRepairAttemptTransitionOutcome::Stale(latest));
                 }
                 current.reserved_agent_run_id = Some(request.run_id);
+                if current.runtime_conversation_id.is_none() {
+                    current.runtime_conversation_id = request.runtime_conversation_id;
+                }
                 current.updated_at = request.updated_at;
                 Ok(AgentWorkspaceRepairAttemptTransitionOutcome::Applied(
                     current,

@@ -32,6 +32,7 @@ vi.mock("@/components/automations/automationRunNavigation", () => ({
 
 const {
   getAgentConversationWorkspaceMock,
+  getWorkspaceReviewContextMock,
   integratedChatPanelRenderMock,
   useConversationMock,
   useProjectAgentConversationsMock,
@@ -174,6 +175,90 @@ describe("useAgentsViewController automation run focus", () => {
       clearAutomationRunFocusRequest: originalClearAutomationRunFocusRequest,
     });
     useAgentArtifactUiStore.setState({ artifactByConversationId: {} });
+  });
+
+  it("auto-focuses a durable workspace fixer child instead of resetting to workspace", async () => {
+    const setup = automationSetupConversation({ agentMode: "edit" });
+    mockHydratedSetupConversation(setup);
+    getWorkspaceReviewContextMock.mockResolvedValue({
+      success: true,
+      workspace: conversationWorkspace({ conversationId: setup.id, mode: "edit" }),
+      events: [],
+      target: null,
+      monitor: {
+        conversationId: setup.id,
+        status: "idle",
+        reviewConversationId: null,
+        reviewFixerConversationId: "fixer-child-1",
+        reviewFixerStatus: "running",
+      },
+      repairRuntimeConversationId: null,
+      repairFixerKind: null,
+      isCurrent: false,
+      isOutdated: false,
+      shouldShowTab: false,
+    });
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: setup.id,
+    });
+
+    renderControllerView();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-conversation-id-override",
+        "fixer-child-1",
+      );
+    });
+    expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+      "data-send-conversation-id",
+      "fixer-child-1",
+    );
+  });
+
+  it("does not auto-focus a cycle-capped fixer conversation", async () => {
+    const setup = automationSetupConversation({ agentMode: "edit" });
+    mockHydratedSetupConversation(setup);
+    getWorkspaceReviewContextMock.mockResolvedValue({
+      success: true,
+      workspace: conversationWorkspace({ conversationId: setup.id, mode: "edit" }),
+      events: [],
+      target: null,
+      monitor: {
+        conversationId: setup.id,
+        status: "ready",
+        reviewConversationId: null,
+        reviewFixerConversationId: "cycle-capped-fixer-child",
+        reviewFixerStatus: "cycle_capped",
+      },
+      repairRuntimeConversationId: null,
+      repairFixerKind: null,
+      isCurrent: false,
+      isOutdated: false,
+      shouldShowTab: false,
+    });
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: setup.id,
+    });
+
+    renderControllerView();
+
+    fireEvent.click(await screen.findByTestId("agents-composer-chat-focus-pill"));
+    await screen.findByTestId(
+      "agents-composer-chat-focus-option-workspace_repair",
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-conversation-id-override",
+        setup.id,
+      );
+    });
+    expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+      "data-send-conversation-id",
+      setup.id,
+    );
   });
 
   it("holds an automation-run request until the setup conversation hydrates, consumes it once, and clears it", async () => {

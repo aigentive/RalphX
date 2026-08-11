@@ -1807,6 +1807,9 @@ impl AppState {
         state
             .pr_poller_registry
             .set_branch_update_repo(Arc::clone(&state.branch_update_repo));
+        state
+            .pr_poller_registry
+            .set_chat_conversation_repo(Arc::clone(&state.chat_conversation_repo));
         Ok(state)
     }
 

@@ -99,6 +99,8 @@ interface AgentsComposerWorkspaceChangesCardProps {
   onViewWorkspace: () => void;
   onViewIdeation: (sessionId: string) => void;
   onViewWorkspaceReview: (conversationId: string) => void;
+  onViewWorkspaceRepair: (conversationId: string) => void;
+  onViewPrFixer: (conversationId: string) => void;
   onViewVerification: (parentSessionId: string, childSessionId: string) => void;
   onViewTaskRuntime: (
     taskId: string,
@@ -450,6 +452,8 @@ export function AgentsComposerWorkspaceChangesCard({
   onViewWorkspace,
   onViewIdeation,
   onViewWorkspaceReview,
+  onViewWorkspaceRepair,
+  onViewPrFixer,
   onViewVerification,
   onViewTaskRuntime,
   onViewAutomationRun,
@@ -471,6 +475,8 @@ export function AgentsComposerWorkspaceChangesCard({
       onViewWorkspace={onViewWorkspace}
       onViewIdeation={onViewIdeation}
       onViewWorkspaceReview={onViewWorkspaceReview}
+      onViewWorkspaceRepair={onViewWorkspaceRepair}
+      onViewPrFixer={onViewPrFixer}
       onViewVerification={onViewVerification}
       onViewTaskRuntime={onViewTaskRuntime}
       onViewAutomationRun={onViewAutomationRun}
@@ -703,6 +709,8 @@ function AgentsComposerWorkspaceChangesCardContent({
   onViewWorkspace,
   onViewIdeation,
   onViewWorkspaceReview,
+  onViewWorkspaceRepair,
+  onViewPrFixer,
   onViewVerification,
   onViewTaskRuntime,
   onViewAutomationRun,
@@ -722,6 +730,8 @@ function AgentsComposerWorkspaceChangesCardContent({
   onViewWorkspace: () => void;
   onViewIdeation: (sessionId: string) => void;
   onViewWorkspaceReview: (conversationId: string) => void;
+  onViewWorkspaceRepair: (conversationId: string) => void;
+  onViewPrFixer: (conversationId: string) => void;
   onViewVerification: (parentSessionId: string, childSessionId: string) => void;
   onViewTaskRuntime: (
     taskId: string,
@@ -1123,6 +1133,17 @@ function AgentsComposerWorkspaceChangesCardContent({
       const conversationId = row.conversationId ?? row.contextId;
       if (conversationId) {
         onViewWorkspaceReview(conversationId);
+      }
+      return;
+    }
+    if (row.kind === "workspace_repair" || row.kind === "pr_fixer") {
+      const conversationId = row.conversationId ?? row.contextId;
+      if (conversationId) {
+        if (row.kind === "workspace_repair") {
+          onViewWorkspaceRepair(conversationId);
+        } else {
+          onViewPrFixer(conversationId);
+        }
       }
       return;
     }

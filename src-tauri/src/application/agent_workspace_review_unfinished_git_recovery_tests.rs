@@ -17,7 +17,8 @@ use crate::domain::entities::{
     IdeationAnalysisBaseRefKind, Project,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
+    PlanBranchRepository,
 };
 use crate::domain::services::GithubServiceTrait;
 use crate::infrastructure::memory::{
@@ -200,6 +201,7 @@ async fn workspace_review_unfinished_git_recovery_stops_pr_supervision_before_si
             transition_service: None,
             chat_service: None,
             agent_run_repo: run_repo as Arc<dyn AgentRunRepository>,
+            agent_workspace_repair_repo: workspace_repo.clone(),
             events: Arc::new(ralphx_events::NullEventSink),
             pr_fix_review_publish_resumer: None,
             durable_recovery_state: None,
@@ -252,6 +254,7 @@ async fn pending_review_handoff_without_current_attempt_evidence_aborts_before_t
 
     let (after, recovered) = recover_stale_publish_repair_for_workspace_with_project_repo(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>,
         Arc::new(MemoryAgentRunRepository::new()) as Arc<dyn AgentRunRepository>,
         Arc::new(MemoryProjectRepository::with_projects(vec![project])),
         workspace,

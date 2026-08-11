@@ -20,7 +20,7 @@ use ralphx_lib::domain::entities::{
 };
 use ralphx_lib::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, AgentWorkspaceRepairRepository,
-    BranchUpdateRepository, PlanBranchRepository,
+    BranchUpdateRepository, ChatConversationRepository, PlanBranchRepository,
 };
 use ralphx_lib::domain::services::github_service::{
     GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
@@ -29,7 +29,7 @@ use ralphx_lib::domain::services::github_service::{
 use ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_PR_FIXER;
 use ralphx_lib::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryBranchUpdateRepository, MemoryPlanBranchRepository,
+    MemoryBranchUpdateRepository, MemoryChatConversationRepository, MemoryPlanBranchRepository,
 };
 
 use crate::common::MockGithubService;
@@ -214,6 +214,7 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
     let branch_update_repo = Arc::new(MemoryBranchUpdateRepository::new());
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let conversation_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
     let project_id = ProjectId::from_string("project-1".to_string());
     let temp_dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
@@ -238,6 +239,9 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
     );
     registry
         .set_branch_update_repo(Arc::clone(&branch_update_repo) as Arc<dyn BranchUpdateRepository>);
+    registry.set_chat_conversation_repo(
+        Arc::clone(&conversation_repo) as Arc<dyn ChatConversationRepository>
+    );
     let chat_service = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
         &agent_run_repo,
     )));
@@ -266,14 +270,24 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
 
     let options = chat_service.get_sent_options().await;
     assert_eq!(options.len(), 1);
-    assert_eq!(
-        options[0].conversation_id_override,
-        Some(workspace.conversation_id)
-    );
+    let fixer_conversation_id = options[0]
+        .conversation_id_override
+        .expect("PR autofix dispatch must target its persisted fixer conversation");
+    assert_ne!(fixer_conversation_id, workspace.conversation_id);
     assert_eq!(
         options[0].agent_name_override.as_deref(),
         Some(AGENT_WORKSPACE_PR_FIXER)
     );
+    let fixer_conversation = conversation_repo
+        .get_by_id(&fixer_conversation_id)
+        .await
+        .unwrap()
+        .expect("PR autofix dispatch must persist its fixer conversation");
+    assert_eq!(
+        fixer_conversation.parent_conversation_id,
+        Some(workspace.conversation_id.as_str())
+    );
+    assert_eq!(fixer_conversation.title.as_deref(), Some("Fix PR #72"));
 
     let updated = workspace_repo
         .get_by_conversation_id(&workspace.conversation_id)
@@ -303,6 +317,7 @@ async fn agent_workspace_review_feedback_routes_to_same_workspace_agent_once() {
         AgentWorkspaceRepairContinuation::ResumePrSupervision
     );
     assert_eq!(attempt.phase, AgentWorkspaceRepairPhase::Repairing);
+    assert_eq!(attempt.runtime_conversation_id, Some(fixer_conversation_id));
 
     let events = workspace_repo
         .list_publication_events(&workspace.conversation_id)

@@ -14,6 +14,8 @@ export type AgentsChatFocus =
       conversationId: string;
       runtimeHint?: AgentRuntimeSelection;
     }
+  | { type: "workspace_repair"; conversationId: string }
+  | { type: "pr_fixer"; conversationId: string }
   | { type: "ideation"; conversationId: string; sessionId: string }
   | {
       type: "verification";
@@ -78,6 +80,8 @@ export function getAgentChatFocusSwitchOptions({
   verificationFocusTarget,
   taskRuntimeFocusTarget,
   workspaceReviewFocusTarget,
+  workspaceRepairFocusTarget,
+  prFixerFocusTarget,
   automationRunFocusTarget,
   hasPlanArtifact,
 }: {
@@ -86,6 +90,8 @@ export function getAgentChatFocusSwitchOptions({
   verificationFocusTarget: Extract<AgentsChatFocus, { type: "verification" }> | null;
   taskRuntimeFocusTarget: Extract<AgentsChatFocus, { type: "task_runtime" }> | null;
   workspaceReviewFocusTarget: Extract<AgentsChatFocus, { type: "workspace_review" }> | null;
+  workspaceRepairFocusTarget: Extract<AgentsChatFocus, { type: "workspace_repair" }> | null;
+  prFixerFocusTarget: Extract<AgentsChatFocus, { type: "pr_fixer" }> | null;
   automationRunFocusTarget: Extract<AgentsChatFocus, { type: "automation_run" }> | null;
   hasPlanArtifact: boolean;
 }): AgentsChatFocusSwitchOption[] {
@@ -124,6 +130,24 @@ export function getAgentChatFocusSwitchOptions({
       type: "workspace_review",
       label: "Review",
       description: "Show the Review chat",
+      tone: "warning",
+    });
+  }
+
+  if (workspaceRepairFocusTarget) {
+    options.push({
+      type: "workspace_repair",
+      label: "Fixer",
+      description: "Show the workspace fixer chat",
+      tone: "warning",
+    });
+  }
+
+  if (prFixerFocusTarget) {
+    options.push({
+      type: "pr_fixer",
+      label: "PR Fixer",
+      description: "Show the PR fixer chat",
       tone: "warning",
     });
   }
@@ -259,6 +283,24 @@ export function getAgentsChatFocusDisplay(
     };
   }
 
+  if (chatFocus.type === "workspace_repair") {
+    return {
+      type: "workspace_repair",
+      label: "Fixer",
+      description: "Focused on a workspace fixer run",
+      tone: "warning",
+    };
+  }
+
+  if (chatFocus.type === "pr_fixer") {
+    return {
+      type: "pr_fixer",
+      label: "PR Fixer",
+      description: "Focused on a PR fixer run",
+      tone: "warning",
+    };
+  }
+
   if (chatFocus.type === "automation_run") {
     return {
       type: "automation_run",
@@ -285,6 +327,18 @@ export function getFocusedWorkspaceReviewConversationId(
   chatFocus: AgentsChatFocus,
 ): string | null {
   if (chatFocus.type === "workspace_review") {
+    return chatFocus.conversationId;
+  }
+  return null;
+}
+
+export function getFocusedFixerConversationId(
+  chatFocus: AgentsChatFocus,
+): string | null {
+  if (
+    chatFocus.type === "workspace_repair" ||
+    chatFocus.type === "pr_fixer"
+  ) {
     return chatFocus.conversationId;
   }
   return null;

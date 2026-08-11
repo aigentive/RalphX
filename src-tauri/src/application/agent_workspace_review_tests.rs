@@ -4010,7 +4010,7 @@ async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
     assert!(blocked.review_blocking_fingerprint.is_some());
     assert_eq!(blocked.review_fixer_status.as_deref(), Some("failed"));
     assert!(blocked.review_fixer_run_id.is_none());
-    assert!(blocked.review_fixer_conversation_id.is_none());
+    assert!(blocked.review_fixer_conversation_id.is_some());
     assert!(blocked
         .last_error
         .as_deref()
@@ -4105,7 +4105,7 @@ async fn complete_blocking_review_keeps_gate_blocking_when_cycle_cap_is_reached(
     assert!(completed.review_fixer_attempt_id.is_none());
     assert_eq!(completed.review_fixer_cycle_count, 0);
     assert!(completed.review_fixer_run_id.is_none());
-    assert!(completed.review_fixer_conversation_id.is_none());
+    assert!(completed.review_fixer_conversation_id.is_some());
     assert!(completed.last_error.is_none());
 }
 
@@ -4422,7 +4422,10 @@ async fn automatic_workspace_review_fixers_stop_after_the_configured_fresh_finge
     assert_eq!(capped.review_fixer_cycle_count, 2);
     assert!(capped.review_fixer_attempt_id.is_none());
     assert!(capped.review_fixer_run_id.is_none());
-    assert!(capped.review_fixer_conversation_id.is_none());
+    assert!(
+        capped.review_fixer_conversation_id.is_some(),
+        "capped state pre-creates a fixer conversation for manual routing"
+    );
     assert!(capped.last_error.is_none());
 }
 
@@ -4674,7 +4677,10 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_cycle_is
     assert_eq!(completed.review_fixer_cycle_count, 0);
     assert!(completed.review_fixer_attempt_id.is_none());
     assert!(completed.review_fixer_run_id.is_none());
-    assert!(completed.review_fixer_conversation_id.is_none());
+    assert!(
+        completed.review_fixer_conversation_id.is_some(),
+        "capped state pre-creates a fixer conversation for manual routing"
+    );
     let blocking_fingerprint = completed
         .review_blocking_fingerprint
         .clone()
@@ -4744,7 +4750,7 @@ async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_cycle_is
     let options = &sent_options[0];
     assert_eq!(
         options.conversation_id_override,
-        Some(workspace.conversation_id.clone())
+        start.context.monitor.review_fixer_conversation_id.clone()
     );
     assert_eq!(
         options.agent_name_override.as_deref(),

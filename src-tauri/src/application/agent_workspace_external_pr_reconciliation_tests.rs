@@ -226,7 +226,7 @@ async fn deps_with_workspace(
             pr_poller_registry: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
-            agent_workspace_repair_repo: None,
+            agent_workspace_repair_repo: Some(workspace_repo.clone()),
             plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new()),
             events: Arc::new(NullEventSink),
             durable_recovery_state: None,
@@ -361,6 +361,7 @@ async fn live_reconciliation_fails_closed_without_a_durable_repair_repository() 
     let chat = Arc::new(MockChatService::new());
     deps.pr_poller_registry = Some(Arc::clone(&registry));
     deps.chat_service = Some(chat.clone() as Arc<dyn ChatService>);
+    deps.agent_workspace_repair_repo = None;
 
     let error = reconcile_agent_workspace_external_pr(
         deps,

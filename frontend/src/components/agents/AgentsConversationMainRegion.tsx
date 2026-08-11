@@ -39,6 +39,8 @@ interface AgentsConversationMainRegionProps {
     "onFocusIdeationSessionForConversation"
   ];
   onFocusWorkspaceReview: ActiveConversationPanelProps["onFocusWorkspaceReview"];
+  onFocusWorkspaceRepair: ActiveConversationPanelProps["onFocusWorkspaceRepair"];
+  onFocusPrFixer: ActiveConversationPanelProps["onFocusPrFixer"];
   onFocusVerificationSession: ActiveConversationPanelProps["onFocusVerificationSession"];
   onFocusTaskRuntime: ActiveConversationPanelProps["onFocusTaskRuntime"];
   onFocusAutomationRun: ActiveConversationPanelProps["onFocusAutomationRun"];
@@ -101,6 +103,8 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onFocusIdeationSession,
   onFocusIdeationSessionForConversation,
   onFocusWorkspaceReview,
+  onFocusWorkspaceRepair,
+  onFocusPrFixer,
   onFocusVerificationSession,
   onFocusTaskRuntime,
   onFocusAutomationRun,
@@ -162,6 +166,8 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
           onFocusIdeationSessionForConversation
         }
         onFocusWorkspaceReview={onFocusWorkspaceReview}
+        onFocusWorkspaceRepair={onFocusWorkspaceRepair}
+        onFocusPrFixer={onFocusPrFixer}
         onFocusVerificationSession={onFocusVerificationSession}
         onFocusTaskRuntime={onFocusTaskRuntime}
         onFocusAutomationRun={onFocusAutomationRun}

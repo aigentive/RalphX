@@ -552,6 +552,29 @@ describe("AgentsChatHeader", () => {
     expect(onBackToWorkspaceChat).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { type: "workspace_repair" as const, conversationId: "repair-child" },
+    { type: "pr_fixer" as const, conversationId: "pr-fixer-child" },
+  ])("shows a back action for $type focus", (chatFocus) => {
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={null}
+        chatFocus={chatFocus}
+        artifactOpen={false}
+        activeArtifactTab="review"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+        onBackToWorkspaceChat={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Back to Workspace Chat" }),
+    ).toBeInTheDocument();
+  });
+
   it("keeps verification focus out of the primary title row", () => {
     renderWithProviders(
       <AgentsChatHeader

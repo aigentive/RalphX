@@ -613,15 +613,10 @@ describe("AgentsView", () => {
       screen.queryByTestId("agent-composer-runtime-model-gpt-5.5"),
     ).not.toBeInTheDocument();
     expect(
-      useAgentSessionStore.getState().runtimeByConversationId[
-        durableReviewerSummary.id
-      ],
-    ).toMatchObject({ provider: "claude", modelId: "sonnet" });
-    expect(
-      useAgentSessionStore.getState().composerRuntimeOverridesByConversationId[
-        durableReviewerSummary.id
-      ],
-    ).toMatchObject({ provider: "claude", modelId: "sonnet" });
+      useAgentSessionStore.getState().roleRuntimeOverridesByConversationId[
+        workspaceConversation.id
+      ]?.workspace_reviewer,
+    ).toMatchObject({ provider: "claude", model: "sonnet" });
     expect(
       useAgentSessionStore.getState().runtimeByConversationId[
         workspaceConversation.id

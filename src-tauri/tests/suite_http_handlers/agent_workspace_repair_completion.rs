@@ -19,8 +19,8 @@ use ralphx_lib::commands::{
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
     AgentRunStatus, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairOutcome,
-    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, ChatConversationId, GitTargetLeaseOwner,
-    IdeationAnalysisBaseRefKind, Project, ProjectId,
+    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, ChatConversation, ChatConversationId,
+    GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
 use ralphx_lib::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentWorkspaceRepairAttemptTransition,
@@ -240,6 +240,14 @@ async fn bind_current_attempt(
     state: &HttpServerState,
     conversation_id: ChatConversationId,
 ) -> (ChatConversationId, AgentRunId, AgentWorkspaceRepairAttempt) {
+    bind_current_attempt_in_runtime(state, conversation_id, None).await
+}
+
+async fn bind_current_attempt_in_runtime(
+    state: &HttpServerState,
+    conversation_id: ChatConversationId,
+    runtime_conversation_id: Option<ChatConversationId>,
+) -> (ChatConversationId, AgentRunId, AgentWorkspaceRepairAttempt) {
     let attempt = AgentWorkspaceRepairAttempt::new(
         conversation_id,
         AgentWorkspaceRepairSource::BaseUpdate,
@@ -266,7 +274,7 @@ async fn bind_current_attempt(
     let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
         panic!("first repair attempt must start");
     };
-    let owner_run = AgentRun::new(conversation_id);
+    let owner_run = AgentRun::new(runtime_conversation_id.unwrap_or(conversation_id));
     let owner_run_id = owner_run.id;
     state
         .app_state
@@ -283,6 +291,7 @@ async fn bind_current_attempt(
             expected_phase: AgentWorkspaceRepairPhase::Requested,
             expected_updated_at: started.updated_at,
             run_id: owner_run_id,
+            runtime_conversation_id,
             updated_at: Utc::now(),
         })
         .await
@@ -294,6 +303,126 @@ async fn bind_current_attempt(
         panic!("repair owner run must bind");
     };
     (conversation_id, owner_run_id, bound)
+}
+
+#[tokio::test]
+async fn child_hosted_repair_completion_resolves_and_settles_owning_workspace() {
+    let state = test_state();
+    let conversation_id = ChatConversationId::new();
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        ProjectId::from_string("child-repair-completion-project".to_string()),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-head".to_string()),
+        "ralphx/test/child-repair-completion".to_string(),
+        "/missing-on-purpose".to_string(),
+    );
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+    let runtime_conversation_id = ChatConversationId::new();
+    let (_, run_id, _) =
+        bind_current_attempt_in_runtime(&state, conversation_id, Some(runtime_conversation_id))
+            .await;
+
+    let (status, outcome) = response_status(
+        repair_completion_http_response(
+            state.clone(),
+            &runtime_conversation_id,
+            completion_headers(runtime_conversation_id, run_id),
+            CompleteAgentWorkspaceRepairRequest {
+                summary: "Child-hosted repair needs a recorded blocker.".to_string(),
+                blocker: Some("Waiting for a maintainer decision.".to_string()),
+                reported_fix_commit_sha: None,
+                resolution: None,
+            },
+        )
+        .await,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(outcome, "blocked");
+    let settled = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read repair attempt")
+        .expect("repair attempt remains current");
+    assert_eq!(settled.phase, AgentWorkspaceRepairPhase::Blocked);
+}
+
+#[tokio::test]
+async fn unrelated_parented_child_cannot_complete_workspace_repair() {
+    let state = test_state();
+    let (conversation_id, _owner_run_id, before) = seed_current_attempt(&state).await;
+    let runtime_conversation_id = ChatConversationId::new();
+    let mut unrelated_child = ChatConversation::new_project(ProjectId::from_string(
+        "repair-completion-project".to_string(),
+    ));
+    unrelated_child.id = runtime_conversation_id;
+    unrelated_child.parent_conversation_id = Some(conversation_id.as_str());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(unrelated_child)
+        .await
+        .expect("seed unrelated parented child");
+    let unrelated_run = state
+        .app_state
+        .agent_run_repo
+        .create(AgentRun::new(runtime_conversation_id))
+        .await
+        .expect("seed unrelated child run");
+
+    let response = repair_completion_http_response(
+        state.clone(),
+        &runtime_conversation_id,
+        completion_headers(runtime_conversation_id, unrelated_run.id),
+        CompleteAgentWorkspaceRepairRequest {
+            summary: "An unrelated parented child must not carry repair authority.".to_string(),
+            blocker: Some("This must be rejected.".to_string()),
+            reported_fix_commit_sha: None,
+            resolution: None,
+        },
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    let after = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("read current attempt")
+        .expect("attempt remains current");
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.phase, before.phase);
+    assert_eq!(after.updated_at, before.updated_at);
+    assert!(state
+        .app_state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publication events")
+        .is_empty());
+    let workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace remains present");
+    assert!(workspace.publication_pr_url.is_none());
+    assert!(workspace.publication_pr_status.is_none());
+    assert!(workspace.pr_supervision_summary.is_none());
 }
 
 async fn seed_current_attempt_with_resolvable_target(

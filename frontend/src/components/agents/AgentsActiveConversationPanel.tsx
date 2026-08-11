@@ -16,6 +16,7 @@ import {
   PanelRightOpen,
   Play,
   ShieldCheck,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -90,16 +91,11 @@ import { ideationKeys } from "@/hooks/useIdeation";
 import { useIdeationSettings } from "@/hooks/useIdeationSettings";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
 import { useEventBus } from "@/providers/EventProvider";
-import {
-  selectActiveAgentRunMeta,
-  selectQueuedMessages,
-  useChatStore,
-} from "@/stores/chatStore";
+import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import type {
   AgentArtifactTab,
   AgentProvider,
-  LaunchRuntimeRoleKey,
   AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
 import type {
@@ -161,6 +157,7 @@ import {
 import {
   getFocusedAutomationRunConversationId,
   getFocusedChatSessionId,
+  getFocusedFixerConversationId,
   getFocusedWorkspaceReviewConversationId,
   getAutomationRunFocusOptions,
   type AgentsChatFocus,
@@ -168,6 +165,11 @@ import {
   type AgentsChatFocusType,
   type AutomationRunFocusOptions,
 } from "./agentChatFocus";
+import {
+  getChatFocusRuntimeLabel,
+  getChatFocusRuntimeRole,
+  getChatFocusRuntimeTag,
+} from "./agentChatFocusRole";
 import {
   isTaskRuntimeContextType,
   type AgentTaskRuntimeContextType,
@@ -306,6 +308,15 @@ function isRuntimeItemOwnedByFocus(
   if (chatFocus.type === "workspace_review") {
     return (
       item.source === "workspace_review" &&
+      (item.conversationId ?? item.contextId) === chatFocus.conversationId
+    );
+  }
+  if (
+    chatFocus.type === "workspace_repair" ||
+    chatFocus.type === "pr_fixer"
+  ) {
+    return (
+      item.source === chatFocus.type &&
       (item.conversationId ?? item.contextId) === chatFocus.conversationId
     );
   }
@@ -768,6 +779,8 @@ interface AgentsActiveConversationPanelProps {
     conversationId: string,
     runtimeHint?: AgentRuntimeSelection,
   ) => void;
+  onFocusWorkspaceRepair: (conversationId: string) => void;
+  onFocusPrFixer: (conversationId: string) => void;
   onFocusVerificationSession: (
     parentSessionId: string,
     childSessionId: string
@@ -835,6 +848,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onFocusIdeationSession,
   onFocusIdeationSessionForConversation,
   onFocusWorkspaceReview,
+  onFocusWorkspaceRepair,
+  onFocusPrFixer,
   onFocusVerificationSession,
   onFocusTaskRuntime,
   onFocusAutomationRun,
@@ -875,8 +890,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
   const focusedWorkspaceReviewConversationId =
     getFocusedWorkspaceReviewConversationId(chatFocus);
+  const focusedFixerConversationId = getFocusedFixerConversationId(chatFocus);
   const runtimeControlConversationId =
-    focusedWorkspaceReviewConversationId ?? selectedConversationId;
+    focusedWorkspaceReviewConversationId ??
+    focusedFixerConversationId ??
+    selectedConversationId;
   const { registry: modelRegistry } = useAgentModels();
   const { data: featureFlags } = useFeatureFlags();
   const teamMode =
@@ -1203,6 +1221,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ? `${taskRuntimeFocus.contextType}:${taskRuntimeFocus.taskId}`
     : focusedWorkspaceReviewConversationId
     ? `workspace_review:${focusedWorkspaceReviewConversationId}`
+    : focusedFixerConversationId
+    ? `${chatFocus.type}:${focusedFixerConversationId}`
     : focusedAutomationRunConversationId
     ? `automation_run:${focusedAutomationRunConversationId}`
     : focusedChatSessionId ?? "workspace";
@@ -1301,15 +1321,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const activeConversationAgentStatus = useChatStore(
     (state) => state.agentStatus[activeConversationStoreKey] ?? "idle",
   );
-  const activeRoleRunMeta = useChatStore(
-    selectActiveAgentRunMeta(activeConversationStoreKey),
-  );
-  const activeRole =
-    activeRoleRunMeta?.launchRole === "workspace_reviewer" ||
-    activeRoleRunMeta?.launchRole === "workspace_repair" ||
-    activeRoleRunMeta?.launchRole === "pr_fixer"
-      ? (activeRoleRunMeta.launchRole as LaunchRuntimeRoleKey)
-      : null;
+  const activeRole = getChatFocusRuntimeRole(chatFocus);
   const roleDefaultsQuery = useManualRoleDefaults(activeProjectId);
   const activeRoleDefault = activeRole
     ? roleDefaultsQuery.catalog?.roles.find((entry) => entry.role === activeRole)
@@ -1320,20 +1332,30 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       ? state.roleRuntimeOverridesByConversationId[selectedConversationId]?.[activeRole] ?? null
       : null,
   );
-  const activeRoleSelection = activeRoleOverride ?? activeRoleDefault;
+  const activeRoleSelection =
+    activeRoleOverride ??
+    activeRoleDefault ??
+    (activeRole
+      ? ({
+          provider: selectableWorkspaceRuntime.provider,
+          model: selectableWorkspaceRuntime.modelId,
+          effort: selectableWorkspaceRuntime.effort,
+          serviceTier:
+            chatFocus.type === "workspace_review"
+              ? focusedWorkspaceReviewServiceTier ?? "provider_default"
+              : "provider_default",
+          coordinationMode: null,
+          personaId: null,
+        } satisfies ManualRoleRuntimeSelection)
+      : null);
   const activeRoleRuntime = activeRoleSelection
     ? runtimeFromManualRoleDefault(
         { ...activeRoleSelection, approvalPolicy: null, sandboxMode: null },
         modelRegistry,
       )
     : null;
-  const activeRoleLabel =
-    activeRole === "workspace_reviewer"
-      ? "Reviewer"
-      : activeRole === "workspace_repair" || activeRole === "pr_fixer"
-        ? "Fixer"
-        : null;
-  const activeRoleTag = activeRole === "workspace_reviewer" ? "REV" : "FIX";
+  const activeRoleLabel = getChatFocusRuntimeLabel(chatFocus);
+  const activeRoleTag = getChatFocusRuntimeTag(chatFocus);
   const composerRuntime = activeRoleRuntime ?? normalizedActiveRuntime;
   const updateActiveRoleRuntime = useCallback(
     (changes: Partial<ManualRoleRuntimeSelection>) => {
@@ -1385,7 +1407,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     isReady: providerSettingsReady,
   });
   const usesWorkspaceRuntimeControls =
-    !isFocusedChildChat || chatFocus.type === "workspace_review";
+    !isFocusedChildChat ||
+    chatFocus.type === "workspace_review" ||
+    chatFocus.type === "workspace_repair" ||
+    chatFocus.type === "pr_fixer";
   const workspaceSendRuntime = usesWorkspaceRuntimeControls
     ? selectableComposerRuntime
     : normalizedActiveRuntime;
@@ -1648,6 +1673,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     if (focusedWorkspaceReviewConversationId) {
       return buildStoreKey("project", focusedWorkspaceReviewConversationId);
     }
+    if (focusedFixerConversationId) {
+      return buildStoreKey("project", focusedFixerConversationId);
+    }
     if (focusedAutomationRunConversationId) {
       return buildStoreKey("project", focusedAutomationRunConversationId);
     }
@@ -1659,6 +1687,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeConversation,
     focusedAutomationRunConversationId,
     focusedChatSessionId,
+    focusedFixerConversationId,
     focusedWorkspaceReviewConversationId,
     taskRuntimeFocus,
   ]);
@@ -1670,11 +1699,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     taskRuntimeFocus
       ? null
       : focusedWorkspaceReviewConversationId ??
+        focusedFixerConversationId ??
         focusedAutomationRunConversationId ??
         (!isFocusedChildChat ? selectedConversationId : null);
   const panelAgentProcessContextIdOverride = taskRuntimeFocus
     ? taskRuntimeFocus.taskId
     : focusedWorkspaceReviewConversationId ??
+      focusedFixerConversationId ??
       focusedAutomationRunConversationId ??
       (!isFocusedChildChat && activeConversation.contextType === "project"
         ? selectedConversationId
@@ -1683,6 +1714,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     taskRuntimeFocus
       ? null
       : focusedWorkspaceReviewConversationId ??
+        focusedFixerConversationId ??
         focusedAutomationRunConversationId ??
         (!isFocusedChildChat ? selectedConversationId : null);
   const queuedMessages = useChatStore(queuedMessagesSelector);
@@ -1730,6 +1762,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             ? MessageSquare
             : option.type === "task_runtime"
             ? Play
+            : option.type === "workspace_repair" || option.type === "pr_fixer"
+            ? Wrench
             : option.tone === "accent"
             ? Lightbulb
             : option.tone === "warning"
@@ -1767,6 +1801,18 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       onFocusWorkspaceReview(conversationId);
     },
     [onFocusWorkspaceReview],
+  );
+  const handleViewRuntimeWorkspaceRepair = useCallback(
+    (conversationId: string) => {
+      onFocusWorkspaceRepair(conversationId);
+    },
+    [onFocusWorkspaceRepair],
+  );
+  const handleViewRuntimePrFixer = useCallback(
+    (conversationId: string) => {
+      onFocusPrFixer(conversationId);
+    },
+    [onFocusPrFixer],
   );
   const handleOpenAutomationRun = useCallback(
     (automationId: string, run: AutomationRun) => {
@@ -2865,7 +2911,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         <AgentWorkspaceFileLinkProvider
           conversationId={workspaceConversationId}
           workspace={
-            chatFocus.type === "workspace_review"
+            chatFocus.type === "workspace_review" ||
+            chatFocus.type === "workspace_repair" ||
+            chatFocus.type === "pr_fixer"
               ? activeWorkspace
               : isFocusedChildChat
                 ? null
@@ -3041,6 +3089,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onViewIdeation={onFocusIdeationSession}
                     onViewVerification={onFocusVerificationSession}
                     onViewWorkspaceReview={handleViewRuntimeWorkspaceReview}
+                    onViewWorkspaceRepair={handleViewRuntimeWorkspaceRepair}
+                    onViewPrFixer={handleViewRuntimePrFixer}
                     onViewTaskRuntime={handleViewRuntimeTask}
                     onViewAutomationRun={handleOpenAutomationRun}
                     onOpenFile={onOpenPublishFile}
@@ -3124,9 +3174,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       />
                       <span>
                         {activeRoleLabel} run active — composer targets {activeRoleLabel}
-                        {activeRoleRunMeta?.agentName
-                          ? ` › ${activeRoleRunMeta.agentName}`
-                          : ""}
                       </span>
                     </div>
                   )}
@@ -3272,8 +3319,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       placeholder: "Current project",
                       disabled: true,
                     }}
-                    {...(activeRole ? { runtimeTag: activeRoleTag } : {})}
-                    {...(chatFocus.type === "workspace"
+                    {...(activeRoleTag ? { runtimeTag: activeRoleTag } : {})}
+                    {...(chatFocus.type === "workspace" || activeRole
                       ? {
                           runtimeDefault: {
                             source: activeRole

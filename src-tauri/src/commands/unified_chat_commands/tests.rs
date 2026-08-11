@@ -2123,6 +2123,7 @@ async fn publish_repair_message_routes_spawn_to_effective_target_worktree() {
         "merge conflict",
         AgentWorkspaceRepairRuntimeOverrides::default(),
         &target,
+        &workspace.conversation_id,
     )
     .await
     .expect("repair message should send");

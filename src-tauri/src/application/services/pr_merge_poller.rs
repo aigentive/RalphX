@@ -21,6 +21,11 @@ use crate::application::agent_workspace_base_staleness::{
     classify_health_hold_disposition, BaseStalenessObservation, HealthHoldDisposition,
 };
 use crate::application::agent_workspace_ci_rerun::ci_rerun_hold_still_pending;
+use crate::application::agent_workspace_fixer_conversation::{
+    agent_workspace_fixer_runtime_conversations,
+    ensure_agent_workspace_fixer_conversation_with_repo, AgentWorkspaceFixerKind,
+    AgentWorkspaceFixerTitleContext,
+};
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
 };
@@ -79,8 +84,9 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository,
     AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
-    AgentWorkspaceRepairRepository, BranchUpdateRepository, PlanBranchRepository,
-    SettleAgentWorkspaceRepairAttempt, SettleAgentWorkspaceRepairAttemptOutcome,
+    AgentWorkspaceRepairRepository, BranchUpdateRepository, ChatConversationRepository,
+    PlanBranchRepository, SettleAgentWorkspaceRepairAttempt,
+    SettleAgentWorkspaceRepairAttemptOutcome,
 };
 use crate::domain::services::github_service::{
     PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
@@ -249,6 +255,9 @@ pub struct PrPollerRegistry {
     /// production AppState once and copied into each direct workspace poller.
     branch_update_repo: Arc<std::sync::RwLock<Option<Arc<dyn BranchUpdateRepository>>>>,
 
+    /// Conversation persistence for attempt-owned fixer children.
+    chat_conversation_repo: Arc<std::sync::RwLock<Option<Arc<dyn ChatConversationRepository>>>>,
+
     /// Last branch observations consumed synchronously by agent runtime-context composition.
     branch_status_cache: BranchStatusCache,
 }
@@ -332,6 +341,7 @@ impl PrPollerRegistry {
             plan_branch_repo,
             notification_service: Arc::new(std::sync::RwLock::new(None)),
             branch_update_repo: Arc::new(std::sync::RwLock::new(None)),
+            chat_conversation_repo: Arc::new(std::sync::RwLock::new(None)),
             branch_status_cache: BranchStatusCache::default(),
         }
     }
@@ -342,6 +352,12 @@ impl PrPollerRegistry {
 
     pub fn set_branch_update_repo(&self, repo: Arc<dyn BranchUpdateRepository>) {
         if let Ok(mut current) = self.branch_update_repo.write() {
+            *current = Some(repo);
+        }
+    }
+
+    pub fn set_chat_conversation_repo(&self, repo: Arc<dyn ChatConversationRepository>) {
+        if let Ok(mut current) = self.chat_conversation_repo.write() {
             *current = Some(repo);
         }
     }
@@ -478,6 +494,11 @@ impl PrPollerRegistry {
             .read()
             .ok()
             .and_then(|repo| repo.clone());
+        let chat_conversation_repo = self
+            .chat_conversation_repo
+            .read()
+            .ok()
+            .and_then(|repo| repo.clone());
         let branch_status_cache = self.branch_status_cache.clone();
         let conversation_id_for_spawn = conversation_id.clone();
 
@@ -495,6 +516,7 @@ impl PrPollerRegistry {
                 agent_run_repo,
                 repair_repo,
                 branch_update_repo,
+                chat_conversation_repo,
                 plan_branch_repo,
                 chat_service,
                 notification_service,
@@ -742,6 +764,10 @@ impl PrPollerRegistry {
             Some(agent_run_repo),
             Some(repair_repo),
             self.branch_update_repo
+                .read()
+                .ok()
+                .and_then(|repo| repo.clone()),
+            self.chat_conversation_repo
                 .read()
                 .ok()
                 .and_then(|repo| repo.clone()),
@@ -1205,6 +1231,7 @@ async fn agent_workspace_poll_loop(
     agent_run_repo: Arc<dyn AgentRunRepository>,
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
+    chat_conversation_repo: Option<Arc<dyn ChatConversationRepository>>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
@@ -1271,6 +1298,7 @@ async fn agent_workspace_poll_loop(
                 drop(permit);
                 terminalize_polled_agent_workspace_with_notifications(
                     &workspace_repo,
+                    repair_repo.as_ref(),
                     &agent_run_repo,
                     &plan_branch_repo,
                     &chat_service,
@@ -1293,6 +1321,7 @@ async fn agent_workspace_poll_loop(
                 drop(permit);
                 terminalize_polled_agent_workspace_with_notifications(
                     &workspace_repo,
+                    repair_repo.as_ref(),
                     &agent_run_repo,
                     &plan_branch_repo,
                     &chat_service,
@@ -1446,6 +1475,7 @@ async fn agent_workspace_poll_loop(
                             Some(Arc::clone(&agent_run_repo)),
                             repair_repo.as_ref().map(Arc::clone),
                             branch_update_repo.as_ref().map(Arc::clone),
+                            chat_conversation_repo.as_ref().map(Arc::clone),
                             Arc::clone(&chat_service),
                         )
                         .await
@@ -1490,6 +1520,7 @@ async fn agent_workspace_poll_loop(
                     Some(Arc::clone(&agent_run_repo)),
                     repair_repo.as_ref().map(Arc::clone),
                     branch_update_repo.as_ref().map(Arc::clone),
+                    chat_conversation_repo.as_ref().map(Arc::clone),
                     Arc::clone(&chat_service),
                     notification_service.as_ref().map(Arc::clone),
                     Some(&project),
@@ -1556,6 +1587,7 @@ async fn agent_workspace_poll_loop(
                     Some(Arc::clone(&agent_run_repo)),
                     repair_repo.as_ref().map(Arc::clone),
                     branch_update_repo.as_ref().map(Arc::clone),
+                    chat_conversation_repo.as_ref().map(Arc::clone),
                     Arc::clone(&chat_service),
                 )
                 .await
@@ -1805,6 +1837,7 @@ async fn re_arm_escalated_open_effect_continuation(
 #[cfg(test)]
 async fn terminalize_polled_agent_workspace(
     workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    repair_repo: &Arc<dyn AgentWorkspaceRepairRepository>,
     agent_run_repo: &Arc<dyn AgentRunRepository>,
     plan_branch_repo: &Arc<dyn PlanBranchRepository>,
     chat_service: &Arc<dyn ChatService>,
@@ -1819,6 +1852,7 @@ async fn terminalize_polled_agent_workspace(
 ) {
     terminalize_polled_agent_workspace_with_notifications(
         workspace_repo,
+        Some(repair_repo),
         agent_run_repo,
         plan_branch_repo,
         chat_service,
@@ -1838,6 +1872,7 @@ async fn terminalize_polled_agent_workspace(
 #[allow(clippy::too_many_arguments)]
 async fn terminalize_polled_agent_workspace_with_notifications(
     workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    repair_repo: Option<&Arc<dyn AgentWorkspaceRepairRepository>>,
     agent_run_repo: &Arc<dyn AgentRunRepository>,
     plan_branch_repo: &Arc<dyn PlanBranchRepository>,
     chat_service: &Arc<dyn ChatService>,
@@ -1892,9 +1927,17 @@ async fn terminalize_polled_agent_workspace_with_notifications(
     };
 
     if let Some(pr_number) = review_pr_number {
+        let Some(repair_repo) = repair_repo else {
+            tracing::error!(
+                conversation_id = conversation_id.as_str(),
+                "Agent workspace terminal cleanup requires durable repair authority"
+            );
+            return;
+        };
         loop {
             match settle_review_pr_terminal_observation(
                 Arc::clone(workspace_repo),
+                Arc::clone(repair_repo),
                 Arc::clone(agent_run_repo),
                 Some(Arc::clone(plan_branch_repo)),
                 Some(Arc::clone(chat_service)),
@@ -1961,8 +2004,16 @@ async fn terminalize_polled_agent_workspace_with_notifications(
     }
 
     loop {
+        let Some(repair_repo) = repair_repo else {
+            tracing::error!(
+                conversation_id = conversation_id.as_str(),
+                "Agent workspace terminal cleanup requires durable repair authority"
+            );
+            return;
+        };
         let terminalized = terminalize_agent_workspace_after_pr(
             Arc::clone(workspace_repo),
+            Arc::clone(repair_repo),
             Arc::clone(agent_run_repo),
             Some(Arc::clone(plan_branch_repo)),
             Some(Arc::clone(chat_service)),
@@ -2400,6 +2451,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
     _agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
+    chat_conversation_repo: Option<Arc<dyn ChatConversationRepository>>,
     chat_service: Arc<dyn ChatService>,
 ) -> crate::AppResult<bool> {
     let details = agent_workspace_pr_merge_conflict_details(health);
@@ -2417,6 +2469,13 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
                 .to_string(),
         ));
     };
+    #[cfg(not(test))]
+    let chat_conversation_repo = Some(chat_conversation_repo.ok_or_else(|| {
+        AppError::Infrastructure(
+            "durable PR conflict repair dispatch requires fixer conversation persistence"
+                .to_string(),
+        )
+    })?);
 
     let workspace = workspace_repo
         .get_by_conversation_id(conversation_id)
@@ -2555,12 +2614,26 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
     let target_identity =
         GitService::canonical_target_identity(working_dir, &workspace.branch_name).await?;
     let repair_run_id = AgentRunId::new();
+    let runtime_conversation_id = match chat_conversation_repo.as_ref() {
+        Some(chat_conversation_repo) => {
+            ensure_agent_workspace_fixer_conversation_with_repo(
+                chat_conversation_repo.as_ref(),
+                &workspace,
+                attempt.runtime_conversation_id.as_ref(),
+                AgentWorkspaceFixerKind::WorkspaceRepair,
+                AgentWorkspaceFixerTitleContext::Repair(attempt.source),
+            )
+            .await?
+        }
+        None => workspace.conversation_id,
+    };
     let dispatch = match reserve_agent_workspace_repair_dispatch(
         Arc::clone(&repair_repo),
         Arc::clone(&branch_update_repo),
         target_identity,
         attempt,
         repair_run_id.clone(),
+        Some(runtime_conversation_id),
         &repair_summary,
         workspace.pr_auto_merge_current,
     )
@@ -2620,7 +2693,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
             SendMessageOptions {
                 preallocated_agent_run_id: Some(repair_run_id),
                 queue_policy: SendQueuePolicy::RequireImmediateStart,
-                conversation_id_override: Some(workspace.conversation_id.clone()),
+                conversation_id_override: Some(*dispatch.runtime_conversation_id()),
                 agent_name_override: Some(AGENT_WORKSPACE_REPAIR.to_string()),
                 working_directory_override: Some(PathBuf::from(&workspace.worktree_path)),
                 force_new_provider_session: true,
@@ -2631,7 +2704,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed_with_repair_repo(
         .await;
     let settlement = classify_agent_workspace_repair_delivery(
         delivery.as_ref(),
-        conversation_id,
+        dispatch.runtime_conversation_id(),
         &repair_run_id,
     );
     match delivery {
@@ -2743,7 +2816,13 @@ async fn route_agent_workspace_pr_conflict_repair_legacy(
         || workspace.publication_pr_number != Some(pr_number)
         || workspace.has_terminal_publication_pr_status()
         || !workspace.auto_publish_enabled
-        || agent_workspace_pr_autofix_repair_in_flight(&workspace, agent_run_repo.as_ref()).await?
+        || agent_workspace_pr_autofix_repair_in_flight(
+            &workspace,
+            workspace_repo.as_ref(),
+            None,
+            agent_run_repo.as_ref(),
+        )
+        .await?
     {
         return Ok(false);
     }
@@ -2841,6 +2920,7 @@ async fn route_agent_workspace_pr_conflict_repair_legacy(
             SendMessageOptions {
                 preallocated_agent_run_id: Some(repair_run_id),
                 queue_policy: SendQueuePolicy::RequireImmediateStart,
+                // Legacy claim-only route has no durable attempt to resolve child completion.
                 conversation_id_override: Some(workspace.conversation_id.clone()),
                 agent_name_override: Some(AGENT_WORKSPACE_REPAIR.to_string()),
                 working_directory_override: Some(PathBuf::from(&workspace.worktree_path)),
@@ -3244,6 +3324,7 @@ async fn route_agent_workspace_pr_autofix_if_needed(
         agent_run_repo,
         None,
         None,
+        None,
         chat_service,
     )
     .await
@@ -3262,6 +3343,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
     agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
+    chat_conversation_repo: Option<Arc<dyn ChatConversationRepository>>,
     chat_service: Arc<dyn ChatService>,
 ) -> crate::AppResult<bool> {
     route_agent_workspace_pr_autofix_if_needed_with_notifications(
@@ -3273,6 +3355,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
         agent_run_repo,
         repair_repo,
         branch_update_repo,
+        chat_conversation_repo,
         chat_service,
         None,
         None,
@@ -3290,6 +3373,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_notifications(
     agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
+    chat_conversation_repo: Option<Arc<dyn ChatConversationRepository>>,
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
     project: Option<&Project>,
@@ -3315,6 +3399,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_notifications(
         agent_run_repo,
         repair_repo,
         branch_update_repo,
+        chat_conversation_repo,
         chat_service,
         notification_service,
         project,
@@ -3420,6 +3505,7 @@ async fn recheck_agent_workspace_pr_health_once(
         Some(Arc::clone(&state.agent_run_repo)),
         Some(Arc::clone(&state.agent_workspace_repair_repo)),
         Some(Arc::clone(&state.branch_update_repo)),
+        Some(Arc::clone(&state.chat_conversation_repo)),
         chat_service,
         Some(state.notification_service()),
         Some(&project),
@@ -3784,6 +3870,7 @@ pub(crate) async fn route_ideation_plan_pr_autofix_if_needed(
         agent_run_repo,
         None,
         None,
+        None,
         chat_service,
         None,
         None,
@@ -3803,6 +3890,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
     agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
+    chat_conversation_repo: Option<Arc<dyn ChatConversationRepository>>,
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
     project: Option<&Project>,
@@ -3837,7 +3925,13 @@ async fn route_agent_workspace_pr_autofix_for_target(
         ));
     }
     if repair_repo.is_none()
-        && agent_workspace_pr_autofix_repair_in_flight(&workspace, agent_run_repo.as_ref()).await?
+        && agent_workspace_pr_autofix_repair_in_flight(
+            &workspace,
+            workspace_repo.as_ref(),
+            repair_repo.as_ref(),
+            agent_run_repo.as_ref(),
+        )
+        .await?
     {
         return Ok(false);
     }
@@ -4335,6 +4429,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
     dispatch_agent_workspace_pr_autofix(
         repair_repo,
         branch_update_repo,
+        chat_conversation_repo,
         workspace_repo,
         agent_run_repo,
         chat_service,
@@ -4672,6 +4767,7 @@ struct AgentWorkspacePrAutofixDispatch<'a> {
 async fn dispatch_agent_workspace_pr_autofix(
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
+    chat_conversation_repo: Option<Arc<dyn ChatConversationRepository>>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: &Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
@@ -4714,6 +4810,12 @@ async fn dispatch_agent_workspace_pr_autofix(
             "durable PR autofix dispatch requires canonical Git target authority".to_string(),
         ));
     };
+    #[cfg(not(test))]
+    let chat_conversation_repo = Some(chat_conversation_repo.ok_or_else(|| {
+        AppError::Infrastructure(
+            "durable PR autofix dispatch requires fixer conversation persistence".to_string(),
+        )
+    })?);
     let preallocated_run_id = AgentRunId::new();
     let start = start_or_join_agent_workspace_repair(
         Arc::clone(&repair_repo),
@@ -4826,12 +4928,26 @@ async fn dispatch_agent_workspace_pr_autofix(
     attempt.pr_autofix_health_fingerprint = Some(classification.to_string());
     let target_identity =
         GitService::canonical_target_identity(working_dir, &workspace.branch_name).await?;
+    let runtime_conversation_id = match chat_conversation_repo.as_ref() {
+        Some(chat_conversation_repo) => {
+            ensure_agent_workspace_fixer_conversation_with_repo(
+                chat_conversation_repo.as_ref(),
+                workspace,
+                attempt.runtime_conversation_id.as_ref(),
+                AgentWorkspaceFixerKind::PrFixer,
+                AgentWorkspaceFixerTitleContext::PullRequest(workspace.publication_pr_number),
+            )
+            .await?
+        }
+        None => workspace.conversation_id,
+    };
     let dispatch_attempt = match reserve_agent_workspace_repair_dispatch(
         Arc::clone(&repair_repo),
         Arc::clone(&branch_update_repo),
         target_identity,
         attempt,
         preallocated_run_id.clone(),
+        Some(runtime_conversation_id),
         dispatch.repair_summary,
         auto_merge_before_reservation,
     )
@@ -4939,6 +5055,7 @@ async fn dispatch_agent_workspace_pr_autofix(
             }
         };
     send_options.preallocated_agent_run_id = Some(preallocated_run_id.clone());
+    send_options.conversation_id_override = Some(*dispatch_attempt.runtime_conversation_id());
     send_options.queue_policy = SendQueuePolicy::RequireImmediateStart;
     send_options.metadata = Some(pr_autofix_action_metadata(pr_number, classification));
 
@@ -4952,7 +5069,7 @@ async fn dispatch_agent_workspace_pr_autofix(
         .await;
     let settlement = classify_agent_workspace_repair_delivery(
         delivery.as_ref(),
-        conversation_id,
+        dispatch_attempt.runtime_conversation_id(),
         &preallocated_run_id,
     );
     let send_result = match delivery {
@@ -5067,6 +5184,7 @@ async fn dispatch_agent_workspace_pr_autofix_legacy(
             }
         };
     send_options.preallocated_agent_run_id = Some(preallocated_run_id.clone());
+    // Legacy claim-only route has no durable attempt to resolve child completion.
     send_options.queue_policy = SendQueuePolicy::RequireImmediateStart;
     send_options.metadata = Some(pr_autofix_action_metadata(pr_number, classification));
     if let Some(pr_status) = dispatch.publication_status {
@@ -5155,6 +5273,8 @@ async fn dispatch_agent_workspace_pr_autofix_legacy(
 
 async fn agent_workspace_pr_autofix_repair_in_flight(
     workspace: &AgentConversationWorkspace,
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    repair_repo: Option<&Arc<dyn AgentWorkspaceRepairRepository>>,
     agent_run_repo: Option<&Arc<dyn AgentRunRepository>>,
 ) -> crate::AppResult<bool> {
     if workspace.publication_push_status.as_deref() == Some("needs_agent")
@@ -5172,18 +5292,53 @@ async fn agent_workspace_pr_autofix_repair_in_flight(
         let Some(agent_run_repo) = agent_run_repo else {
             return Ok(true);
         };
-        return Ok(agent_run_repo
-            .get_active_for_conversation(&workspace.conversation_id)
-            .await?
-            .is_some());
+        return any_agent_workspace_fixer_runtime_is_active(
+            workspace,
+            workspace_repo,
+            repair_repo,
+            agent_run_repo.as_ref(),
+        )
+        .await;
     }
     let Some(agent_run_repo) = agent_run_repo else {
         return Ok(false);
     };
-    Ok(agent_run_repo
-        .get_active_for_conversation(&workspace.conversation_id)
-        .await?
-        .is_some())
+    any_agent_workspace_fixer_runtime_is_active(
+        workspace,
+        workspace_repo,
+        repair_repo,
+        agent_run_repo.as_ref(),
+    )
+    .await
+}
+
+async fn any_agent_workspace_fixer_runtime_is_active(
+    workspace: &AgentConversationWorkspace,
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    repair_repo: Option<&Arc<dyn AgentWorkspaceRepairRepository>>,
+    agent_run_repo: &dyn AgentRunRepository,
+) -> crate::AppResult<bool> {
+    let conversations = match repair_repo {
+        Some(repair_repo) => {
+            agent_workspace_fixer_runtime_conversations(
+                workspace,
+                workspace_repo,
+                repair_repo.as_ref(),
+            )
+            .await?
+        }
+        None => vec![workspace.conversation_id],
+    };
+    for conversation_id in conversations {
+        if agent_run_repo
+            .get_active_for_conversation(&conversation_id)
+            .await?
+            .is_some()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Shared by the poller's first dispatch and by durable redelivery so a recovered PR autofix keeps
@@ -5999,6 +6154,7 @@ async fn route_agent_workspace_review_feedback_if_present(
         agent_run_repo,
         None,
         None,
+        None,
         chat_service,
     )
     .await
@@ -6013,6 +6169,7 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
     agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
+    chat_conversation_repo: Option<Arc<dyn ChatConversationRepository>>,
     chat_service: Arc<dyn ChatService>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo
@@ -6151,6 +6308,7 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
     dispatch_agent_workspace_pr_autofix(
         repair_repo,
         branch_update_repo,
+        chat_conversation_repo,
         workspace_repo,
         agent_run_repo,
         chat_service,

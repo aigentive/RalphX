@@ -82,6 +82,7 @@ async fn settled_and_cross_conversation_attempts_cannot_transition_or_bind_runs(
             expected_phase: settled.phase,
             expected_updated_at: settled.updated_at,
             run_id: crate::domain::entities::AgentRunId::from_string("settled-memory-run"),
+            runtime_conversation_id: None,
             updated_at: settled.updated_at + Duration::seconds(2),
         })
         .await

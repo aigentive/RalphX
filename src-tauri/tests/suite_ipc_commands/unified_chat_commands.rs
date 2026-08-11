@@ -2566,6 +2566,7 @@ async fn workspace_publish_repair_message_wakes_same_agent_conversation() {
         &workspace,
         "Failed to commit: typecheck failed",
         AgentWorkspaceRepairRuntimeOverrides::default(),
+        &workspace.conversation_id,
     )
     .await
     .expect("repair handoff should be sent through chat service");
@@ -3261,6 +3262,7 @@ mod ipc_contract {
 
         recover_stale_agent_workspace_publish_repairs_on_startup(
             std::sync::Arc::clone(&state.agent_conversation_workspace_repo),
+            std::sync::Arc::clone(&state.agent_workspace_repair_repo),
             std::sync::Arc::clone(&state.agent_run_repo),
         )
         .await;
@@ -3291,6 +3293,7 @@ mod ipc_contract {
 
         recover_stale_agent_workspace_publish_repairs_on_startup(
             std::sync::Arc::clone(&state.agent_conversation_workspace_repo),
+            std::sync::Arc::clone(&state.agent_workspace_repair_repo),
             std::sync::Arc::clone(&state.agent_run_repo),
         )
         .await;

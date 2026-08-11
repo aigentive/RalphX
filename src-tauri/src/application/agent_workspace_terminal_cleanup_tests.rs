@@ -320,6 +320,7 @@ async fn terminal_cleanup_blocks_deletion_while_an_active_run_cannot_be_stopped(
 
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo.clone(),
+        workspace_repo.clone(),
         run_repo,
         None,
         None,
@@ -419,6 +420,7 @@ async fn terminalize_stops_active_run_and_records_archive_reason_before_cleanup(
 
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo.clone(),
+        workspace_repo.clone(),
         run_repo.clone(),
         None,
         Some(chat_service.clone()),
@@ -466,9 +468,12 @@ async fn terminalize_reports_missing_workspace_without_claiming_cleanup() {
     let conversation_id =
         ChatConversationId::from_string("69696969-6969-6969-6969-696969696969".to_string());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo: Arc<dyn crate::domain::repositories::AgentWorkspaceRepairRepository> =
+        workspace_repo.clone();
 
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo,
+        repair_repo,
         Arc::new(MemoryAgentRunRepository::new()),
         None,
         None,
@@ -487,7 +492,7 @@ async fn terminalize_reports_missing_workspace_without_claiming_cleanup() {
     assert!(outcome
         .message
         .as_deref()
-        .is_some_and(|message| message.contains("disappeared before local cleanup")));
+        .is_some_and(|message| message.contains("disappeared before terminal runtime cleanup")));
 }
 
 #[tokio::test]
@@ -516,8 +521,11 @@ async fn terminalize_releases_the_observed_operation_owned_publish_lease() {
         .await
         .expect("claim operation-owned lease");
 
+    let repair_repo: Arc<dyn crate::domain::repositories::AgentWorkspaceRepairRepository> =
+        workspace_repo.clone();
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo.clone(),
+        repair_repo,
         Arc::new(MemoryAgentRunRepository::new()),
         None,
         None,
@@ -575,8 +583,11 @@ async fn terminalize_never_releases_a_newer_publish_lease_token() {
         "new-redrive-token",
     );
 
+    let repair_repo: Arc<dyn crate::domain::repositories::AgentWorkspaceRepairRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo.clone(),
+        repair_repo,
         Arc::new(MemoryAgentRunRepository::new()),
         None,
         None,
@@ -856,6 +867,7 @@ async fn terminalize_blocks_cleanup_when_active_run_lookup_fails() {
 
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo.clone(),
+        workspace_repo.clone(),
         run_repo,
         None,
         None,
@@ -901,6 +913,7 @@ async fn terminalize_blocks_cleanup_when_runtime_stop_fails() {
     chat_service.fail_next_stop_agent_calls(1).await;
 
     let outcome = terminalize_agent_workspace_after_pr(
+        workspace_repo.clone(),
         workspace_repo.clone(),
         run_repo,
         None,
@@ -952,6 +965,7 @@ async fn terminalize_blocks_cleanup_when_failed_run_cannot_be_persisted() {
 
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo.clone(),
+        workspace_repo.clone(),
         run_repo,
         None,
         Some(chat_service),
@@ -997,6 +1011,7 @@ async fn terminalize_blocks_cleanup_when_active_run_remains_after_stop() {
 
     let outcome = terminalize_agent_workspace_after_pr(
         workspace_repo.clone(),
+        workspace_repo.clone(),
         run_repo,
         None,
         Some(chat_service),
@@ -1041,6 +1056,7 @@ async fn terminalize_blocks_cleanup_when_post_stop_run_lookup_fails() {
     let chat_service = Arc::new(MockChatService::new());
 
     let outcome = terminalize_agent_workspace_after_pr(
+        workspace_repo.clone(),
         workspace_repo.clone(),
         run_repo,
         None,
