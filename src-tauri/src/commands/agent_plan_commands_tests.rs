@@ -7,7 +7,8 @@ use super::agent_plan_commands::{
     ActivateAgentTaskPipelineInput, CopyAgentConversationPlanInput,
     ImportAgentConversationPlanInput,
 };
-use super::ideation_commands::{apply_supervised_proposals_core, ApplyProposalsInput};
+use crate::application::ideation_apply_service::apply_supervised_proposals_core;
+use super::ideation_commands::ApplyProposalsInput;
 use crate::application::{
     agent_conversation_workspace::resolve_agent_conversation_workspace_path,
     agent_task_pipeline_service::{

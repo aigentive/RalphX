@@ -21,9 +21,7 @@ pub use crate::application::ideation_apply_service::{
     apply_pending_proposals_core, apply_proposals_core, ApplyProposalsInput,
     ApplyProposalsResult, TaskProposalResponse,
 };
-pub(crate) use crate::application::ideation_apply_service::{
-    apply_supervised_proposals_core, is_local_proposal,
-};
+pub(crate) use crate::application::ideation_apply_service::is_local_proposal;
 
 // Re-export all types
 pub use ideation_commands_types::*;

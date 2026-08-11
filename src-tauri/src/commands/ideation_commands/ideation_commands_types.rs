@@ -11,9 +11,7 @@ use crate::domain::entities::{
 pub use crate::commands::chat_responses::ChatMessageResponse;
 
 // Re-export types that descended to application/ideation_apply_service
-pub use crate::application::ideation_apply_service::{
-    ApplyProposalsInput, ApplyProposalsResult, TaskProposalResponse,
-};
+pub use crate::application::ideation_apply_service::{ApplyProposalsResult, TaskProposalResponse};
 
 // ============================================================================
 // Session Types
