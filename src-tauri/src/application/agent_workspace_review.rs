@@ -24,8 +24,9 @@ use crate::application::{AppState, GitService};
 use crate::domain::entities::{
     workspace_review_fixer_status_is_active, AgentConversationWorkspace,
     AgentConversationWorkspaceMode, AgentRun, AgentRunAction, AgentRunActionKind, AgentRunId,
-    AgentRunStatus, AgentWorkspaceReviewFixerSnapshot, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentRunStatus, AgentWorkspaceReviewArtifactOutcome, AgentWorkspaceReviewFixerSnapshot,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewRuntimeState, AgentWorkspaceReviewTargetScope, Artifact, ArtifactContent,
     ArtifactId, ChatContextType, ChatConversation, ChatConversationId, MessageRole, Project,
     WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED, WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
@@ -43,7 +44,6 @@ use crate::domain::services::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
 
-const WORKSPACE_REVIEWER_TIMEOUT_SECS: u64 = 900;
 const WORKSPACE_REVIEW_RUN_POLL_INTERVAL_MS: u64 = 250;
 const WORKSPACE_REVIEW_LOG_TARGET: &str = "ralphx_lib::application::agent_workspace_review";
 const WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS: usize = 42_000;
@@ -2031,6 +2031,8 @@ fn spawn_workspace_review_waiter(
 ) {
     tokio::spawn(async move {
         let wait_started = Instant::now();
+        let reviewer_timeout_secs =
+            crate::infrastructure::agents::workspace_review_config().reviewer_timeout_secs;
         let run_entity_id = AgentRunId::from_string(run_id.clone());
         info!(
             target: WORKSPACE_REVIEW_LOG_TARGET,
@@ -2039,14 +2041,14 @@ fn spawn_workspace_review_waiter(
             project_id = %workspace.project_id,
             branch = %workspace.branch_name,
             run_id = %run_id,
-            timeout_secs = WORKSPACE_REVIEWER_TIMEOUT_SECS,
+            timeout_secs = reviewer_timeout_secs,
             target_scope = %target.scope,
             diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
             "Waiting for workspace Review child chat completion"
         );
 
         loop {
-            if wait_started.elapsed() >= Duration::from_secs(WORKSPACE_REVIEWER_TIMEOUT_SECS) {
+            if wait_started.elapsed() >= Duration::from_secs(reviewer_timeout_secs) {
                 mark_workspace_review_blocked(
                     &state,
                     &workspace,
@@ -3814,8 +3816,30 @@ pub fn apply_review_artifact_pair_to_monitor(
     monitor.previous_version_id = previous_artifact_id;
     monitor.review_requested_changes_previous_version_id = requested_changes_previous_version_id;
     clear_review_blocking_state(monitor);
+    // Defensive: a write that records no outcome must not leave the previous write's evidence
+    // behind, or a later run could degrade-settle from an artifact it did not produce.
+    // `record_review_artifact_outcome` re-populates these when the write carries an outcome.
+    monitor.clear_recorded_review_evidence();
     monitor.last_run_id = created_by_run_id.or(monitor.last_run_id.take());
     monitor.last_error = None;
+}
+
+/// Stamps the reviewer's typed disposition onto the monitor at final artifact write.
+///
+/// Must run after [`apply_review_artifact_pair_to_monitor`], which clears prior evidence.
+/// The run id is what makes degraded settlement attempt-scoped: a `None` run id records evidence
+/// that can never authorize a settlement, which is the correct fail-closed behavior.
+pub fn record_review_artifact_outcome(
+    monitor: &mut AgentWorkspaceReviewMonitor,
+    outcome: AgentWorkspaceReviewArtifactOutcome,
+    blocking_summary: Option<String>,
+    created_by_run_id: Option<String>,
+) {
+    monitor.review_artifact_recorded_outcome = Some(outcome);
+    monitor.review_artifact_recorded_outcome_run_id = created_by_run_id;
+    monitor.review_artifact_recorded_blocking_summary = blocking_summary
+        .map(|summary| summary.trim().to_string())
+        .filter(|summary| !summary.is_empty());
 }
 
 fn mark_review_artifact_current_for_target(
@@ -4090,6 +4114,11 @@ pub(crate) fn apply_current_target_to_monitor(
     };
     if target_changed {
         clear_review_blocking_state(monitor);
+        // A new target invalidates every authority derived from the old one: the recorded
+        // artifact outcome a degraded settlement would read, and the annotator run allowed to
+        // write hunk annotations. Both must drop together with blocking state.
+        monitor.clear_recorded_review_evidence();
+        monitor.review_settlement_source = None;
     }
     let bypass_remains_current = target.is_some_and(|target| {
         monitor.has_current_review_bypass_for_target(

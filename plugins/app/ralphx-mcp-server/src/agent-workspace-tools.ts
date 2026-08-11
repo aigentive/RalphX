@@ -247,6 +247,17 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           type: "string",
           description: "Target diff fingerprint from get_workspace_review_context.",
         },
+        outcome: {
+          type: "string",
+          enum: ["passed", "blocking"],
+          description:
+            "Disposition of this review, matching the artifact's disposition line. RalphX records it durably so the review gate can still settle correctly if your run is cut short after this write.",
+        },
+        blocking_summary: {
+          type: "string",
+          description:
+            "Short summary of what blocks the change. Required when outcome is 'blocking'.",
+        },
       },
       required: [
         "content",
@@ -254,6 +265,7 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
         "target_scope",
         "head_sha",
         "diff_fingerprint",
+        "outcome",
       ],
     },
   },
@@ -911,6 +923,8 @@ export async function callWriteWorkspaceReviewArtifactTool(
     target_scope?: string;
     head_sha?: string;
     diff_fingerprint?: string;
+    outcome?: string;
+    blocking_summary?: string;
   };
   return callTauri(`agent-workspaces/${conversation_id}/workspace-review-artifact`, {
     title: artifactArgs.title,
@@ -920,6 +934,8 @@ export async function callWriteWorkspaceReviewArtifactTool(
     target_scope: artifactArgs.target_scope,
     head_sha: artifactArgs.head_sha,
     diff_fingerprint: artifactArgs.diff_fingerprint,
+    outcome: artifactArgs.outcome,
+    blocking_summary: artifactArgs.blocking_summary,
     created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
   });
 }

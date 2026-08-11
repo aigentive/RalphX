@@ -2314,6 +2314,8 @@ describe('agent workspace publish tool transport', () => {
         target_scope: 'workspace_delta',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
+        outcome: 'passed',
+        blocking_summary: undefined,
         created_by_run_id: 'run-from-runtime',
       },
     ],

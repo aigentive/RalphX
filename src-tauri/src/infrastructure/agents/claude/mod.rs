@@ -41,13 +41,14 @@ pub use agent_config::{
     ideation_activity_threshold_secs, limits_config, process_mapping, reconciliation_config,
     resolve_file_logging_early, resolve_file_logging_limits_early, scheduler_config,
     shutdown_config, standalone_conversations_enabled, stream_timeouts, supervisor_runtime_config,
-    ui_feature_flags_config, validate_external_mcp_config, verification_config, AgentConfig,
+    ui_feature_flags_config, validate_external_mcp_config, verification_config,
+    workspace_review_config, AgentConfig,
     AgentHarnessDefaultsConfig, AllRuntimeConfig, AutomationsRuntimeConfig,
     DatabaseMaintenanceConfig, DelegationConfig, ExecutionDefaultsConfig, ExternalMcpConfig,
     GitRuntimeConfig,
     LimitsConfig, ReconciliationConfig, SchedulerConfig, ShutdownConfig, SpecialistEntry,
     StreamTimeoutsConfig,
-    SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig,
+    SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig, WorkspaceReviewRuntimeConfig,
     MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS,
 };
 pub use claude_code_client::kill_all_tracked_processes;

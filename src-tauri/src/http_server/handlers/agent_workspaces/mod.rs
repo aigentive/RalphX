@@ -117,8 +117,8 @@ use crate::domain::entities::{
     AgentWorkspacePrMetadataDecision,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewArtifactOutcome,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewTargetScope, Artifact, ArtifactId, ArtifactType, ChatConversationId,
     IdeationAnalysisBaseRefKind, NewNotification, NotificationCategory, NotificationSeverity,
     NotificationTarget, NotificationTargetKind, ProjectId,
@@ -1039,6 +1039,14 @@ pub struct WriteAgentWorkspaceReviewArtifactRequest {
     pub head_sha: Option<String>,
     pub diff_fingerprint: Option<String>,
     pub created_by_run_id: Option<String>,
+    /// Typed disposition for this artifact pair: `passed` | `blocking`.
+    ///
+    /// Recorded on the monitor so the backend can settle the gate from durable evidence if the
+    /// reviewer's wrapper times out before it calls `complete_workspace_review_run`. Never parsed
+    /// out of the artifact markdown.
+    pub outcome: Option<String>,
+    /// Required when `outcome` is `blocking`: the fixer-start path fails closed without it.
+    pub blocking_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1851,6 +1859,8 @@ pub async fn write_agent_workspace_review_artifact(
     )?;
     let requested_changes_content =
         non_empty_string(req.requested_changes_content, "requested_changes_content")?;
+    let (recorded_outcome, recorded_blocking_summary) =
+        parse_review_artifact_outcome(req.outcome.as_deref(), req.blocking_summary)?;
     let content_bytes = content.len();
     let requested_changes_content_bytes = requested_changes_content.len();
     let conversation_id = ChatConversationId::from_string(conversation_id);
@@ -2036,6 +2046,14 @@ pub async fn write_agent_workspace_review_artifact(
         created_requested_changes.metadata.created_at,
         previous_requested_changes_artifact_entity_id,
     );
+    if let Some(outcome) = recorded_outcome {
+        crate::application::agent_workspace_review::record_review_artifact_outcome(
+            &mut monitor,
+            outcome,
+            recorded_blocking_summary,
+            created_by_run_id.clone(),
+        );
+    }
     let monitor = state
         .app_state
         .agent_conversation_workspace_repo
@@ -5058,6 +5076,44 @@ fn non_empty_string(value: String, field: &str) -> Result<String, JsonError> {
         ));
     }
     Ok(value)
+}
+
+/// Parses the optional typed disposition on a Review artifact write.
+///
+/// Shape errors are `400`, matching this module's `non_empty_string` convention. The completion
+/// path's `AppError::Validation` maps to a `500` here, which would hide the actual problem from
+/// the reviewer, so this validates inline instead.
+fn parse_review_artifact_outcome(
+    outcome: Option<&str>,
+    blocking_summary: Option<String>,
+) -> Result<
+    (
+        Option<AgentWorkspaceReviewArtifactOutcome>,
+        Option<String>,
+    ),
+    JsonError,
+> {
+    let blocking_summary = blocking_summary
+        .map(|summary| summary.trim().to_string())
+        .filter(|summary| !summary.is_empty());
+    let Some(outcome) = outcome.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok((None, None));
+    };
+    let outcome = AgentWorkspaceReviewArtifactOutcome::from_str(outcome).map_err(|_| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "outcome must be 'passed' or 'blocking'",
+            None,
+        )
+    })?;
+    if outcome == AgentWorkspaceReviewArtifactOutcome::Blocking && blocking_summary.is_none() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "blocking_summary is required when outcome is 'blocking'",
+            None,
+        ));
+    }
+    Ok((Some(outcome), blocking_summary))
 }
 
 fn parse_update_base_kind(

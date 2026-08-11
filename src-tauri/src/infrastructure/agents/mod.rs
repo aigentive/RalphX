@@ -19,7 +19,8 @@ pub use claude::ClaudeCodeClient;
 // shared application code imports these values from `infrastructure::agents`.
 pub use claude::{
     agent_personas_enabled, limits_config, set_agent_personas_override,
-    set_standalone_conversations_override, standalone_conversations_enabled, LimitsConfig,
+    set_standalone_conversations_override, standalone_conversations_enabled,
+    workspace_review_config, LimitsConfig, WorkspaceReviewRuntimeConfig,
 };
 #[cfg(any(test, feature = "test-utils"))]
 pub use claude::{
