@@ -590,6 +590,7 @@ mod v20260804073002_jira_link_acceptance_criteria_backfill;
 mod v20260804125852_delegated_session_job_identity;
 mod v20260806071104_agent_workspace_repair_effect_failed_completed_at;
 mod v20260806154753_add_agent_workspace_stale_base_detected_at;
+mod v20260811015146_data_retention_settings;
 #[cfg(test)]
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
 #[cfg(test)]
@@ -623,6 +624,8 @@ mod v20260804125852_delegated_session_job_identity_tests;
 mod v20260806071104_agent_workspace_repair_effect_failed_completed_at_tests;
 #[cfg(test)]
 mod v20260806154753_add_agent_workspace_stale_base_detected_at_tests;
+#[cfg(test)]
+mod v20260811015146_data_retention_settings_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -717,7 +720,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260806154753;
+pub const SCHEMA_VERSION: i64 = 20260811015146;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1967,6 +1970,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260806154753,
         name: "add_agent_workspace_stale_base_detected_at",
         migrate: v20260806154753_add_agent_workspace_stale_base_detected_at::migrate,
+    },
+    Migration {
+        version: 20260811015146,
+        name: "data_retention_settings",
+        migrate: v20260811015146_data_retention_settings::migrate,
     },
 ];
 

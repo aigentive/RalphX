@@ -90,6 +90,11 @@ const LazyUpdatesSettingsSection = lazyWithRetry(() =>
     default: module.UpdatesSettingsSection,
   })),
 );
+const LazyDataRetentionSection = lazyWithRetry(() =>
+  import("./DataRetentionSection").then((module) => ({
+    default: module.DataRetentionSection,
+  })),
+);
 const LazyDatabaseMaintenanceSection = lazyWithRetry(() =>
   import("./DatabaseMaintenanceSection").then((module) => ({
     default: module.DatabaseMaintenanceSection,
@@ -206,7 +211,13 @@ export function SettingsSectionContent({
       {section === "external-mcp" && <LazyExternalMcpSettingsPanel />}
       {section === "mcp" && <LazyMcpSettingsSection />}
       {section === "updates" && <LazyUpdatesSettingsSection />}
-      {section === "database" && <LazyDatabaseMaintenanceSection />}
+      {/* Retention first: it changes the numbers the maintenance block reports. */}
+      {section === "database" && (
+        <>
+          <LazyDataRetentionSection />
+          <LazyDatabaseMaintenanceSection />
+        </>
+      )}
       {section === "accessibility" && <LazyAccessibilitySection />}
       {section === "notifications" && <LazyNotificationSettingsPanel />}
     </Suspense>
