@@ -1,6 +1,6 @@
 use chrono::Utc;
 
-use crate::application::{LinearIntegrationSettings, LinearIntegrationSettingsRepository};
+use crate::domain::integrations::{LinearIntegrationSettings, LinearIntegrationSettingsRepository};
 use crate::domain::integrations::IntegrationValidationStatus;
 use crate::infrastructure::sqlite::{DbConnection, SqliteLinearIntegrationSettingsRepository};
 use crate::testing::SqliteTestDb;

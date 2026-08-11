@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::application::harness_runtime_registry::default_verification_max_rounds;
+use crate::runtime_config::default_verification_max_rounds;
 use crate::domain::entities::{
     AcceptanceStatus, IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId,
     SessionPurpose, VerificationConfirmationStatus, VerificationRunSnapshot, VerificationStatus,

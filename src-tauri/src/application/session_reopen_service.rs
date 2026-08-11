@@ -18,7 +18,7 @@ use crate::domain::services::{
     clear_verification_snapshot, load_current_verification_snapshot_or_default,
 };
 use crate::error::AppResult;
-use crate::http_server::handlers::ideation::{stop_and_archive_children, ChildFilter};
+use crate::application::verification_child_lifecycle::{stop_and_archive_children, ChildFilter};
 
 pub struct SessionReopenService {
     task_repo: Arc<dyn TaskRepository>,

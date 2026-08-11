@@ -2,11 +2,11 @@
 //
 // This trait defines the contract for persisting pending questions (from AskUserQuestion).
 // SQLite stores data for restart resilience + audit trail; in-memory channels remain for signaling.
-// Types imported from crate::application::question_state.
+// Records live in crate::domain::entities::question_request.
 
 use async_trait::async_trait;
 
-use crate::application::question_state::{PendingQuestionInfo, QuestionAnswer};
+use crate::domain::entities::question_request::{PendingQuestionInfo, QuestionAnswer};
 use crate::error::AppResult;
 
 /// Repository trait for pending question persistence.

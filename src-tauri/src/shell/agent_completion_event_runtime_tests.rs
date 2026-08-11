@@ -6,9 +6,11 @@ use ralphx_events::catalog::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
 use ralphx_events::{EventSink, InternalEventBus};
 use serde_json::{json, Value};
 
+use crate::application::completion_correlation::{
+    CompletionCorrelationRegistry, CompletionCorrelationSource,
+};
 use super::agent_completion_event_runtime::{
-    CompletionCorrelationRegistry, CompletionCorrelationSource, CorrelatedTauriBusEventSink,
-    TauriCompletionEventEmitter,
+    CorrelatedTauriBusEventSink, TauriCompletionEventEmitter,
 };
 
 #[derive(Clone, Default)]

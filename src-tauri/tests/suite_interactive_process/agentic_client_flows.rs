@@ -8,7 +8,7 @@ use ralphx_lib::application::AppState;
 use ralphx_lib::domain::agents::{AgentConfig, AgentRole, AgenticClient, ClientType};
 use ralphx_lib::domain::entities::{ChatConversation, Persona, PersonaId, PersonaStatus, Project};
 use ralphx_lib::domain::state_machine::AgentSpawner;
-use ralphx_lib::infrastructure::agents::AgenticClientSpawner;
+use ralphx_lib::application::agents::AgenticClientSpawner;
 use ralphx_lib::infrastructure::{ClaudeCodeClient, MockAgenticClient, MockCallType};
 use ralphx_lib::testing::test_prompts;
 

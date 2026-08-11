@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::application::notification_service::{NoopNotificationEventEmitter, NotificationService};
 use crate::application::reconciliation::{RecoveryActionKind, RecoveryContext, RecoveryDecision};
 use crate::application::{AppState, ReconciliationRunner, TaskTransitionService};
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{
     task_metadata::StopRetryingReason, ChatContextType, ExecutionFailureSource,
     ExecutionRecoveryEvent, ExecutionRecoveryEventKind, ExecutionRecoveryMetadata,

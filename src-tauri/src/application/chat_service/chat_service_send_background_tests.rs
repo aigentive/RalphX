@@ -13,7 +13,7 @@ use crate::application::plan_approval_notification_service::{
     has_deferred_plan_approval, reconcile_plan_approval_on_publish, PlanApprovalPublishAuthority,
 };
 use crate::application::AppState;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind,

@@ -27,7 +27,7 @@ use crate::application::chat_service::{
 use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
 use crate::application::{AppChatService, ChatService, InteractiveProcessRegistry};
-use crate::commands::execution_commands::{ExecutionState, AGENT_ACTIVE_STATUSES};
+use crate::application::execution_state::{ExecutionState, AGENT_ACTIVE_STATUSES};
 use crate::domain::entities::{
     AgentRunStatus, ChatContextType, ChatConversation, ChatMessage, InterruptedConversation,
     MessageRole, TaskId,
