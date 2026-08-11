@@ -1,7 +1,7 @@
 {
   "name": "ralphx",
   "private": true,
-  "version": "0.96.2",
+  "version": "0.97.0",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
