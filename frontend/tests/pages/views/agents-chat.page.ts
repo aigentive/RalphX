@@ -38,7 +38,11 @@ export class AgentsChatPage extends BasePage {
   async seedConversation(conversationId: string, empty = false, messagePairs = 1): Promise<void> {
     await this.page.evaluate(async ({ id, isEmpty, pairCount }) => {
       const projectId = "project-mock-1";
-      const createdAt = "2026-08-04T12:00:00.000Z";
+      // Relative to now on purpose: the sidebar sorts a seeded conversation into
+      // the Stale lane once its last activity is a week old, and the Recent tab
+      // this page object clicks through would stop listing it. A literal date
+      // silently ages out and breaks every caller on a wall-clock boundary.
+      const createdAt = new Date().toISOString();
       const conversation = {
         id, contextType: "project", contextId: projectId, claudeSessionId: null,
         providerSessionId: `thread-${id}`, providerHarness: "codex",
