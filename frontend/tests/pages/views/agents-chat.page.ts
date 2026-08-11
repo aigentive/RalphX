@@ -39,6 +39,13 @@ export class AgentsChatPage extends BasePage {
     await this.page.evaluate(async ({ id, isEmpty, pairCount }) => {
       const projectId = "project-mock-1";
       const createdAt = "2026-08-04T12:00:00.000Z";
+      // The mock inbox drops a conversation into the Stale lane once its last
+      // activity is older than 7 days, and the sidebar stops rendering the row.
+      // `lastMessageAt` is derived from the newest seeded message, so a fixed
+      // date silently ages past the threshold and hides the row mid-run. Anchor
+      // message activity to now instead; conversation `createdAt` stays fixed
+      // because empty seeds render it in a screenshot baseline.
+      const lastActivityAt = new Date().toISOString();
       const conversation = {
         id, contextType: "project", contextId: projectId, claudeSessionId: null,
         providerSessionId: `thread-${id}`, providerHarness: "codex",
@@ -46,7 +53,8 @@ export class AgentsChatPage extends BasePage {
         automationId: null, automationRunId: null, coordinationMode: "solo",
         title: isEmpty ? "Empty composer inset" : "Composer inset behavior",
         messageCount: isEmpty ? 0 : pairCount * 2,
-        lastMessageAt: isEmpty ? null : createdAt, createdAt, updatedAt: createdAt,
+        lastMessageAt: isEmpty ? null : lastActivityAt, createdAt,
+        updatedAt: isEmpty ? createdAt : lastActivityAt,
         archivedAt: null,
       };
       const message = (suffix: string, role: "user" | "assistant", content: string) => ({
@@ -60,7 +68,7 @@ export class AgentsChatPage extends BasePage {
         providerProfile: null, logicalModel: null, effectiveModelId: null,
         logicalEffort: null, effectiveEffort: null, inputTokens: null,
         outputTokens: null, cacheCreationTokens: null, cacheReadTokens: null,
-        estimatedUsd: null, createdAt,
+        estimatedUsd: null, createdAt: lastActivityAt,
       });
       const messages = isEmpty ? [] : Array.from({ length: pairCount }, (_, index) => [
         message(`user-${index}`, "user", `Existing request ${index + 1}: verify the transcript remains stable while new content arrives.`),
