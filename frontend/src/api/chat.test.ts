@@ -40,6 +40,7 @@ import {
   listAgentSidebarConversations,
   updateAgentConversationWorkspaceFromBase,
   recheckAgentConversationWorkspacePrHealth,
+  rerunAgentConversationWorkspaceFailedChecks,
   retryAgentConversationWorkspacePrAutofixOverride,
   retryAgentConversationWorkspacePublicationEffect,
   stopAgentConversationWorkspacePrAutofixForFailure,
@@ -71,6 +72,7 @@ import {
   getConversationActiveState,
   getChildSessionStatus,
   AgentConversationWorkspaceResponseSchema,
+  AgentWorkspaceMaintenanceOperationResponseSchema,
 } from "./chat";
 import type { ConversationActiveStateResponse } from "./chat";
 import { backendApiUrl } from "./backend";
@@ -1824,6 +1826,27 @@ describe("chat api", () => {
     });
   });
 
+  it("parses the pr_autofix_base_parity_transient hold reason instead of dropping it to null", () => {
+    expect(
+      AgentConversationWorkspaceResponseSchema.parse({
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-base-parity-transient",
+          generation: 5,
+          source: "pr_autofix",
+          stage: "held",
+          status: "held",
+          hold_reason: "pr_autofix_base_parity_transient",
+          summary: "GitHub cancelled the checks and the failure is present on the base branch.",
+          blocker: null,
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      }).maintenance_operation?.hold_reason,
+    ).toBe("pr_autofix_base_parity_transient");
+  });
+
   it("keeps legacy maintenance payloads without a hold reason compatible", () => {
     expect(
       AgentConversationWorkspaceResponseSchema.parse({
@@ -1844,6 +1867,73 @@ describe("chat api", () => {
     ).toBeNull();
   });
 
+  it("parses what_happened and what_i_did onto the maintenance operation", () => {
+    const parsed = AgentWorkspaceMaintenanceOperationResponseSchema.parse({
+      operation_id: "maintenance-narrative",
+      generation: 6,
+      source: "pr_autofix",
+      stage: "blocked",
+      status: "blocked",
+      summary: "Resolving the base conflict",
+      blocker: "Pull-request continuation could not complete.",
+      what_happened: "The install step failed with a 404.",
+      what_i_did: "Retried twice, then reported the blocker.",
+      automatic_continuation: false,
+      started_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:01:00Z",
+    });
+
+    expect(parsed.what_happened).toBe("The install step failed with a 404.");
+    expect(parsed.what_i_did).toBe("Retried twice, then reported the blocker.");
+  });
+
+  it("defaults what_happened and what_i_did to null for an older backend that omits them", () => {
+    const parsed = AgentWorkspaceMaintenanceOperationResponseSchema.parse({
+      operation_id: "maintenance-legacy",
+      generation: 1,
+      source: "base_update",
+      stage: "ready",
+      status: "ready",
+      summary: "Base updated.",
+      blocker: null,
+      automatic_continuation: false,
+      started_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:01:00Z",
+    });
+
+    expect(parsed.what_happened).toBeNull();
+    expect(parsed.what_i_did).toBeNull();
+  });
+
+  it("transforms what_happened/what_i_did to whatHappened/whatIDid", async () => {
+    mockInvoke.mockResolvedValueOnce([
+      {
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-narrative",
+          generation: 6,
+          source: "pr_autofix",
+          stage: "blocked",
+          status: "blocked",
+          summary: "Resolving the base conflict",
+          blocker: "Pull-request continuation could not complete.",
+          what_happened: "The install step failed with a 404.",
+          what_i_did: "Retried twice, then reported the blocker.",
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      },
+    ]);
+
+    const result = await listAgentConversationWorkspacesByProject("project-1");
+
+    expect(result[0]?.maintenanceOperation).toMatchObject({
+      whatHappened: "The install step failed with a 404.",
+      whatIDid: "Retried twice, then reported the blocker.",
+    });
+  });
+
   it("sends the current repair version for hold actions", async () => {
     const input = {
       attemptId: "repair-attempt-1",
@@ -1859,6 +1949,11 @@ describe("chat api", () => {
 
     await stopAgentConversationWorkspacePrAutofixForFailure("conversation-1", input);
     expect(mockInvoke).toHaveBeenLastCalledWith("stop_pr_autofix_for_failure", {
+      input: { conversationId: "conversation-1", ...input },
+    });
+
+    await rerunAgentConversationWorkspaceFailedChecks("conversation-1", input);
+    expect(mockInvoke).toHaveBeenLastCalledWith("rerun_agent_workspace_failed_checks", {
       input: { conversationId: "conversation-1", ...input },
     });
 

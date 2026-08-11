@@ -25,7 +25,8 @@ use crate::application::agent_workspace_publish_repair_state::{
     mark_agent_workspace_base_update_target, reconcile_active_agent_workspace_repair,
     release_agent_workspace_base_stale_hold,
     reopen_agent_workspace_repair_after_validation_failure, repair_attempt_projection,
-    repair_event_authorizes_active_run, reserve_agent_workspace_base_stale_hold,
+    repair_event_authorizes_active_run, rerun_agent_workspace_ci_for_hold,
+    reserve_agent_workspace_base_parity_transient, reserve_agent_workspace_base_stale_hold,
     reserve_agent_workspace_base_update, reserve_agent_workspace_ci_await,
     reserve_agent_workspace_ci_rerun, reserve_agent_workspace_pre_existing_on_base,
     reserve_agent_workspace_repair_completion_validation, reserve_agent_workspace_repair_dispatch,
@@ -35,12 +36,13 @@ use crate::application::agent_workspace_publish_repair_state::{
     start_or_join_agent_workspace_repair_without_projection,
     stop_agent_workspace_pr_autofix_for_hold, terminal_run_authorizes_repair_recovery,
     transition_agent_workspace_repair_attempt, validate_agent_workspace_repair_target_lease,
-    AgentWorkspacePrAutofixHoldActionOutcome, AgentWorkspaceRepairDispatchOutcome,
-    AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
-    AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
-    AgentWorkspaceRepairTransitionOutcome, DurableRepairWorkspaceReviewStartFuture,
-    DurableRepairWorkspaceReviewStarter, PrAutofixCarryover, PublishAuthority,
-    AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION, AWAITING_CI_REPAIR_REASON,
+    AgentWorkspaceCiRerunActionOutcome, AgentWorkspacePrAutofixHoldActionOutcome,
+    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
+    AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
+    DurableRepairWorkspaceReviewStartFuture, DurableRepairWorkspaceReviewStarter,
+    PrAutofixCarryover, PublishAuthority, AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION,
+    AWAITING_CI_REPAIR_REASON, BASE_PARITY_TRANSIENT_REPAIR_REASON,
     CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
     MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
     NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON, REPAIR_SENT_STEP,
@@ -69,10 +71,14 @@ use crate::domain::repositories::{
     CreateAgentWorkspaceRepairEffectOutcome, SettleAgentWorkspaceRepairAttempt,
     SettleAgentWorkspaceRepairAttemptOutcome,
 };
+use crate::domain::services::github_service::{
+    GithubServiceTrait, PrHealth, PrHealthCheck, PrMergeableState, PrStatus, PrSyncState,
+};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
     MemoryBranchUpdateRepository,
 };
+use crate::tests::mock_github_service::MockGithubService;
 
 #[test]
 fn repair_reason_helpers_exclude_every_machine_marker_and_preserve_latest_human_context() {
@@ -3719,6 +3725,8 @@ async fn block_needs_human_persists_marker_and_blocks_repair() {
         attempt,
         "CI failure requires human intervention",
         None,
+        None,
+        None,
     )
     .await
     .expect("block as needs-human");
@@ -3773,6 +3781,8 @@ async fn block_needs_human_is_idempotent_on_pending_reasons() {
         attempt,
         "already marked",
         None,
+        None,
+        None,
     )
     .await
     .expect("block as needs-human again");
@@ -3819,6 +3829,8 @@ async fn reserve_pre_existing_on_base_settles_to_ready_with_marker() {
         Arc::clone(&repair_repo),
         attempt,
         "codecov failure pre-exists on base",
+        None,
+        None,
         None,
     )
     .await
@@ -3885,6 +3897,8 @@ async fn held_pr_autofix_retry_starts_one_fenced_successor_with_carryover_eviden
         attempt,
         "failure already exists on base",
         Some(false),
+        None,
+        None,
     )
     .await
     .expect("reserve held repair")
@@ -3978,6 +3992,8 @@ async fn held_pr_autofix_stop_is_exact_and_disables_automation() {
         attempt,
         "failure already exists on base",
         Some(true),
+        None,
+        None,
     )
     .await
     .expect("reserve held repair")
@@ -4215,6 +4231,8 @@ async fn reserve_pre_existing_on_base_rejects_without_health_fingerprint() {
         attempt,
         "should reject",
         None,
+        None,
+        None,
     )
     .await
     .expect("returns stale, not error");
@@ -4254,6 +4272,8 @@ async fn reserve_ci_rerun_increments_count_and_settles_to_ready() {
         attempt,
         "fp-ci-abc",
         "rerunning failed CI jobs",
+        None,
+        None,
         None,
     )
     .await
@@ -4308,6 +4328,8 @@ async fn reserve_ci_rerun_rejects_after_max_retries() {
         "fp-ci-exhausted",
         "should reject",
         None,
+        None,
+        None,
     )
     .await
     .expect("returns stale, not error");
@@ -4315,6 +4337,368 @@ async fn reserve_ci_rerun_rejects_after_max_retries() {
     assert!(
         matches!(result, AgentWorkspaceRepairTransitionOutcome::Stale(_)),
         "exhausted ci rerun budget must return Stale"
+    );
+}
+
+#[tokio::test]
+async fn reserve_ci_rerun_clears_base_parity_transient_pending_reason() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-rerun-clears-base-parity");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let mut attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id,
+            AgentWorkspaceRepairSource::PrAutofix,
+            AgentWorkspaceRepairContinuation::ResumePrSupervision,
+            "held for base-parity-transient",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+    attempt
+        .pending_reasons
+        .push(BASE_PARITY_TRANSIENT_REPAIR_REASON.to_string());
+
+    let result = reserve_agent_workspace_ci_rerun(
+        Arc::clone(&repair_repo),
+        attempt,
+        "fp-ci-clears-hold",
+        "rerunning failed CI jobs after a transient base-parity classification",
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("reserve ci rerun");
+
+    let AgentWorkspaceRepairTransitionOutcome::Applied(rerun) = result else {
+        panic!("ci rerun reservation over a base-parity-transient hold must apply");
+    };
+    assert!(
+        !rerun
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == BASE_PARITY_TRANSIENT_REPAIR_REASON),
+        "the retain must clear the base-parity-transient marker in the same CAS write"
+    );
+    let snapshot = rerun.operation_snapshot();
+    assert_eq!(
+        snapshot.hold_reason,
+        Some(crate::domain::entities::AgentWorkspaceRepairOperationHoldReason::CiRerunPending),
+        "clearing the stale marker must let the CiRerunPending fallback project instead"
+    );
+    assert_eq!(
+        snapshot.status,
+        crate::domain::entities::AgentWorkspaceRepairOperationStatus::Held,
+        "hold_active must stay true across the transition"
+    );
+    assert_eq!(
+        snapshot.stage,
+        crate::domain::entities::AgentWorkspaceRepairOperationStage::Held
+    );
+}
+
+#[tokio::test]
+async fn reserve_ci_rerun_retain_is_inert_without_the_base_parity_transient_reason() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-rerun-retain-inert");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let mut attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id,
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "ordinary completion-handler rerun",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+    attempt
+        .pending_reasons
+        .push(UNCHANGED_HEALTH_REPAIR_REASON.to_string());
+
+    let result = reserve_agent_workspace_ci_rerun(
+        Arc::clone(&repair_repo),
+        attempt,
+        "fp-ci-inert",
+        "rerunning failed CI jobs",
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("reserve ci rerun");
+
+    let AgentWorkspaceRepairTransitionOutcome::Applied(rerun) = result else {
+        panic!("ci rerun reservation without the base-parity-transient marker must still apply");
+    };
+    assert!(
+        rerun
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == UNCHANGED_HEALTH_REPAIR_REASON),
+        "the retain must be a no-op for callers that never carried the base-parity-transient marker"
+    );
+}
+
+fn transient_ci_health(head_oid: &str, run_id: i64) -> PrHealth {
+    PrHealth {
+        sync_state: PrSyncState {
+            status: PrStatus::Open,
+            merge_state_status: None,
+            mergeable: Some(PrMergeableState::Mergeable),
+            is_draft: false,
+            head_ref_name: "feature/held-rerun".to_string(),
+            base_ref_name: "main".to_string(),
+            head_ref_oid: Some(head_oid.to_string()),
+            base_ref_oid: Some("base-oid".to_string()),
+        },
+        review_decision: None,
+        checks: vec![PrHealthCheck {
+            name: "CI / test".to_string(),
+            status: Some("completed".to_string()),
+            conclusion: Some("cancelled".to_string()),
+            details_url: Some(format!(
+                "https://github.com/owner/repo/actions/runs/{run_id}/jobs/1"
+            )),
+        }],
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
+    }
+}
+
+async fn held_base_parity_transient_attempt(
+    repair_repo: &Arc<dyn AgentWorkspaceRepairRepository>,
+    workspace_repo: &Arc<MemoryAgentConversationWorkspaceRepository>,
+    conversation_id: &ChatConversationId,
+) -> AgentWorkspaceRepairAttempt {
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let mut attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(repair_repo),
+        Arc::clone(workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::PrAutofix,
+            AgentWorkspaceRepairContinuation::ResumePrSupervision,
+            "held for user-initiated rerun",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+    attempt.pr_autofix_health_fingerprint = Some("fp-held-rerun".to_string());
+    match reserve_agent_workspace_base_parity_transient(
+        Arc::clone(repair_repo),
+        attempt,
+        "checks share a transient shape with base",
+        None,
+    )
+    .await
+    .expect("reserve base-parity-transient hold")
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(held) => held,
+        outcome => panic!("expected the base-parity-transient hold to apply, got {outcome:?}"),
+    }
+}
+
+#[tokio::test]
+async fn rerun_agent_workspace_ci_for_hold_reruns_and_clears_the_base_parity_hold() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let branch_update_repo =
+        Arc::new(MemoryBranchUpdateRepository::new()) as Arc<dyn BranchUpdateRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-rerun-command-success");
+    let held =
+        held_base_parity_transient_attempt(&repair_repo, &workspace_repo, &conversation_id).await;
+
+    let mock_github = Arc::new(MockGithubService::new());
+    mock_github.state().fetch_pr_health_result = Some(Ok(transient_ci_health("rerun-head", 42)));
+    let github: Arc<dyn GithubServiceTrait> = Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>;
+
+    let outcome = rerun_agent_workspace_ci_for_hold(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        Arc::clone(&github),
+        &conversation_id,
+        &held.id,
+        held.generation,
+        held.updated_at,
+        &PathBuf::from("/tmp/does-not-need-to-exist"),
+        123,
+        "rerunning by explicit user request",
+        None,
+    )
+    .await
+    .expect("rerun over a held base-parity-transient generation should succeed");
+
+    let AgentWorkspaceCiRerunActionOutcome::Applied(applied) = outcome else {
+        panic!("expected the rerun to apply, got {outcome:?}");
+    };
+    let snapshot = applied.operation_snapshot();
+    assert_eq!(
+        snapshot.hold_reason,
+        Some(crate::domain::entities::AgentWorkspaceRepairOperationHoldReason::CiRerunPending),
+        "the projected hold reason must move off base-parity-transient after a rerun"
+    );
+    assert_eq!(
+        snapshot.stage,
+        crate::domain::entities::AgentWorkspaceRepairOperationStage::Held
+    );
+    assert_eq!(
+        snapshot.status,
+        crate::domain::entities::AgentWorkspaceRepairOperationStatus::Held,
+        "hold_active must stay true across the transition"
+    );
+    assert_eq!(applied.ci_rerun_count, 1);
+
+    let second_call = rerun_agent_workspace_ci_for_hold(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        Arc::clone(&github),
+        &conversation_id,
+        &applied.id,
+        applied.generation,
+        applied.updated_at,
+        &PathBuf::from("/tmp/does-not-need-to-exist"),
+        123,
+        "rerunning again by explicit user request",
+        None,
+    )
+    .await
+    .expect("a fail-closed rejection is a typed outcome, not an error");
+    assert!(
+        matches!(second_call, AgentWorkspaceCiRerunActionOutcome::NotHeld(_)),
+        "a second call against the re-projected CiRerunPending state must be rejected without spending a generation"
+    );
+    assert_eq!(
+        mock_github.state().fetch_pr_health_calls,
+        1,
+        "the fail-closed hold-reason check must reject before any further GitHub call"
+    );
+    assert_eq!(
+        mock_github.state().rerun_failed_workflow_calls,
+        1,
+        "the second, rejected call must not spend another rerun"
+    );
+}
+
+#[tokio::test]
+async fn rerun_agent_workspace_ci_for_hold_rejects_a_stale_generation() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let branch_update_repo =
+        Arc::new(MemoryBranchUpdateRepository::new()) as Arc<dyn BranchUpdateRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-rerun-command-stale");
+    let held =
+        held_base_parity_transient_attempt(&repair_repo, &workspace_repo, &conversation_id).await;
+    let github: Arc<dyn GithubServiceTrait> = Arc::new(MockGithubService::new());
+
+    let outcome = rerun_agent_workspace_ci_for_hold(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        Arc::clone(&github),
+        &conversation_id,
+        &held.id,
+        held.generation + 1,
+        held.updated_at,
+        &PathBuf::from("/tmp/does-not-need-to-exist"),
+        123,
+        "stale generation",
+        None,
+    )
+    .await
+    .expect("a stale CAS mismatch is a typed outcome, not an error");
+
+    assert!(matches!(outcome, AgentWorkspaceCiRerunActionOutcome::Stale(_)));
+    let unchanged = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load current attempt")
+        .expect("attempt still exists");
+    assert_eq!(unchanged, held, "a stale CAS rejection must not mutate the durable attempt");
+}
+
+#[tokio::test]
+async fn rerun_agent_workspace_ci_for_hold_reports_budget_exhaustion_without_mutating_state() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let branch_update_repo =
+        Arc::new(MemoryBranchUpdateRepository::new()) as Arc<dyn BranchUpdateRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-rerun-command-budget-exhausted");
+    let mut held =
+        held_base_parity_transient_attempt(&repair_repo, &workspace_repo, &conversation_id).await;
+    held.ci_rerun_count = MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES;
+    let expected_phase = held.phase;
+    let expected_updated_at = held.updated_at;
+    held.updated_at += chrono::Duration::microseconds(1);
+    let held = match repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: held.clone(),
+            expected_phase,
+            expected_updated_at,
+            next_phase: held.phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist an exhausted rerun budget on the held attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(applied) => applied,
+        outcome => panic!("expected the exhausted-budget fixture to persist, got {outcome:?}"),
+    };
+    let mock_github = Arc::new(MockGithubService::new());
+    let github: Arc<dyn GithubServiceTrait> = Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>;
+
+    let outcome = rerun_agent_workspace_ci_for_hold(
+        Arc::clone(&repair_repo),
+        Arc::clone(&branch_update_repo),
+        Arc::clone(&github),
+        &conversation_id,
+        &held.id,
+        held.generation,
+        held.updated_at,
+        &PathBuf::from("/tmp/does-not-need-to-exist"),
+        123,
+        "budget exhausted",
+        None,
+    )
+    .await
+    .expect("budget exhaustion is a typed outcome, not an error");
+
+    assert!(matches!(
+        outcome,
+        AgentWorkspaceCiRerunActionOutcome::BudgetExhausted(_)
+    ));
+    assert_eq!(
+        mock_github.state().fetch_pr_health_calls,
+        0,
+        "budget exhaustion must be checked before any GitHub call"
+    );
+    let unchanged = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load current attempt")
+        .expect("attempt still exists");
+    assert_eq!(
+        unchanged, held,
+        "budget exhaustion must not mutate the durable attempt"
     );
 }
 
@@ -4346,6 +4730,8 @@ async fn reserve_ci_await_parks_the_current_attempt_without_spending_rerun_budge
         attempt,
         "ci-hold:v1:head:17",
         "waiting for the in-progress workflow run",
+        None,
+        None,
         None,
     )
     .await
@@ -4408,6 +4794,8 @@ async fn reserve_ci_await_rejects_a_stale_attempt_without_overwriting_the_curren
         "ci-hold:v1:head:18",
         "first await reservation",
         None,
+        None,
+        None,
     )
     .await
     .expect("first reservation");
@@ -4421,6 +4809,8 @@ async fn reserve_ci_await_rejects_a_stale_attempt_without_overwriting_the_curren
         attempt,
         "ci-hold:v1:head:19",
         "stale await reservation",
+        None,
+        None,
         None,
     )
     .await
@@ -4469,6 +4859,8 @@ async fn reserve_ci_await_is_idempotent_for_the_await_reason_and_budget() {
         "ci-hold:v1:head:20",
         "first await reservation",
         None,
+        None,
+        None,
     )
     .await
     .expect("first reservation") else {
@@ -4481,6 +4873,8 @@ async fn reserve_ci_await_is_idempotent_for_the_await_reason_and_budget() {
             first,
             "ci-hold:v1:head:20",
             "replayed await reservation",
+            None,
+            None,
             None,
         )
         .await

@@ -744,6 +744,21 @@ export function AgentPublishPanel({
     },
     ...heldRepairMutationOptions,
   });
+  const rerunFailedChecksMutation = useMutation<AgentConversationWorkspace, Error>({
+    mutationFn: () =>
+      chatApi.rerunAgentConversationWorkspaceFailedChecks(
+        conversationId!,
+        heldRepairActionInput(workspace),
+      ),
+    onSuccess: async (updatedWorkspace) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+        updatedWorkspace,
+      );
+      await invalidateWorkspaceQueries(queryClient, updatedWorkspace.conversationId);
+    },
+    ...heldRepairMutationOptions,
+  });
   const commitLocallyMutation = useMutation({
     mutationFn: async () => {
       if (!conversationId || !workspace) {
@@ -2070,16 +2085,17 @@ export function AgentPublishPanel({
         ) : isHeld ? (
           <AgentsPublishHoldCard
             workspace={workspace}
-            onOpenChecks={() => onSubTabChange("checks")}
             onRecheck={() => recheckPrHealthMutation.mutate()}
             onRetry={() => retryPrAutofixMutation.mutate()}
             onRetryPublication={() => retryPublicationEffectMutation.mutate()}
+            onRerunChecks={() => rerunFailedChecksMutation.mutate()}
             onStop={confirmStopHeldRepair}
             isPending={
               recheckPrHealthMutation.isPending ||
               retryPrAutofixMutation.isPending ||
               stopPrAutofixMutation.isPending ||
-              retryPublicationEffectMutation.isPending
+              retryPublicationEffectMutation.isPending ||
+              rerunFailedChecksMutation.isPending
             }
           />
         ) : inlineDiffsCandidate && !baseBlocked ? (
@@ -2184,7 +2200,6 @@ export function AgentPublishPanel({
                   freshness?.hasUncommittedChanges,
                 )}
                 terminalPrLabel={terminalPrLabel}
-                publicationEvents={publicationEvents}
                 onSnapshotChange={setAutomationSnapshot}
               />
             </TabsContent>

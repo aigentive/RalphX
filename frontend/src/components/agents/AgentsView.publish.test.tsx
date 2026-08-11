@@ -1059,7 +1059,7 @@ describe("AgentsView publish", () => {
 
     const actionbar = await openPublishPane();
     const card = await screen.findByTestId("agents-publish-hold-card");
-    expect(card).toHaveTextContent("Nothing is running");
+    expect(card).toHaveTextContent("Repair paused — waiting for new CI evidence");
     expect(within(card).getByRole("button", { name: "Re-check PR health" })).toBeEnabled();
     expect(
       within(actionbar).getByTestId("agents-publish-recheck-pr-health"),

@@ -1897,6 +1897,7 @@ export const chatApi = {
   retryAgentConversationWorkspacePrAutofixOverride,
   stopAgentConversationWorkspacePrAutofixForFailure,
   retryAgentConversationWorkspacePublicationEffect,
+  rerunAgentConversationWorkspaceFailedChecks,
   commitAgentConversationWorkspaceLocally,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
@@ -2113,7 +2114,8 @@ export type AgentWorkspaceMaintenanceOperationHoldReason =
   | "base_stale"
   | "health_evidence"
   | "publish_redrive"
-  | "publication_effect_attention";
+  | "publication_effect_attention"
+  | "pr_autofix_base_parity_transient";
 
 export interface AgentWorkspaceMaintenanceOperation {
   operationId: string;
@@ -2124,6 +2126,8 @@ export interface AgentWorkspaceMaintenanceOperation {
   holdReason?: AgentWorkspaceMaintenanceOperationHoldReason | null;
   summary: string | null;
   blocker: string | null;
+  whatHappened?: string | null;
+  whatIDid?: string | null;
   automaticContinuation: boolean;
   startedAt: string;
   updatedAt: string;
@@ -2724,6 +2728,7 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
       "health_evidence",
       "publish_redrive",
       "publication_effect_attention",
+      "pr_autofix_base_parity_transient",
     ])
     .nullable()
     .optional()
@@ -2731,6 +2736,8 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
     .catch(null),
   summary: z.string().nullable(),
   blocker: z.string().nullable(),
+  what_happened: z.string().nullable().optional().default(null),
+  what_i_did: z.string().nullable().optional().default(null),
   automatic_continuation: z.boolean(),
   started_at: z.string(),
   updated_at: z.string(),
@@ -3383,6 +3390,8 @@ function transformAgentConversationWorkspace(
           holdReason: raw.maintenance_operation.hold_reason,
           summary: raw.maintenance_operation.summary,
           blocker: raw.maintenance_operation.blocker,
+          whatHappened: raw.maintenance_operation.what_happened,
+          whatIDid: raw.maintenance_operation.what_i_did,
           automaticContinuation: raw.maintenance_operation.automatic_continuation,
           startedAt: raw.maintenance_operation.started_at,
           updatedAt: raw.maintenance_operation.updated_at,
@@ -4596,6 +4605,18 @@ export async function stopAgentConversationWorkspacePrAutofixForFailure(
 ): Promise<AgentConversationWorkspace> {
   const raw = await typedInvoke(
     "stop_pr_autofix_for_failure",
+    { input: { conversationId, ...input } },
+    AgentConversationWorkspaceResponseSchema,
+  );
+  return transformAgentConversationWorkspace(raw);
+}
+
+export async function rerunAgentConversationWorkspaceFailedChecks(
+  conversationId: string,
+  input: AgentWorkspaceRepairHoldActionInput,
+): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "rerun_agent_workspace_failed_checks",
     { input: { conversationId, ...input } },
     AgentConversationWorkspaceResponseSchema,
   );

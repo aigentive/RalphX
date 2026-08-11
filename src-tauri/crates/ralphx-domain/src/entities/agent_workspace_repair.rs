@@ -163,10 +163,13 @@ repair_string_enum!(AgentWorkspaceRepairOperationHoldReason {
     HealthEvidence => "health_evidence",
     PublishRedrive => "publish_redrive",
     PublicationEffectAttention => "publication_effect_attention",
+    BaseParityTransient => "pr_autofix_base_parity_transient",
 });
 
 pub const PR_AUTOFIX_PRE_EXISTING_ON_BASE_PENDING_REASON: &str = "pr_autofix_pre_existing_on_base";
 pub const PR_AUTOFIX_UNCHANGED_HEALTH_PENDING_REASON: &str = "pr_autofix_unchanged_health";
+pub const PR_AUTOFIX_BASE_PARITY_TRANSIENT_PENDING_REASON: &str =
+    "pr_autofix_base_parity_transient";
 pub const PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON: &str =
     "pr_autofix_base_stale_after_update";
 pub const PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX: &str = "pr_autofix_head_redrive:";
@@ -211,6 +214,12 @@ pub struct AgentWorkspaceRepairAttempt {
     pub repair_head_commit: Option<String>,
     pub summary: Option<String>,
     pub blocker: Option<String>,
+    /// Plain-language narrative: what the agent observed. Older rows have none.
+    #[serde(default)]
+    pub what_happened: Option<String>,
+    /// Plain-language narrative: what the agent did about it. Older rows have none.
+    #[serde(default)]
+    pub what_i_did: Option<String>,
     pub git_common_dir: Option<String>,
     pub target_ref: Option<String>,
     pub target_identity_version: Option<u64>,
@@ -260,6 +269,8 @@ impl AgentWorkspaceRepairAttempt {
             repair_head_commit: None,
             summary: None,
             blocker: None,
+            what_happened: None,
+            what_i_did: None,
             git_common_dir: None,
             target_ref: None,
             target_identity_version: None,
@@ -368,6 +379,8 @@ impl AgentWorkspaceRepairAttempt {
             hold_reason,
             summary: self.summary.clone(),
             blocker: self.blocker.clone(),
+            what_happened: self.what_happened.clone(),
+            what_i_did: self.what_i_did.clone(),
             automatic_continuation: self.continuation.is_automatic()
                 && matches!(status, AgentWorkspaceRepairOperationStatus::Active),
             started_at: self.created_at,
@@ -475,6 +488,12 @@ pub struct AgentWorkspaceRepairOperationSnapshot {
     pub hold_reason: Option<AgentWorkspaceRepairOperationHoldReason>,
     pub summary: Option<String>,
     pub blocker: Option<String>,
+    /// Plain-language narrative: what the agent observed. Older/absent attempts have none.
+    #[serde(default)]
+    pub what_happened: Option<String>,
+    /// Plain-language narrative: what the agent did about it. Older/absent attempts have none.
+    #[serde(default)]
+    pub what_i_did: Option<String>,
     pub automatic_continuation: bool,
     pub started_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

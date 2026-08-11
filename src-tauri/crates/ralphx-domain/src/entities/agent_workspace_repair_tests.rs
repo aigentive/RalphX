@@ -199,6 +199,72 @@ fn new_repair_attempt_is_unsettled_and_projects_only_response_safe_fields() {
     );
     assert_eq!(snapshot.status, AgentWorkspaceRepairOperationStatus::Active);
     assert!(snapshot.automatic_continuation);
+    assert_eq!(snapshot.what_happened, None);
+    assert_eq!(snapshot.what_i_did, None);
+}
+
+#[test]
+fn repair_operation_snapshot_carries_attempt_narrative_when_present() {
+    let now = Utc::now();
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::Publish,
+        "origin/main",
+        true,
+        true,
+        true,
+        Some("squash".to_string()),
+        now,
+    );
+    attempt.what_happened = Some("the base branch moved ahead".to_string());
+    attempt.what_i_did = Some("rebased the workspace onto the new base".to_string());
+
+    let snapshot = attempt.operation_snapshot();
+    assert_eq!(
+        snapshot.what_happened,
+        Some("the base branch moved ahead".to_string())
+    );
+    assert_eq!(
+        snapshot.what_i_did,
+        Some("rebased the workspace onto the new base".to_string())
+    );
+}
+
+#[test]
+fn repair_operation_snapshot_with_absent_narrative_round_trips_as_null() {
+    let now = Utc::now();
+    let attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::Publish,
+        "origin/main",
+        true,
+        true,
+        true,
+        Some("squash".to_string()),
+        now,
+    );
+
+    let snapshot = attempt.operation_snapshot();
+    let serialized = serde_json::to_value(&snapshot).expect("serialize operation snapshot");
+    assert_eq!(serialized["what_happened"], serde_json::Value::Null);
+    assert_eq!(serialized["what_i_did"], serde_json::Value::Null);
+
+    let mut legacy = serialized;
+    legacy
+        .as_object_mut()
+        .expect("operation snapshot serializes as an object")
+        .remove("what_happened");
+    legacy
+        .as_object_mut()
+        .expect("operation snapshot serializes as an object")
+        .remove("what_i_did");
+
+    let decoded: AgentWorkspaceRepairOperationSnapshot =
+        serde_json::from_value(legacy).expect("legacy operation snapshot remains readable");
+    assert_eq!(decoded.what_happened, None);
+    assert_eq!(decoded.what_i_did, None);
 }
 
 #[test]

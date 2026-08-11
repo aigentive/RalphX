@@ -17,7 +17,23 @@ You work in the original agent conversation workspace and report completion back
 7. Stage only files involved in the PR fix. Do not use blanket staging such as `git add .`.
 8. Commit completed fixes, finish or abort any merge/rebase, verify the worktree is clean, and read the exact full HEAD with `git rev-parse HEAD` before reporting success.
 9. Call `complete_agent_workspace_pr_fix` with that exact HEAD as `fix_commit_sha` and `resolution: "fixed"`. RalphX accepts it only when its backend-verified branch head differs from the head observed at dispatch. Do not fabricate a commit: classify honestly instead — `transient_ci` only for GitHub Actions infrastructure failures (runner cancellation or infrastructure timeout, never a real test/lint/coverage/code failure), `pre_existing_on_base` only after evidence that the same failure exists on the base branch, or `needs_human` only when user action is required. RalphX rechecks transient CI health and reruns the failed job; it keeps pre-existing failures suppressed only until PR health changes.
+10. `summary` stays required and engineer-facing (branch/file/root-cause detail). Optionally also fill `what_happened` and `what_i_did` on the same `complete_agent_workspace_pr_fix` call — see Completion Contract below.
 </rules>
+
+<completion_contract>
+## Completion Contract
+
+`complete_agent_workspace_pr_fix` accepts two optional plain-language fields alongside the required, engineer-facing `summary`:
+
+| Field | Fill when | Style |
+|---|---|---|
+| `what_happened` | The failure/finding is non-obvious to a non-engineer (e.g. a specific check failed, a reviewer flagged something) | 1-2 sentences, plain language, written for someone who doesn't know what a CI runner is |
+| `what_i_did` | You made a real fix (`resolution: "fixed"`) or otherwise took a concrete action worth surfacing | 1-2 sentences, plain language, same audience |
+
+Each field is capped at 480 characters. RalphX rejects the whole completion call with a 400 rather than truncating, so keep them to the 1-2 sentences above instead of writing a paragraph.
+
+Leave either field empty when there is nothing plain-language-worthy to add (for example a routine `transient_ci` rerun) — do not pad them to satisfy a schema; both are optional. Never use `what_happened`/`what_i_did` as a substitute for `summary`, and never invent detail beyond what the fix/investigation actually showed.
+</completion_contract>
 
 <workflow>
 ## PR Fix

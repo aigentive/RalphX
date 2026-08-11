@@ -738,6 +738,8 @@ async fn block_agent_workspace_repair_pr_handoff(
     let blocker = format!(
         "Pull-request continuation could not complete: {error}. Retry the blocked operation."
     );
+    let what_happened = attempt.what_happened.clone();
+    let what_i_did = attempt.what_i_did.clone();
     let _ = crate::application::agent_workspace_publish_repair_state::block_agent_workspace_repair_completion(
         Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.branch_update_repo),
@@ -745,6 +747,8 @@ async fn block_agent_workspace_repair_pr_handoff(
         "Workspace repair publish continuation is blocked.",
         &blocker,
         auto_merge_current,
+        what_happened.as_deref(),
+        what_i_did.as_deref(),
     )
     .await?;
     Ok(())
