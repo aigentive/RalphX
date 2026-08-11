@@ -4475,6 +4475,7 @@ impl AppChatService {
             total_available,
             None, // effort_override: callers pre-resolve if needed
             None, // model_override: callers pre-resolve if needed
+            &[],  // extra_allowed_mcp_tools: dead-code fallback path
             agent_runtime_context.as_deref(),
             None, // attachment_context_override
         )

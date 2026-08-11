@@ -325,7 +325,8 @@ pub use apply_service::{
 };
 pub use atlassian_api_error::AtlassianApiError;
 pub use atlassian_mcp_access::{
-    atlassian_mcp_tools_for_spawn, effective_atlassian_mcp_access,
+    atlassian_mcp_tools_for_resumed_run, atlassian_mcp_tools_for_spawn,
+    effective_atlassian_mcp_access,
 };
 pub use atlassian_mcp_ops::{
     validate_atlassian_raw_path, AtlassianRawMethod, AtlassianRawResponse, ConfluencePageContent, ConfluencePageCreateRequest,

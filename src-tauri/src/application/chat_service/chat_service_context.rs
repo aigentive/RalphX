@@ -316,6 +316,10 @@ struct BuildHarnessCommandRequest<'a> {
     effort_override: Option<&'a str>,
     model_override: Option<&'a str>,
     is_external_mcp: bool,
+    /// Role-tiered Atlassian MCP grants resolved from the persisted run being
+    /// recovered (see `atlassian_mcp_tools_for_resumed_run`). Empty means
+    /// "inject nothing".
+    extra_allowed_mcp_tools: Vec<String>,
     agent_runtime_context: Option<&'a str>,
     attachment_context_override: Option<&'a str>,
 }
@@ -353,6 +357,10 @@ struct BuildHarnessResumeCommandRequest<'a> {
     continuation_runtime: Option<&'a super::continuation_runtime::ContinuationRuntime>,
     service_tier_override: Option<&'a str>,
     is_external_mcp: bool,
+    /// Role-tiered Atlassian MCP grants resolved from the persisted run being
+    /// resumed/recovered (see `atlassian_mcp_tools_for_resumed_run`). Empty
+    /// means "inject nothing".
+    extra_allowed_mcp_tools: Vec<String>,
     agent_runtime_context: Option<&'a str>,
     attachment_context_override: Option<&'a str>,
 }
@@ -540,6 +548,7 @@ impl ResolvedChatHarnessCli {
                     request.total_available,
                     request.effort_override,
                     request.model_override,
+                    &request.extra_allowed_mcp_tools,
                     request.agent_runtime_context,
                     request.attachment_context_override,
                 )
@@ -550,7 +559,7 @@ impl ResolvedChatHarnessCli {
                 cli_path,
                 capabilities,
             } => {
-                let resolved_spawn_settings = resolve_noninteractive_spawn_settings(
+                let mut resolved_spawn_settings = resolve_noninteractive_spawn_settings(
                     request.conversation.context_type,
                     request.entity_status,
                     request.conversation.bound_agent_name.as_deref(),
@@ -560,6 +569,8 @@ impl ResolvedChatHarnessCli {
                     request.agent_lane_settings_repo.as_ref(),
                 )
                 .await;
+                resolved_spawn_settings.extra_allowed_mcp_tools =
+                    request.extra_allowed_mcp_tools.clone();
 
                 Ok(ProviderSpawnableCommand {
                     spawnable: build_codex_command(
@@ -650,6 +661,7 @@ impl ResolvedChatHarnessCli {
                         request.total_available,
                         effort_override,
                         model_override,
+                        &request.extra_allowed_mcp_tools,
                         request.agent_runtime_context,
                         request.attachment_context_override,
                     )
@@ -681,6 +693,8 @@ impl ResolvedChatHarnessCli {
                     request.agent_lane_settings_repo.as_ref(),
                 )
                 .await;
+                resolved_spawn_settings.extra_allowed_mcp_tools =
+                    request.extra_allowed_mcp_tools.clone();
                 if let Some(runtime) = request.continuation_runtime {
                     runtime.apply_defaults(
                         &mut resolved_spawn_settings,
@@ -2582,6 +2596,7 @@ pub async fn build_command(
         total_available,
         effort_override,
         model_override,
+        &[],
         agent_runtime_context,
         attachment_context_override,
     )
@@ -2615,6 +2630,7 @@ pub async fn build_command_with_app_data_dir(
     total_available: usize,
     effort_override: Option<&str>,
     model_override: Option<&str>,
+    extra_allowed_mcp_tools: &[String],
     agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
@@ -2660,7 +2676,7 @@ pub async fn build_command_with_app_data_dir(
             .await?
         }
     };
-    let resolved_spawn_settings =
+    let mut resolved_spawn_settings =
         crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
             agent_name,
             project_id,
@@ -2671,6 +2687,7 @@ pub async fn build_command_with_app_data_dir(
             agent_lane_settings_repo.as_ref(),
         )
         .await;
+    resolved_spawn_settings.extra_allowed_mcp_tools = extra_allowed_mcp_tools.to_vec();
 
     build_command_from_resolved_settings(
         cli_path,
@@ -2897,7 +2914,7 @@ async fn build_recovery_command_from_resolved_settings(
         coordination_mode,
     );
 
-    let mcp_runtime_context = build_mcp_runtime_context(
+    let mut mcp_runtime_context = build_mcp_runtime_context(
         context_type,
         context_id,
         Some(coordination_mode),
@@ -2911,6 +2928,9 @@ async fn build_recovery_command_from_resolved_settings(
         parent_conversation_id.clone(),
         effective_mode,
     );
+    mcp_runtime_context
+        .extra_allowed_mcp_tools
+        .clone_from(&resolved_spawn_settings.extra_allowed_mcp_tools);
     let mut spawnable = build_claude_spawnable_command(
         cli_path,
         plugin_dir,
@@ -3543,6 +3563,7 @@ pub async fn build_command_for_harness(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     is_external_mcp: bool,
+    extra_allowed_mcp_tools: Vec<String>,
     agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ProviderSpawnableCommand, String> {
@@ -3570,6 +3591,7 @@ pub async fn build_command_for_harness(
             effort_override,
             model_override,
             is_external_mcp,
+            extra_allowed_mcp_tools,
             agent_runtime_context,
             attachment_context_override,
         },
@@ -3601,6 +3623,7 @@ pub async fn build_command_for_harness_with_folder_refs(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     is_external_mcp: bool,
+    extra_allowed_mcp_tools: Vec<String>,
     agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ProviderSpawnableCommand, String> {
@@ -3628,6 +3651,7 @@ pub async fn build_command_for_harness_with_folder_refs(
             effort_override,
             model_override,
             is_external_mcp,
+            extra_allowed_mcp_tools,
             agent_runtime_context,
             attachment_context_override,
         },
@@ -3774,7 +3798,7 @@ pub async fn build_interactive_command(
     log_claude_launch_plan_phase(conversation, "build_initial_prompt", prompt_started);
 
     let mcp_context_started = Instant::now();
-    let mcp_runtime_context = build_mcp_runtime_context(
+    let mut mcp_runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
         Some(conversation.coordination_mode),
@@ -3788,6 +3812,9 @@ pub async fn build_interactive_command(
         mcp_lineage_parent_conversation_id(conversation),
         conversation.agent_mode,
     );
+    mcp_runtime_context
+        .extra_allowed_mcp_tools
+        .clone_from(&resolved_spawn_settings.extra_allowed_mcp_tools);
     log_claude_launch_plan_phase(
         conversation,
         "build_mcp_runtime_context",
@@ -3936,6 +3963,7 @@ pub async fn build_resume_command(
     total_available: usize,
     effort_override: Option<&str>,
     model_override: Option<&str>,
+    extra_allowed_mcp_tools: &[String],
     agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
@@ -3951,7 +3979,7 @@ pub async fn build_resume_command(
 
     let agent_name = agent_name_override
         .unwrap_or_else(|| resolve_agent(&context_type, entity_status.as_deref()));
-    let resolved_spawn_settings =
+    let mut resolved_spawn_settings =
         crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
             agent_name,
             project_id,
@@ -3962,6 +3990,7 @@ pub async fn build_resume_command(
             agent_lane_settings_repo.as_ref(),
         )
         .await;
+    resolved_spawn_settings.extra_allowed_mcp_tools = extra_allowed_mcp_tools.to_vec();
 
     build_resume_command_from_resolved_settings(
         cli_path,
@@ -4041,7 +4070,7 @@ async fn build_resume_command_from_resolved_settings(
                 coordination_mode,
             );
 
-            let mcp_runtime_context = build_mcp_runtime_context(
+            let mut mcp_runtime_context = build_mcp_runtime_context(
                 context_type,
                 context_id,
                 Some(coordination_mode),
@@ -4055,6 +4084,9 @@ async fn build_resume_command_from_resolved_settings(
                 parent_conversation_id.clone(),
                 effective_mode,
             );
+            mcp_runtime_context
+                .extra_allowed_mcp_tools
+                .clone_from(&resolved_spawn_settings.extra_allowed_mcp_tools);
             let mut spawnable = build_claude_spawnable_command(
                 cli_path,
                 plugin_dir,
@@ -4163,7 +4195,7 @@ pub async fn build_codex_resume_command(
         .unwrap_or_else(|| resolve_agent(&context_type, entity_status.as_deref()));
     let ideation_subagent_model_cap = resolved_spawn_settings.subagent_model_cap.as_deref();
 
-    let runtime_context = build_mcp_runtime_context(
+    let mut runtime_context = build_mcp_runtime_context(
         context_type,
         context_id,
         Some(coordination_mode),
@@ -4177,6 +4209,9 @@ pub async fn build_codex_resume_command(
         parent_conversation_id.clone(),
         effective_mode,
     );
+    runtime_context
+        .extra_allowed_mcp_tools
+        .clone_from(&resolved_spawn_settings.extra_allowed_mcp_tools);
     let config_overrides = build_codex_mcp_overrides_for_profile(
         plugin_dir,
         agent_name,
@@ -4364,6 +4399,7 @@ pub async fn build_resume_command_for_harness(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     is_external_mcp: bool,
+    extra_allowed_mcp_tools: Vec<String>,
     agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ProviderSpawnableCommand, String> {
@@ -4402,6 +4438,7 @@ pub async fn build_resume_command_for_harness(
         None,
         None,
         is_external_mcp,
+        extra_allowed_mcp_tools,
         agent_runtime_context,
         attachment_context_override,
     )
@@ -4442,6 +4479,7 @@ pub async fn build_resume_command_for_harness_with_folder_refs(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     is_external_mcp: bool,
+    extra_allowed_mcp_tools: Vec<String>,
     agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ProviderSpawnableCommand, String> {
@@ -4480,6 +4518,7 @@ pub async fn build_resume_command_for_harness_with_folder_refs(
         None,
         None,
         is_external_mcp,
+        extra_allowed_mcp_tools,
         agent_runtime_context,
         attachment_context_override,
     )
@@ -4522,6 +4561,7 @@ pub(super) async fn build_resume_command_for_harness_with_continuation(
     continuation_runtime: Option<&super::continuation_runtime::ContinuationRuntime>,
     service_tier_override: Option<&str>,
     is_external_mcp: bool,
+    extra_allowed_mcp_tools: Vec<String>,
     agent_runtime_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ProviderSpawnableCommand, String> {
@@ -4561,6 +4601,7 @@ pub(super) async fn build_resume_command_for_harness_with_continuation(
             continuation_runtime,
             service_tier_override,
             is_external_mcp,
+            extra_allowed_mcp_tools,
             agent_runtime_context,
             attachment_context_override,
         },

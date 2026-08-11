@@ -520,6 +520,23 @@ pub(crate) async fn attempt_session_recovery(
         recovery_conversation.bound_agent_name = Some(recovery_agent_name.to_string());
     }
 
+    // Role-tiered Atlassian MCP grants for the recovery spawn, resolved from
+    // the errored run's persisted routing_role/project_id (never re-derived).
+    // Absent services or role yields no tools.
+    let recovery_extra_allowed_mcp_tools = match runtime_factory_deps {
+        Some(deps) => {
+            crate::application::atlassian_mcp_tools_for_resumed_run(
+                &agent_run_repo,
+                &deps.project_repo,
+                deps.atlassian_integration_service.as_ref(),
+                deps.manual_role_default_service.as_ref(),
+                Some(agent_run_id),
+            )
+            .await
+        }
+        None => Vec::new(),
+    };
+
     // 4. Spawn fresh provider session with history
     let provider_spawnable = match chat_service_context::build_command_for_harness_with_folder_refs(
         harness,
@@ -544,6 +561,7 @@ pub(crate) async fn attempt_session_recovery(
         None,
         None,
         false,
+        recovery_extra_allowed_mcp_tools,
         agent_runtime_context.as_deref(),
         None,
     )

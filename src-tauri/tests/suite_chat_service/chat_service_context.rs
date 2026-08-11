@@ -333,6 +333,7 @@ async fn persona_builder_attachment_uses_real_app_data_when_project_path_contain
             0,
             None,
             None,
+            &[],
             None,
             None,
         )
@@ -708,6 +709,7 @@ async fn queued_flush_uses_persona_builder_read_roots() {
             0,
             None,
             None,
+            &[],
             None,
             None,
         )
@@ -875,6 +877,7 @@ async fn assert_suppressed_persona_has_no_final_command_block(
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -916,6 +919,7 @@ async fn fresh_spawn_prompt_includes_bound_persona_block() {
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -959,6 +963,7 @@ async fn codex_fresh_persona_builder_spawn_uses_conversation_identity_and_cli_en
         None,
         None,
         false,
+        Vec::new(),
         None,
         None,
     )
@@ -1131,6 +1136,7 @@ async fn resume_command_prompt_includes_bound_persona_block() {
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -1172,6 +1178,7 @@ async fn recovery_command_prompt_includes_bound_persona_block() {
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -1397,6 +1404,7 @@ async fn codex_fresh_command_forwards_a_resolved_persona_block() {
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -1448,6 +1456,7 @@ async fn persona_codex_command_reports_reasoned_skip_when_agent_prompt_is_missin
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -2806,6 +2815,7 @@ async fn codex_recovery_resume_command_forwards_a_resolved_persona_block() {
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -2899,6 +2909,7 @@ async fn persona_codex_resume_command_uses_resume_subcommand_and_reports_injecti
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -2997,6 +3008,7 @@ async fn codex_legacy_verification_session_uses_active_ideation_features() {
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -4523,6 +4535,7 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             0,
             None,
             None,
+            &[],
             None,
             None,
         )

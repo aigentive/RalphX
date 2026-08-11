@@ -10,8 +10,11 @@
 //! access (fail-closed progress reads).
 
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::domain::agents::{AtlassianMcpAccess, RoutingRole};
+use crate::domain::entities::{AgentRunId, ProjectId};
+use crate::domain::repositories::{AgentRunRepository, ProjectRepository};
 
 use super::atlassian_integration_service::AtlassianIntegrationService;
 use super::manual_role_default_service::ManualRoleDefaultService;
@@ -58,4 +61,52 @@ pub async fn atlassian_mcp_tools_for_spawn(
         .into_iter()
         .map(str::to_string)
         .collect()
+}
+
+/// Resolve the Atlassian MCP tool grant for a resumed/recovered spawn.
+///
+/// Resume, queue, and recovery seams do not re-derive a routing role (that
+/// would risk drifting from the tier the originating spawn actually
+/// resolved); instead they read the **persisted** `routing_role`/`project_id`
+/// off the [`AgentRun`](crate::domain::entities::AgentRun) row being
+/// continued. A missing run, missing role, or missing service all resolve to
+/// an empty grant (fail-closed).
+pub async fn atlassian_mcp_tools_for_resumed_run(
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    project_repo: &Arc<dyn ProjectRepository>,
+    integration: Option<&Arc<AtlassianIntegrationService>>,
+    role_defaults: Option<&Arc<ManualRoleDefaultService>>,
+    agent_run_id: Option<&str>,
+) -> Vec<String> {
+    let (Some(integration), Some(role_defaults), Some(agent_run_id)) =
+        (integration, role_defaults, agent_run_id)
+    else {
+        return Vec::new();
+    };
+    let Ok(Some(run)) = agent_run_repo
+        .get_by_id(&AgentRunId::from_string(agent_run_id.to_string()))
+        .await
+    else {
+        return Vec::new();
+    };
+    let Some(role) = run.routing_role else {
+        return Vec::new();
+    };
+    let project_root = match run.project_id.as_deref() {
+        Some(project_id) => project_repo
+            .get_by_id(&ProjectId::from_string(project_id.to_string()))
+            .await
+            .ok()
+            .flatten()
+            .map(|project| std::path::PathBuf::from(project.working_directory)),
+        None => None,
+    };
+    atlassian_mcp_tools_for_spawn(
+        integration,
+        role_defaults,
+        Some(role),
+        run.project_id.as_deref(),
+        project_root.as_deref(),
+    )
+    .await
 }
