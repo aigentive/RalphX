@@ -85,6 +85,10 @@ use crate::application::agent_workspace_pr_description::{
     invalidate_agent_workspace_pr_description_cache, AgentWorkspacePrDescriptionCacheKey,
     ExistingPrMetadataSnapshot, ResolvedAgentWorkspacePrTarget,
 };
+use crate::application::agent_workspace_pr_reopen::{
+    reopen_agent_workspace_pr_for_state, ReopenAgentWorkspacePrResult,
+};
+use crate::application::agent_workspace_pr_reopen_restore::ReopenLocalWorkspaceState;
 use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
     schedule_agent_workspace_durable_repair_reconciliation,
@@ -1198,15 +1202,26 @@ pub(crate) async fn agent_workspace_response_without_repair_recovery_for_state(
     let mut response = AgentConversationWorkspaceResponse::from(workspace);
     response.mode_switch_locked = mode_lock.locked;
     response.mode_switch_lock_reason = mode_lock.reason;
-    response.maintenance_operation = state
+    let current_repair_attempt = state
         .agent_workspace_repair_repo
         .get_current_repair_attempt(&ChatConversationId::from_string(
             response.conversation_id.clone(),
         ))
         .await
         .map_err(|error| error.to_string())?
-        .filter(|attempt| attempt.is_unsettled())
-        .map(|attempt| attempt.operation_snapshot());
+        .filter(|attempt| attempt.is_unsettled());
+    response.maintenance_operation = match current_repair_attempt {
+        Some(attempt) => {
+            let recovery_action = crate::application::agent_workspace_publish_repair_state::load_agent_workspace_repair_operation_recovery_action(
+                state.agent_workspace_repair_repo.as_ref(),
+                &attempt,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            Some(attempt.operation_snapshot_with_recovery_action(recovery_action))
+        }
+        None => None,
+    };
     // Purely informational. A failed cost query must degrade this one field rather than fail the
     // whole workspace payload the Agents surface depends on.
     response.pr_autofix_fingerprint_spend = match pr_autofix_fingerprint {
@@ -5077,7 +5092,10 @@ pub async fn retry_agent_workspace_publication_effect(
     )
     .await
     .map_err(|error| error.to_string())?;
-    if !matches!(outcome, AgentWorkspacePrAutofixHoldActionOutcome::Applied(_)) {
+    if !matches!(
+        outcome,
+        AgentWorkspacePrAutofixHoldActionOutcome::Applied(_)
+    ) {
         return Err(
             "The workspace repair publication-effect hold changed before this action could be applied."
                 .to_string(),
@@ -7831,6 +7849,56 @@ pub async fn close_agent_workspace_pr(
         .await
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReopenAgentWorkspacePrInput {
+    pub conversation_id: String,
+    #[serde(default)]
+    pub reopen_on_github: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReopenAgentWorkspacePrResponse {
+    pub outcome: ReopenAgentWorkspacePrResult,
+    pub pr_number: i64,
+    pub local_workspace: Option<ReopenLocalWorkspaceState>,
+    pub message: String,
+    pub workspace: AgentConversationWorkspaceResponse,
+}
+
+/// Reopen a terminal-closed PR associated with an agent conversation workspace.
+#[tauri::command]
+pub async fn reopen_agent_workspace_pr(
+    input: ReopenAgentWorkspacePrInput,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<ReopenAgentWorkspacePrResponse, String> {
+    let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
+    let _pr_description_invalidation =
+        AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, true);
+    let _workspace_changed_event = emit_workspace_changed_when_done(&app, &conversation_id);
+    let outcome =
+        reopen_agent_workspace_pr_for_state(&conversation_id, input.reopen_on_github, &state)
+            .await?;
+
+    let updated = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Workspace disappeared after update".to_string())?;
+
+    Ok(ReopenAgentWorkspacePrResponse {
+        outcome: outcome.outcome,
+        pr_number: outcome.pr_number,
+        local_workspace: outcome.local_workspace,
+        message: outcome.message,
+        workspace: agent_workspace_response_for_state(&state, updated).await?,
+    })
+}
+
 async fn linked_plan_branch_has_unfinished_regular_tasks(
     state: &AppState,
     plan_branch: &PlanBranch,
@@ -10456,8 +10524,22 @@ where
     else {
         return false;
     };
-    if attempt.phase != AgentWorkspaceRepairPhase::Blocked {
-        return false;
+    let retry_allowed = crate::application::agent_workspace_publish_repair_state::explicit_agent_workspace_repair_retry_allowed(
+        state.agent_workspace_repair_repo.as_ref(),
+        &attempt,
+    )
+    .await;
+    match retry_allowed {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Skipping blocked workspace repair retry: retry admission could not be evaluated"
+            );
+            return false;
+        }
     }
     let Ok(Some(project)) = state.project_repo.get_by_id(&workspace.project_id).await else {
         tracing::warn!(

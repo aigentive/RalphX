@@ -1651,6 +1651,7 @@ describe("chat api", () => {
           source: "base_update",
           stage: "repairing",
           status: "active",
+          recovery_action: "none",
           hold_reason: null,
           summary: "Resolving the base conflict",
           blocker: null,
@@ -1692,6 +1693,7 @@ describe("chat api", () => {
         generation: 2,
         stage: "repairing",
         status: "active",
+        recoveryAction: "none",
         holdReason: null,
         automaticContinuation: true,
       },
@@ -1863,8 +1865,32 @@ describe("chat api", () => {
           started_at: "2026-01-24T10:00:00Z",
           updated_at: "2026-01-24T10:01:00Z",
         },
-      }).maintenance_operation?.hold_reason,
-    ).toBeNull();
+      }).maintenance_operation,
+    ).toMatchObject({
+      hold_reason: null,
+      recovery_action: "none",
+    });
+  });
+
+  it("rejects an unknown maintenance recovery action", () => {
+    expect(() =>
+      AgentConversationWorkspaceResponseSchema.parse({
+        ...planSeedWorkspaceResponse(),
+        maintenance_operation: {
+          operation_id: "maintenance-blocked",
+          generation: 1,
+          source: "publish",
+          stage: "blocked",
+          status: "blocked",
+          recovery_action: "guess_retry",
+          summary: "Blocked.",
+          blocker: "Blocked.",
+          automatic_continuation: false,
+          started_at: "2026-01-24T10:00:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+        },
+      }),
+    ).toThrow();
   });
 
   it("parses what_happened and what_i_did onto the maintenance operation", () => {

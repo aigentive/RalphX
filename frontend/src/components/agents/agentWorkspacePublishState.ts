@@ -460,6 +460,7 @@ export function canResumeAgentWorkspacePublish(
     !getAgentWorkspaceTerminalPublicationStatus(workspace ?? null) &&
       operation?.status === "ready" &&
       operation.stage === "ready" &&
+      operation.recoveryAction === "resume_publish" &&
       operation.holdReason == null,
   );
 }
@@ -600,7 +601,7 @@ export function getAgentWorkspaceMaintenancePresentation(
         summary,
         tone: "warning",
         busy: false,
-        action: "publish",
+        action: operation.recoveryAction === "resume_publish" ? "publish" : "none",
         automaticContinuation: null,
       };
     case "blocked":
@@ -609,7 +610,7 @@ export function getAgentWorkspaceMaintenancePresentation(
         summary,
         tone: "error",
         busy: false,
-        action: "retry",
+        action: operation.recoveryAction === "retry_repair" ? "retry" : "none",
         automaticContinuation: null,
       };
   }

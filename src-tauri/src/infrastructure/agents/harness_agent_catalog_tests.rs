@@ -1395,6 +1395,15 @@ fn pr_describer_surfaces_share_preserve_or_patch_submit_contract() {
             "PR describer {harness:?} prompt should expose preserve and patch decisions"
         );
         assert!(
+            prompt.contains("empty final answer and no tool call")
+                && prompt.contains("Every patch and every new PR must call"),
+            "PR describer {harness:?} prompt should allow only existing-PR silent preserve"
+        );
+        assert!(
+            prompt.contains("Explanatory final prose is not a preserve decision"),
+            "PR describer {harness:?} prompt should reject prose as implicit preserve"
+        );
+        assert!(
             prompt.contains("untrusted evidence"),
             "PR describer {harness:?} prompt should identify remote metadata as untrusted"
         );

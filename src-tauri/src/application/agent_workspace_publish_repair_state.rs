@@ -25,7 +25,8 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRunId, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairOperationHoldReason, AgentWorkspaceRepairOutcome,
+    AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairOperationHoldReason,
+    AgentWorkspaceRepairOperationRecoveryAction, AgentWorkspaceRepairOutcome,
     AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
     ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
 };
@@ -355,6 +356,72 @@ pub(crate) fn repair_attempt_projection(
     }
 }
 
+/// Backend-owned admission projection shared by workspace responses and explicit retry commands.
+pub(crate) fn agent_workspace_repair_operation_recovery_action(
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> AgentWorkspaceRepairOperationRecoveryAction {
+    if !attempt.is_unsettled() {
+        return AgentWorkspaceRepairOperationRecoveryAction::None;
+    }
+    match attempt.phase {
+        // Every continuation kind, including Manual and ResumePrSupervision, may resume
+        // publish from a hold-free Ready phase. The hold reason is the only gate here;
+        // continuation priority is irrelevant to whether a ready attempt can be published.
+        AgentWorkspaceRepairPhase::Ready if attempt.operation_snapshot().hold_reason.is_none() => {
+            AgentWorkspaceRepairOperationRecoveryAction::ResumePublish
+        }
+        AgentWorkspaceRepairPhase::Blocked if attempt.next_dispatch_at.is_none() => {
+            AgentWorkspaceRepairOperationRecoveryAction::RetryRepair
+        }
+        _ => AgentWorkspaceRepairOperationRecoveryAction::None,
+    }
+}
+
+/// Applies the durable-effect guard shared by response projection and explicit retry admission.
+/// Create-PR effects stay fenced. Escalated push/update effects regain an explicit user retry
+/// because their replay is idempotent and durable recovery has already yielded ownership.
+pub(crate) async fn load_agent_workspace_repair_operation_recovery_action(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> AppResult<AgentWorkspaceRepairOperationRecoveryAction> {
+    let recovery_action = agent_workspace_repair_operation_recovery_action(attempt);
+    if recovery_action == AgentWorkspaceRepairOperationRecoveryAction::RetryRepair {
+        let Some(effect) = repair_repo.get_open_repair_effect(&attempt.id).await? else {
+            return Ok(recovery_action);
+        };
+        let escalation_recorded = attempt
+            .pending_reasons
+            .iter()
+            .any(|reason| {
+                reason
+                    == crate::application::agent_workspace_publish_recovery::CONTINUATION_OPEN_EFFECT_ATTENTION_REASON
+            });
+        if effect.kind == AgentWorkspaceRepairEffectKind::CreatePr
+            || !escalation_recorded
+            || !matches!(
+                effect.kind,
+                AgentWorkspaceRepairEffectKind::PushBranch
+                    | AgentWorkspaceRepairEffectKind::UpdatePr
+            )
+        {
+            return Ok(AgentWorkspaceRepairOperationRecoveryAction::None);
+        }
+    }
+    Ok(recovery_action)
+}
+
+/// Admission guard for a direct user retry of a blocked repair, using the same backend-owned
+/// recovery-action projection as the workspace response.
+pub(crate) async fn explicit_agent_workspace_repair_retry_allowed(
+    repair_repo: &dyn AgentWorkspaceRepairRepository,
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> AppResult<bool> {
+    Ok(
+        load_agent_workspace_repair_operation_recovery_action(repair_repo, attempt).await?
+            == AgentWorkspaceRepairOperationRecoveryAction::RetryRepair,
+    )
+}
+
 fn start_attempt_from_workspace(
     workspace: &AgentConversationWorkspace,
     request: &AgentWorkspaceRepairStartRequest,
@@ -580,12 +647,40 @@ pub(crate) async fn transition_agent_workspace_repair_attempt(
 pub(crate) async fn block_agent_workspace_repair_completion(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     branch_update_repo: Arc<dyn BranchUpdateRepository>,
+    attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    blocker: &str,
+    auto_merge_current: Option<bool>,
+    what_happened: Option<&str>,
+    what_i_did: Option<&str>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    block_agent_workspace_repair_completion_with_projection(
+        repair_repo,
+        branch_update_repo,
+        attempt,
+        summary,
+        blocker,
+        auto_merge_current,
+        what_happened,
+        what_i_did,
+        None,
+    )
+    .await
+}
+
+/// Blocks the current generation while preserving independently proven compatibility authority.
+/// Only receipt-aware callers may override the default failed/blocked projection.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn block_agent_workspace_repair_completion_with_projection(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    branch_update_repo: Arc<dyn BranchUpdateRepository>,
     mut attempt: AgentWorkspaceRepairAttempt,
     summary: &str,
     blocker: &str,
     auto_merge_current: Option<bool>,
     what_happened: Option<&str>,
     what_i_did: Option<&str>,
+    projection_status: Option<(&str, &str)>,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
     let expected_phase = attempt.phase;
     let expected_updated_at = attempt.updated_at;
@@ -595,7 +690,11 @@ pub(crate) async fn block_agent_workspace_repair_completion(
     attempt.what_happened = what_happened.map(str::to_string);
     attempt.what_i_did = what_i_did.map(str::to_string);
     attempt.updated_at = next_transition_at(Some(attempt.updated_at));
-    let projection = repair_attempt_projection(&attempt, blocker, auto_merge_current);
+    let mut projection = repair_attempt_projection(&attempt, blocker, auto_merge_current);
+    if let Some((publication_push_status, pr_supervision_status)) = projection_status {
+        projection.publication_push_status = Some(publication_push_status.to_string());
+        projection.pr_supervision_status = Some(pr_supervision_status.to_string());
+    }
     let outcome = repair_repo
         .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
             attempt,

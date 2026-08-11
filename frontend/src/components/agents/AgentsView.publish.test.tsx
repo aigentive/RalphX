@@ -965,6 +965,7 @@ describe("AgentsView publish", () => {
           source: "base_update",
           stage: "ready",
           status: "ready",
+          recoveryAction: "resume_publish",
           summary: "Base update completed",
           blocker: null,
           automaticContinuation: false,
@@ -995,6 +996,7 @@ describe("AgentsView publish", () => {
           source: "publish",
           stage: "blocked",
           status: "blocked",
+          recoveryAction: "retry_repair",
           summary: "Repair cannot continue",
           blocker: "Resolve the protected branch policy.",
           automaticContinuation: false,
@@ -1028,6 +1030,37 @@ describe("AgentsView publish", () => {
         "conversation-1",
       ),
     );
+  });
+
+  it("shows non-retryable blocked maintenance without a dead action", async () => {
+    configurePublishPane({
+      workspace: {
+        maintenanceOperation: {
+          operationId: "maintenance-waiting",
+          generation: 2,
+          source: "publish",
+          stage: "blocked",
+          status: "blocked",
+          recoveryAction: "none",
+          summary: "Repair cannot continue yet",
+          blocker: "RalphX is reconciling the prior PR handoff.",
+          automaticContinuation: false,
+          startedAt: "2026-07-25T10:00:00Z",
+          updatedAt: "2026-07-25T10:01:00Z",
+        },
+      },
+    });
+
+    const actionbar = await openPublishPane();
+    expect(
+      within(actionbar).getByRole("heading", { name: "Repair blocked" }),
+    ).toBeInTheDocument();
+    expect(
+      within(actionbar).queryByTestId("agents-publish-retry-maintenance"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(actionbar).queryByTestId("agents-publish-maintenance-active"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders held repair controls instead of zero-change facts", async () => {
@@ -1195,6 +1228,7 @@ describe("AgentsView publish", () => {
           source: "base_update",
           stage: "blocked",
           status: "blocked",
+          recoveryAction: "retry_repair",
           summary: "Repair needs a new base.",
           blocker: "base_ref_drift: original pull request was merged",
           automaticContinuation: false,

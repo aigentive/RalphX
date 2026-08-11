@@ -1903,6 +1903,7 @@ export const chatApi = {
   setAgentConversationWorkspacePrSupervision,
   setAgentConversationWorkspaceReviewAutomation,
   closeAgentWorkspacePr,
+  reopenAgentWorkspacePr,
   getAgentWorkspacePrReviewContext,
   setAgentWorkspacePrReviewAutoApprove,
   setAgentWorkspacePrReviewMonitoring,
@@ -2107,6 +2108,10 @@ export type AgentWorkspaceMaintenanceOperationStatus =
   | "ready"
   | "blocked"
   | "held";
+export type AgentWorkspaceMaintenanceOperationRecoveryAction =
+  | "none"
+  | "resume_publish"
+  | "retry_repair";
 export type AgentWorkspaceMaintenanceOperationHoldReason =
   | "pr_autofix_unchanged_health"
   | "pr_autofix_pre_existing_on_base"
@@ -2123,6 +2128,7 @@ export interface AgentWorkspaceMaintenanceOperation {
   source: AgentWorkspaceMaintenanceOperationSource;
   stage: AgentWorkspaceMaintenanceOperationStage;
   status: AgentWorkspaceMaintenanceOperationStatus;
+  recoveryAction?: AgentWorkspaceMaintenanceOperationRecoveryAction;
   holdReason?: AgentWorkspaceMaintenanceOperationHoldReason | null;
   summary: string | null;
   blocker: string | null;
@@ -2719,6 +2725,10 @@ export const AgentWorkspaceMaintenanceOperationResponseSchema = z.object({
     "held",
   ]),
   status: z.enum(["active", "ready", "blocked", "held"]),
+  recovery_action: z
+    .enum(["none", "resume_publish", "retry_repair"])
+    .optional()
+    .default("none"),
   hold_reason: z
     .enum([
       "pr_autofix_unchanged_health",
@@ -3387,6 +3397,7 @@ function transformAgentConversationWorkspace(
           source: raw.maintenance_operation.source,
           stage: raw.maintenance_operation.stage,
           status: raw.maintenance_operation.status,
+          recoveryAction: raw.maintenance_operation.recovery_action,
           holdReason: raw.maintenance_operation.hold_reason,
           summary: raw.maintenance_operation.summary,
           blocker: raw.maintenance_operation.blocker,
@@ -4722,6 +4733,51 @@ export async function closeAgentWorkspacePr(
     AgentConversationWorkspaceResponseSchema,
   );
   return transformAgentConversationWorkspace(raw);
+}
+
+const ReopenAgentWorkspacePrResponseSchema = z.object({
+  outcome: z.enum([
+    "latch_cleared",
+    "reopened_on_github",
+    "confirmation_required",
+    "already_merged",
+  ]),
+  prNumber: z.number(),
+  localWorkspace: z
+    .enum(["already_present", "restored", "restore_failed"])
+    .nullable(),
+  message: z.string(),
+  workspace: AgentConversationWorkspaceResponseSchema,
+});
+
+export type ReopenLocalWorkspaceState =
+  | "already_present"
+  | "restored"
+  | "restore_failed";
+
+export interface ReopenAgentWorkspacePrResult {
+  outcome:
+    | "latch_cleared"
+    | "reopened_on_github"
+    | "confirmation_required"
+    | "already_merged";
+  prNumber: number;
+  /** State of the local checkout after reopen; null when reopen never touched it. */
+  localWorkspace: ReopenLocalWorkspaceState | null;
+  message: string;
+  workspace: AgentConversationWorkspace;
+}
+
+export async function reopenAgentWorkspacePr(
+  conversationId: string,
+  reopenOnGithub: boolean,
+): Promise<ReopenAgentWorkspacePrResult> {
+  const raw = await typedInvoke(
+    "reopen_agent_workspace_pr",
+    { input: { conversationId, reopenOnGithub } },
+    ReopenAgentWorkspacePrResponseSchema,
+  );
+  return { ...raw, workspace: transformAgentConversationWorkspace(raw.workspace) };
 }
 
 export async function startAgentConversation(

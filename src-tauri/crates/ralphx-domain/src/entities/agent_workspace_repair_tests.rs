@@ -198,6 +198,10 @@ fn new_repair_attempt_is_unsettled_and_projects_only_response_safe_fields() {
         AgentWorkspaceRepairOperationStage::UpdatingBase
     );
     assert_eq!(snapshot.status, AgentWorkspaceRepairOperationStatus::Active);
+    assert_eq!(
+        snapshot.recovery_action,
+        AgentWorkspaceRepairOperationRecoveryAction::None
+    );
     assert!(snapshot.automatic_continuation);
     assert_eq!(snapshot.what_happened, None);
     assert_eq!(snapshot.what_i_did, None);
@@ -265,6 +269,41 @@ fn repair_operation_snapshot_with_absent_narrative_round_trips_as_null() {
         serde_json::from_value(legacy).expect("legacy operation snapshot remains readable");
     assert_eq!(decoded.what_happened, None);
     assert_eq!(decoded.what_i_did, None);
+}
+
+#[test]
+fn repair_operation_snapshot_projects_typed_recovery_action_with_legacy_default() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(),
+        AgentWorkspaceRepairSource::Publish,
+        AgentWorkspaceRepairContinuation::Publish,
+        "origin/main",
+        false,
+        true,
+        false,
+        None,
+        Utc::now(),
+    );
+    attempt.phase = AgentWorkspaceRepairPhase::Blocked;
+    let snapshot = attempt.operation_snapshot_with_recovery_action(
+        AgentWorkspaceRepairOperationRecoveryAction::RetryRepair,
+    );
+    assert_eq!(
+        snapshot.recovery_action,
+        AgentWorkspaceRepairOperationRecoveryAction::RetryRepair
+    );
+
+    let mut legacy = serde_json::to_value(snapshot).expect("serialize operation snapshot");
+    legacy
+        .as_object_mut()
+        .expect("snapshot serializes as an object")
+        .remove("recovery_action");
+    let decoded: AgentWorkspaceRepairOperationSnapshot =
+        serde_json::from_value(legacy).expect("legacy snapshot remains readable");
+    assert_eq!(
+        decoded.recovery_action,
+        AgentWorkspaceRepairOperationRecoveryAction::None
+    );
 }
 
 #[test]

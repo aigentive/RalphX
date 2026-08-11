@@ -214,6 +214,34 @@ describe("agentWorkspaceOperationRegistry", () => {
     expect(takeAgentWorkspaceOperationResult("c2")).toBeNull();
   });
 
+  it("wakes subscribers with a fresh snapshot reference when a result is reported for a watched conversation", () => {
+    watchObserved("c1");
+    const before = getWatchedAgentWorkspaceOperations();
+    const listener = vi.fn();
+    const unsubscribe = subscribeWatchedAgentWorkspaceOperations(listener);
+
+    reportAgentWorkspaceOperationResult("c1", { kind: "no_changes" });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    const after = getWatchedAgentWorkspaceOperations();
+    expect(after).not.toBe(before);
+    expect(after).toEqual(before);
+
+    unsubscribe();
+  });
+
+  it("does not wake subscribers when a result is reported for an unwatched conversation", () => {
+    watchObserved("c1");
+    const listener = vi.fn();
+    const unsubscribe = subscribeWatchedAgentWorkspaceOperations(listener);
+
+    reportAgentWorkspaceOperationResult("other", { kind: "no_changes" });
+
+    expect(listener).not.toHaveBeenCalled();
+
+    unsubscribe();
+  });
+
   it("hasAgentWorkspaceOperationResult peeks the mailbox without consuming it", () => {
     expect(hasAgentWorkspaceOperationResult("c1")).toBe(false);
 
