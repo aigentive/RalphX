@@ -8,6 +8,7 @@ const SLOW_START_THRESHOLD_MS = 3_000;
 const STAGE_COPY: Record<StartupStage, { heading: string; description: string }> = {
   creating_window: { heading: "Preparing your workspace", description: "Starting the RalphX window." },
   opening_database: { heading: "Preparing workspace data", description: "Opening local workspace data." },
+  compacting_database: { heading: "Reclaiming disk space", description: "Compacting local workspace data. This can take several minutes on a large database." },
   migrating: { heading: "Upgrading workspace data", description: "Applying safe workspace updates." },
   loading_settings: { heading: "Loading your settings", description: "Restoring local preferences." },
   startup_cleanup: { heading: "Restoring local services", description: "Cleaning up the previous session." },

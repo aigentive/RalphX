@@ -29,7 +29,18 @@ fn test_all_defaults_are_sensible() {
     assert!(cfg.stream.chat_payload_retention_enabled);
     assert_eq!(cfg.stream.chat_payload_retention_days, 90);
     assert_eq!(cfg.stream.chat_payload_retention_archived_days, 7);
-    assert_eq!(cfg.stream.chat_payload_retention_batch_rows, 2000);
+    assert_eq!(cfg.stream.chat_payload_retention_batch_rows, 500);
+    assert_eq!(
+        cfg.stream.chat_payload_size_budget_recommended_bytes,
+        5_368_709_120
+    );
+    assert_eq!(
+        cfg.stream.chat_payload_advisory_threshold_bytes,
+        10_737_418_240
+    );
+    assert_eq!(cfg.stream.chat_payload_retention_interval_hours, 6);
+    assert_eq!(cfg.stream.chat_payload_retention_batch_pause_ms, 50);
+    assert_eq!(cfg.stream.chat_payload_retention_checkpoint_batches, 50);
     assert_eq!(cfg.stream.db_lock_wait_warn_ms, 100);
     assert_eq!(cfg.stream.db_lock_hold_warn_ms, 250);
     assert!(cfg.database_maintenance.db_auto_compact_enabled);
@@ -196,6 +207,13 @@ fn test_env_overrides_apply() {
         "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_DAYS" => Some("21".to_string()),
         "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ARCHIVED_DAYS" => Some("3".to_string()),
         "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_ROWS" => Some("17".to_string()),
+        "RALPHX_STREAM_CHAT_PAYLOAD_SIZE_BUDGET_RECOMMENDED_BYTES" => {
+            Some("268435456".to_string())
+        }
+        "RALPHX_STREAM_CHAT_PAYLOAD_ADVISORY_THRESHOLD_BYTES" => Some("536870912".to_string()),
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_INTERVAL_HOURS" => Some("2".to_string()),
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_PAUSE_MS" => Some("5".to_string()),
+        "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_CHECKPOINT_BATCHES" => Some("9".to_string()),
         "RALPHX_STREAM_DB_LOCK_WAIT_WARN_MS" => Some("25".to_string()),
         "RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS" => Some("75".to_string()),
         "RALPHX_DB_AUTO_COMPACT_ENABLED" => Some("false".to_string()),
@@ -243,6 +261,14 @@ fn test_env_overrides_apply() {
     assert_eq!(cfg.stream.chat_payload_retention_days, 21);
     assert_eq!(cfg.stream.chat_payload_retention_archived_days, 3);
     assert_eq!(cfg.stream.chat_payload_retention_batch_rows, 17);
+    assert_eq!(
+        cfg.stream.chat_payload_size_budget_recommended_bytes,
+        268_435_456
+    );
+    assert_eq!(cfg.stream.chat_payload_advisory_threshold_bytes, 536_870_912);
+    assert_eq!(cfg.stream.chat_payload_retention_interval_hours, 2);
+    assert_eq!(cfg.stream.chat_payload_retention_batch_pause_ms, 5);
+    assert_eq!(cfg.stream.chat_payload_retention_checkpoint_batches, 9);
     assert_eq!(cfg.stream.db_lock_wait_warn_ms, 25);
     assert_eq!(cfg.stream.db_lock_hold_warn_ms, 75);
     assert!(!cfg.database_maintenance.db_auto_compact_enabled);
