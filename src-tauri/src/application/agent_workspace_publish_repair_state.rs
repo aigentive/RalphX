@@ -1484,6 +1484,12 @@ pub(crate) async fn reserve_agent_workspace_ci_await(
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
     let expected_phase = attempt.phase;
     let expected_updated_at = attempt.updated_at;
+    // `operation_snapshot()` finds the first parsing pending reason before it ever reaches the
+    // CiRerunPending fallback below, so leaving the base-parity marker in place here would pin
+    // the card to a classification this reservation has already moved past.
+    attempt
+        .pending_reasons
+        .retain(|reason| reason != BASE_PARITY_TRANSIENT_REPAIR_REASON);
     if !attempt
         .pending_reasons
         .iter()

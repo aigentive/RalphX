@@ -4800,6 +4800,129 @@ async fn reserve_ci_rerun_retain_is_inert_without_the_base_parity_transient_reas
     );
 }
 
+#[tokio::test]
+async fn reserve_ci_await_clears_base_parity_transient_pending_reason() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-await-clears-base-parity");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let mut attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id,
+            AgentWorkspaceRepairSource::PrAutofix,
+            AgentWorkspaceRepairContinuation::ResumePrSupervision,
+            "held for base-parity-transient",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+    attempt
+        .pending_reasons
+        .push(BASE_PARITY_TRANSIENT_REPAIR_REASON.to_string());
+    let ci_rerun_count_before = attempt.ci_rerun_count;
+
+    let result = reserve_agent_workspace_ci_await(
+        Arc::clone(&repair_repo),
+        attempt,
+        "fp-ci-await-clears-hold",
+        "awaiting the in-flight run after a transient base-parity classification",
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("reserve ci await");
+
+    let AgentWorkspaceRepairTransitionOutcome::Applied(awaiting) = result else {
+        panic!("ci await reservation over a base-parity-transient hold must apply");
+    };
+    assert!(
+        !awaiting
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == BASE_PARITY_TRANSIENT_REPAIR_REASON),
+        "the retain must clear the base-parity-transient marker in the same CAS write"
+    );
+    assert!(
+        awaiting
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == AWAITING_CI_REPAIR_REASON),
+        "the await reservation must still record the awaiting-CI pending reason"
+    );
+    assert!(
+        agent_workspace_repair_is_ci_held(&awaiting),
+        "hold_active must stay true across the transition"
+    );
+    let snapshot = awaiting.operation_snapshot();
+    assert_eq!(
+        snapshot.hold_reason,
+        Some(crate::domain::entities::AgentWorkspaceRepairOperationHoldReason::CiRerunPending),
+        "clearing the stale marker must let the CiRerunPending fallback project instead"
+    );
+    assert_eq!(
+        snapshot.stage,
+        crate::domain::entities::AgentWorkspaceRepairOperationStage::Held
+    );
+    assert_eq!(
+        awaiting.ci_rerun_count, ci_rerun_count_before,
+        "an await reservation must not spend the rerun budget"
+    );
+}
+
+#[tokio::test]
+async fn reserve_ci_await_retain_is_inert_without_the_base_parity_transient_reason() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("ci-await-retain-inert");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id,
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "ordinary completion-handler await",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+
+    let result = reserve_agent_workspace_ci_await(
+        Arc::clone(&repair_repo),
+        attempt,
+        "fp-ci-await-inert",
+        "awaiting the in-flight run",
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("reserve ci await");
+
+    let AgentWorkspaceRepairTransitionOutcome::Applied(awaiting) = result else {
+        panic!("ci await reservation without the base-parity-transient marker must still apply");
+    };
+    assert!(
+        awaiting
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == AWAITING_CI_REPAIR_REASON),
+        "the await reservation must still record the awaiting-CI pending reason"
+    );
+}
+
 fn transient_ci_health(head_oid: &str, run_id: i64) -> PrHealth {
     PrHealth {
         sync_state: PrSyncState {
