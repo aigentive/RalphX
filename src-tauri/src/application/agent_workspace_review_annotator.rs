@@ -8,6 +8,7 @@
 //! Everything here is fail-soft by design: a dispatch failure logs and returns, and the annotator
 //! holds no tool that can touch gate or outcome state.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +19,8 @@ use crate::application::chat_service::{
     ChatService, SendCallerContext, SendMessageOptions, SendQueuePolicy,
 };
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentRunId, ChatContextType, ChatConversation,
+    AgentConversationWorkspace, AgentRunId, AgentWorkspaceReviewHunkAnnotation, ChatContextType,
+    ChatConversation,
 };
 use crate::domain::services::RunningAgentKey;
 use crate::error::AppResult;
@@ -27,6 +29,127 @@ use crate::infrastructure::agents::claude::agent_names;
 use super::agent_workspace_review::AgentWorkspaceReviewTarget;
 
 const ANNOTATOR_LOG_TARGET: &str = "ralphx_lib::application::agent_workspace_review_annotator";
+
+/// Carries unchanged files' annotations onto the review's new artifact version.
+///
+/// Annotation rows are keyed to `artifact_id`, and every review cycle writes a new artifact
+/// version, so without this every cycle re-annotates the whole delta from zero.
+///
+/// The load-bearing property is that hunk anchors are **per-file**: `@@ -a,b +c,d @@` offsets are
+/// relative to that file's own diff, so a file whose patch-vs-base is byte-identical between
+/// cycles has byte-identical anchors and its annotations stay exactly valid. Line numbers do not
+/// shift because some other file changed.
+///
+/// Correctness rests entirely on the hash, never on a head-delta: if the base moves, a file's
+/// patch-vs-base can change while `prev_head..head` reports nothing, which would carry annotations
+/// onto genuinely different hunks. Any file whose hash is missing on either side is annotated
+/// fresh — a stale annotation describing code that has since changed is worse than none.
+///
+/// Returns the number of carried rows. Never fails the caller: this is an optimization.
+pub(crate) async fn carry_forward_workspace_review_annotations(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    target: &AgentWorkspaceReviewTarget,
+) -> usize {
+    match carry_forward_inner(state, workspace, target).await {
+        Ok(carried) => carried,
+        Err(error) => {
+            warn!(
+                target: ANNOTATOR_LOG_TARGET,
+                operation = "annotation_carry_forward_failed",
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Failed to carry annotations forward; the annotator will regenerate them"
+            );
+            0
+        }
+    }
+}
+
+async fn carry_forward_inner(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    target: &AgentWorkspaceReviewTarget,
+) -> AppResult<usize> {
+    let Some(monitor) = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await?
+    else {
+        return Ok(0);
+    };
+    // Cycle 1 has no prior artifact version to carry from.
+    let (Some(previous_artifact_id), Some(artifact_id), Some(artifact_version)) = (
+        monitor.previous_version_id.clone(),
+        monitor.review_artifact_id.clone(),
+        monitor.review_artifact_version,
+    ) else {
+        return Ok(0);
+    };
+
+    let previous = state
+        .agent_conversation_workspace_repo
+        .list_workspace_review_hunk_annotations(&workspace.conversation_id, &previous_artifact_id)
+        .await?;
+    if previous.is_empty() {
+        return Ok(0);
+    }
+
+    let selections = previous
+        .iter()
+        .filter(|annotation| annotation.file_patch_hash.is_some())
+        .map(|annotation| (annotation.path.clone(), annotation.diff_source.clone()))
+        .collect::<BTreeSet<_>>();
+    if selections.is_empty() {
+        return Ok(0);
+    }
+    let current_hashes =
+        crate::application::agent_workspace_review_diff::workspace_review_file_patch_hashes(
+            target,
+            &selections,
+        );
+
+    let carried = previous
+        .into_iter()
+        .filter(|annotation| {
+            let Some(previous_hash) = annotation.file_patch_hash.as_deref() else {
+                return false;
+            };
+            current_hashes
+                .get(&(annotation.path.clone(), annotation.diff_source.clone()))
+                .is_some_and(|current_hash| current_hash == previous_hash)
+        })
+        .map(|annotation| AgentWorkspaceReviewHunkAnnotation {
+            id: uuid::Uuid::new_v4().to_string(),
+            artifact_id: artifact_id.clone(),
+            artifact_version,
+            head_sha: target.head_sha.clone(),
+            diff_fingerprint: target.diff_fingerprint.clone(),
+            ..annotation
+        })
+        .collect::<Vec<_>>();
+    if carried.is_empty() {
+        return Ok(0);
+    }
+
+    let carried_count = carried.len();
+    state
+        .agent_conversation_workspace_repo
+        .replace_workspace_review_hunk_annotations(
+            &workspace.conversation_id,
+            &artifact_id,
+            carried,
+        )
+        .await?;
+    info!(
+        target: ANNOTATOR_LOG_TARGET,
+        operation = "annotation_carry_forward_applied",
+        conversation_id = %workspace.conversation_id,
+        carried_count,
+        "Carried unchanged-file annotations onto the new Review artifact version"
+    );
+    Ok(carried_count)
+}
 
 /// Dispatches the annotator for a settled review, best effort.
 ///
@@ -41,6 +164,9 @@ pub(crate) async fn dispatch_workspace_review_annotator(
     workspace: &AgentConversationWorkspace,
     target: &AgentWorkspaceReviewTarget,
 ) {
+    // Carry first: every hunk this restores is one the annotator no longer has to look at, since
+    // `missing_workspace_review_hunk_anchors` reports carried hunks as covered.
+    carry_forward_workspace_review_annotations(state, workspace, target).await;
     let chat_service = state.build_chat_service();
     if let Err(error) =
         dispatch_with_chat_service(state, workspace, target, &chat_service).await

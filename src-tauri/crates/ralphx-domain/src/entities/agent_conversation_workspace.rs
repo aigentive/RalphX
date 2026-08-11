@@ -437,6 +437,13 @@ pub struct AgentWorkspaceReviewHunkAnnotation {
     pub title: Option<String>,
     pub message: String,
     pub level: String,
+    /// Hash of this file's patch-vs-base at the time the annotation was written.
+    ///
+    /// Hunk anchors are per-file: `@@ -a,b +c,d @@` offsets are relative to that file's own diff,
+    /// so a file whose patch text is byte-identical between review cycles has byte-identical
+    /// anchors. That is what lets an annotation carry forward verbatim instead of being
+    /// regenerated. `None` means "unknown", which fails carry-forward closed.
+    pub file_patch_hash: Option<String>,
     pub created_by_run_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }

@@ -887,6 +887,7 @@ fn workspace_review_missing_hunk_anchors_requires_every_anchor() {
         title: None,
         message: "Explains the first hunk.".to_string(),
         level: "notice".to_string(),
+        file_patch_hash: None,
         created_by_run_id: Some("run-1".to_string()),
         created_at: chrono::Utc::now(),
     };

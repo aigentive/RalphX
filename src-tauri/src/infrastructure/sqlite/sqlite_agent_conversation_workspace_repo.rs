@@ -683,6 +683,7 @@ fn row_to_workspace_review_hunk_annotation(
         title: row.get("title")?,
         message: row.get("message")?,
         level: row.get("level")?,
+        file_patch_hash: row.get("file_patch_hash")?,
         created_by_run_id: row.get("created_by_run_id")?,
         created_at: parse_datetime(&created_at),
     })
@@ -5058,10 +5059,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         id, conversation_id, project_id, artifact_id, artifact_version,
                         target_scope, head_sha, diff_fingerprint, path, diff_source,
                         hunk_header, old_start, old_lines, new_start, new_lines,
-                        title, message, level, created_by_run_id, created_at
+                        title, message, level, file_patch_hash, created_by_run_id,
+                        created_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                        ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+                        ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
                     )",
                 )?;
                 for annotation in annotations {
@@ -5084,6 +5086,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         annotation.title,
                         annotation.message,
                         annotation.level,
+                        annotation.file_patch_hash,
                         annotation.created_by_run_id,
                         annotation.created_at.to_rfc3339(),
                     ])?;

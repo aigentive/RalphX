@@ -1,7 +1,8 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::application::agent_workspace_review::{
     resolve_review_target, workspace_review_source_snapshot_fingerprint,
@@ -13,7 +14,7 @@ use crate::application::agent_workspace_review_diff_cursor::{
 };
 use crate::application::agent_workspace_review_diff_inventory::full_changed_file_inventory;
 use crate::application::diff_service::{
-    validate_worktree_diff_file_containment, DiffService, FileDiff, FileDiffPage,
+    validate_worktree_diff_file_containment, DiffLineKind, DiffService, FileDiff, FileDiffPage,
     MAX_DIFF_PAGE_LIMIT,
 };
 use crate::domain::entities::{
@@ -306,6 +307,69 @@ pub fn all_hunk_anchors_for_file(
             new_lines: hunk.new_lines,
         })
         .collect())
+}
+
+/// Hashes one file's patch-vs-base.
+///
+/// The hash covers exactly what determines this file's hunk anchors: every hunk header plus every
+/// line's kind and content. Two cycles that produce the same hash produce the same anchors, which
+/// is what makes an annotation still valid without re-anchoring. Binary files hash their binary
+/// marker, since they have no hunks to annotate anyway.
+pub fn workspace_review_file_patch_hash(
+    target: &AgentWorkspaceReviewTarget,
+    path: &str,
+    source: AgentWorkspaceReviewDiffSource,
+) -> AppResult<String> {
+    let diff = resolve_workspace_review_file_diff(target, path, source)?;
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(source.as_str().as_bytes());
+    hasher.update(b"\0");
+    if diff.is_binary {
+        hasher.update(b"binary");
+        return Ok(format!("{:x}", hasher.finalize()));
+    }
+    for hunk in &diff.hunks {
+        hasher.update(hunk.header.as_bytes());
+        hasher.update(b"\0");
+        for line in &hunk.lines {
+            hasher.update(match line.kind {
+                DiffLineKind::Context => b"c".as_slice(),
+                DiffLineKind::Addition => b"+".as_slice(),
+                DiffLineKind::Deletion => b"-".as_slice(),
+            });
+            hasher.update(line.content.as_bytes());
+            hasher.update(b"\0");
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Per-file patch hashes for the given `(path, source)` selections.
+///
+/// Files whose diff cannot be read are simply absent from the map, which fails carry-forward
+/// closed for them: a stale annotation describing code that has since changed is worse than no
+/// annotation.
+pub fn workspace_review_file_patch_hashes(
+    target: &AgentWorkspaceReviewTarget,
+    selections: &BTreeSet<(String, String)>,
+) -> BTreeMap<(String, String), String> {
+    let mut hashes = BTreeMap::new();
+    for (path, source) in selections {
+        let Ok(parsed_source) = source.parse::<AgentWorkspaceReviewDiffSource>() else {
+            continue;
+        };
+        if validate_path_bound(path).is_err()
+            || validate_source_for_target(parsed_source, target.scope).is_err()
+        {
+            continue;
+        }
+        if let Ok(hash) = workspace_review_file_patch_hash(target, path, parsed_source) {
+            hashes.insert((path.clone(), source.clone()), hash);
+        }
+    }
+    hashes
 }
 
 pub async fn full_hunk_anchors_for_requests(

@@ -7053,3 +7053,217 @@ async fn active_reviewer_run_retains_annotation_authority() {
     assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Reviewing);
     assert!(annotation_authority_result(&monitor, Some("reviewer-run"), &target).is_ok());
 }
+
+// ── Annotation carry-forward across review cycles ────────────────────────
+
+use crate::application::agent_workspace_review_annotator::carry_forward_workspace_review_annotations;
+use crate::domain::entities::AgentWorkspaceReviewHunkAnnotation;
+
+fn annotation_for(
+    workspace: &AgentConversationWorkspace,
+    target: &AgentWorkspaceReviewTarget,
+    artifact_id: &str,
+    path: &str,
+    diff_source: &str,
+    file_patch_hash: Option<&str>,
+) -> AgentWorkspaceReviewHunkAnnotation {
+    AgentWorkspaceReviewHunkAnnotation {
+        id: uuid::Uuid::new_v4().to_string(),
+        conversation_id: workspace.conversation_id.clone(),
+        project_id: workspace.project_id.clone(),
+        artifact_id: ArtifactId::from_string(artifact_id),
+        artifact_version: 1,
+        target_scope: target.scope,
+        head_sha: target.head_sha.clone(),
+        diff_fingerprint: target.diff_fingerprint.clone(),
+        path: path.to_string(),
+        diff_source: diff_source.to_string(),
+        hunk_header: "@@ -1,2 +1,3 @@".to_string(),
+        old_start: 1,
+        old_lines: 2,
+        new_start: 1,
+        new_lines: 3,
+        title: None,
+        message: "Explains the change".to_string(),
+        level: "notice".to_string(),
+        file_patch_hash: file_patch_hash.map(str::to_string),
+        created_by_run_id: Some("previous-annotator-run".to_string()),
+        created_at: Utc::now(),
+    }
+}
+
+/// Seeds a monitor whose current artifact is a new version of `previous-artifact`, which is the
+/// shape carry-forward reads.
+async fn seed_versioned_artifact_pair(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    target: &AgentWorkspaceReviewTarget,
+) {
+    let mut monitor = load_or_create_monitor(state, workspace)
+        .await
+        .expect("monitor should load");
+    apply_current_target_to_monitor(&mut monitor, Some(target));
+    apply_review_artifact_pair_to_monitor(
+        &mut monitor,
+        target.scope,
+        target.head_sha.clone(),
+        target.diff_fingerprint.clone(),
+        Some("reviewer-run".to_string()),
+        ArtifactId::from_string("current-artifact"),
+        2,
+        Utc::now(),
+        Some(ArtifactId::from_string("previous-artifact")),
+        ArtifactId::from_string("current-requested-changes"),
+        2,
+        Utc::now(),
+        Some(ArtifactId::from_string("previous-requested-changes")),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+}
+
+async fn carried_annotations(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> Vec<AgentWorkspaceReviewHunkAnnotation> {
+    state
+        .agent_conversation_workspace_repo
+        .list_workspace_review_hunk_annotations(
+            &workspace.conversation_id,
+            &ArtifactId::from_string("current-artifact"),
+        )
+        .await
+        .expect("current annotations should read")
+}
+
+#[tokio::test]
+async fn unchanged_file_annotations_carry_forward_to_the_new_artifact_version() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    seed_versioned_artifact_pair(&state, &workspace, &target).await;
+    // Hash the file exactly as the previous cycle would have.
+    let live_hash = crate::application::agent_workspace_review_diff::workspace_review_file_patch_hash(
+        &target,
+        "committed.rs",
+        crate::application::agent_workspace_review_diff::AgentWorkspaceReviewDiffSource::Committed,
+    )
+    .expect("file patch hash should compute");
+    state
+        .agent_conversation_workspace_repo
+        .replace_workspace_review_hunk_annotations(
+            &workspace.conversation_id,
+            &ArtifactId::from_string("previous-artifact"),
+            vec![annotation_for(
+                &workspace,
+                &target,
+                "previous-artifact",
+                "committed.rs",
+                "committed",
+                Some(&live_hash),
+            )],
+        )
+        .await
+        .expect("previous annotations should persist");
+
+    let carried = carry_forward_workspace_review_annotations(&state, &workspace, &target).await;
+
+    assert_eq!(carried, 1);
+    let current = carried_annotations(&state, &workspace).await;
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0].artifact_version, 2);
+    assert_eq!(current[0].path, "committed.rs");
+    assert_eq!(current[0].diff_fingerprint, target.diff_fingerprint);
+    assert_eq!(current[0].file_patch_hash.as_deref(), Some(live_hash.as_str()));
+}
+
+/// The base-move trap: a changed per-file patch must never carry, no matter what a head-delta
+/// would have reported.
+#[tokio::test]
+async fn changed_file_annotations_do_not_carry_forward() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    seed_versioned_artifact_pair(&state, &workspace, &target).await;
+    state
+        .agent_conversation_workspace_repo
+        .replace_workspace_review_hunk_annotations(
+            &workspace.conversation_id,
+            &ArtifactId::from_string("previous-artifact"),
+            vec![annotation_for(
+                &workspace,
+                &target,
+                "previous-artifact",
+                "committed.rs",
+                "committed",
+                Some("hash-of-a-different-patch"),
+            )],
+        )
+        .await
+        .expect("previous annotations should persist");
+
+    let carried = carry_forward_workspace_review_annotations(&state, &workspace, &target).await;
+
+    assert_eq!(carried, 0);
+    assert!(carried_annotations(&state, &workspace).await.is_empty());
+}
+
+/// Fail closed: an annotation written before hashing existed carries no proof it is still valid.
+#[tokio::test]
+async fn annotations_without_a_recorded_hash_do_not_carry_forward() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    seed_versioned_artifact_pair(&state, &workspace, &target).await;
+    state
+        .agent_conversation_workspace_repo
+        .replace_workspace_review_hunk_annotations(
+            &workspace.conversation_id,
+            &ArtifactId::from_string("previous-artifact"),
+            vec![annotation_for(
+                &workspace,
+                &target,
+                "previous-artifact",
+                "committed.rs",
+                "committed",
+                None,
+            )],
+        )
+        .await
+        .expect("previous annotations should persist");
+
+    let carried = carry_forward_workspace_review_annotations(&state, &workspace, &target).await;
+
+    assert_eq!(carried, 0);
+    assert!(carried_annotations(&state, &workspace).await.is_empty());
+}
+
+#[tokio::test]
+async fn first_review_cycle_carries_nothing_without_erroring() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+    let mut monitor = load_or_create_monitor(&state, &workspace)
+        .await
+        .expect("monitor should load");
+    apply_current_target_to_monitor(&mut monitor, Some(&target));
+    apply_review_artifact_pair_to_monitor(
+        &mut monitor,
+        target.scope,
+        target.head_sha.clone(),
+        target.diff_fingerprint.clone(),
+        Some("reviewer-run".to_string()),
+        ArtifactId::from_string("current-artifact"),
+        1,
+        Utc::now(),
+        None,
+        ArtifactId::from_string("current-requested-changes"),
+        1,
+        Utc::now(),
+        None,
+    );
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    let carried = carry_forward_workspace_review_annotations(&state, &workspace, &target).await;
+
+    assert_eq!(carried, 0);
+}

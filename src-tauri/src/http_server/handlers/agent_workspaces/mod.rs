@@ -2243,6 +2243,11 @@ pub async fn write_agent_workspace_review_hunk_annotations(
             head_sha: target_head_sha.clone(),
             diff_fingerprint: &target_diff_fingerprint,
             created_by_run_id,
+            file_patch_hashes:
+                crate::application::agent_workspace_review_diff::workspace_review_file_patch_hashes(
+                    &validation_target,
+                    &hunk_selections,
+                ),
         },
     );
 
@@ -4825,6 +4830,9 @@ struct WorkspaceReviewHunkAnnotationEntityContext<'a> {
     head_sha: Option<String>,
     diff_fingerprint: &'a str,
     created_by_run_id: Option<String>,
+    /// Per-file patch hashes keyed by `(path, diff_source)`. A file missing from this map gets a
+    /// `None` hash, which fails its carry-forward closed on the next cycle.
+    file_patch_hashes: BTreeMap<(String, String), String>,
 }
 
 fn build_workspace_review_hunk_annotation_entities(
@@ -4834,7 +4842,12 @@ fn build_workspace_review_hunk_annotation_entities(
     let created_at = chrono::Utc::now();
     annotations
         .into_iter()
-        .map(|annotation| AgentWorkspaceReviewHunkAnnotation {
+        .map(|annotation| {
+            let file_patch_hash = context
+                .file_patch_hashes
+                .get(&(annotation.path.clone(), annotation.source.clone()))
+                .cloned();
+            AgentWorkspaceReviewHunkAnnotation {
             id: uuid::Uuid::new_v4().to_string(),
             conversation_id: context.conversation_id.clone(),
             project_id: context.project_id.clone(),
@@ -4853,8 +4866,10 @@ fn build_workspace_review_hunk_annotation_entities(
             title: annotation.title,
             message: annotation.message,
             level: annotation.level,
+            file_patch_hash,
             created_by_run_id: context.created_by_run_id.clone(),
             created_at,
+        }
         })
         .collect()
 }
