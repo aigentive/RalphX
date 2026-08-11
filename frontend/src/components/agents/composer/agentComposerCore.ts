@@ -44,7 +44,19 @@ export interface AgentComposerIntegrationReference {
   url?: string;
   summaryExcerpt?: string;
   includeTranscript?: boolean;
+  /**
+   * User-selected excerpt text captured from an artifact surface (ticket, PR,
+   * Granola note). Untrusted external context — never treated as instructions.
+   */
+  selectedExcerpt?: string;
+  /** Human-readable location the excerpt was selected from (path/section). */
+  selectedSourcePath?: string;
+  /** Human-readable range/line label for the selection (e.g. "L12-L20"). */
+  selectedRangeLabel?: string;
 }
+
+/** Bound on stored selected-excerpt length so composer metadata stays small. */
+export const COMPOSER_SELECTED_EXCERPT_MAX_LENGTH = 4000;
 
 export interface AgentComposerArtifactReference {
   artifactId: string;
@@ -362,9 +374,28 @@ export function normalizeComposerIntegrationReferences(
       ...(typeof reference.includeTranscript === "boolean"
         ? { includeTranscript: reference.includeTranscript }
         : {}),
+      ...(normalizeSelectedExcerpt(reference.selectedExcerpt)
+        ? { selectedExcerpt: normalizeSelectedExcerpt(reference.selectedExcerpt) }
+        : {}),
+      ...(reference.selectedSourcePath?.trim()
+        ? { selectedSourcePath: reference.selectedSourcePath.trim().slice(0, 300) }
+        : {}),
+      ...(reference.selectedRangeLabel?.trim()
+        ? { selectedRangeLabel: reference.selectedRangeLabel.trim().slice(0, 80) }
+        : {}),
     });
   }
   return [...safeReferences.values()];
+}
+
+function normalizeSelectedExcerpt(
+  excerpt: string | undefined,
+): string | undefined {
+  const trimmed = excerpt?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.slice(0, COMPOSER_SELECTED_EXCERPT_MAX_LENGTH);
 }
 
 function parseIntegrationTriggerQuery(

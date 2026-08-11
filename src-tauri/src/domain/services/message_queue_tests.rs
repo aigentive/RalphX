@@ -571,6 +571,9 @@ fn test_queue_with_overrides_preserves_composer_integration_references() {
         url: Some("https://example.atlassian.net/browse/RX-42".to_string()),
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }];
 
     let queued = queue.queue_with_overrides_and_project_references(
@@ -616,6 +619,9 @@ fn composer_integration_reference_serializes_granola_prompt_metadata() {
         url: Some("https://granola.ai/notes/not_1234567890ABCD".to_string()),
         summary_excerpt: Some("Decision summary".to_string()),
         include_transcript: Some(true),
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     };
 
     let value = serde_json::to_value(&reference).expect("serialize Granola reference");

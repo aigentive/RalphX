@@ -666,6 +666,9 @@ async fn fetch_resource_content_routes_to_client() {
             url: None,
             summary_excerpt: None,
             include_transcript: None,
+            selected_excerpt: None,
+            selected_source_path: None,
+            selected_range_label: None,
         })
         .await
         .expect("fetch should succeed");
@@ -763,6 +766,9 @@ async fn project_listing_methods_require_enabled_settings() {
                 url: None,
                 summary_excerpt: None,
                 include_transcript: None,
+                selected_excerpt: None,
+                selected_source_path: None,
+                selected_range_label: None,
             })
             .await
             .unwrap_err(),
@@ -802,6 +808,9 @@ async fn expand_references_returns_message_when_disabled() {
                 url: None,
                 summary_excerpt: None,
                 include_transcript: None,
+                selected_excerpt: None,
+                selected_source_path: None,
+                selected_range_label: None,
             }],
         )
         .await;
@@ -826,6 +835,9 @@ async fn expand_references_skips_non_atlassian_and_reports_fetch_errors() {
                     url: None,
                     summary_excerpt: None,
                     include_transcript: None,
+                    selected_excerpt: None,
+                    selected_source_path: None,
+                    selected_range_label: None,
                 },
                 ComposerIntegrationReference {
                     provider: "atlassian".to_string(),
@@ -836,6 +848,9 @@ async fn expand_references_skips_non_atlassian_and_reports_fetch_errors() {
                     url: None,
                     summary_excerpt: None,
                     include_transcript: None,
+                    selected_excerpt: None,
+                    selected_source_path: None,
+                    selected_range_label: None,
                 },
             ],
         )
@@ -865,6 +880,9 @@ async fn expand_references_reports_fetch_error_as_skipped() {
                 url: None,
                 summary_excerpt: None,
                 include_transcript: None,
+                selected_excerpt: None,
+                selected_source_path: None,
+                selected_range_label: None,
             }],
         )
         .await;
@@ -891,6 +909,9 @@ async fn expand_references_truncates_large_resource_body() {
                 url: None,
                 summary_excerpt: None,
                 include_transcript: None,
+                selected_excerpt: None,
+                selected_source_path: None,
+                selected_range_label: None,
             }],
         )
         .await;
@@ -1199,6 +1220,9 @@ async fn empty_client_returns_happy_path_stubs() {
                 url: None,
                 summary_excerpt: None,
                 include_transcript: None,
+                selected_excerpt: None,
+                selected_source_path: None,
+                selected_range_label: None,
             },
         )
         .await
@@ -1249,6 +1273,9 @@ async fn unavailable_client_propagates_reason() {
                     url: None,
                     summary_excerpt: None,
                     include_transcript: None,
+                    selected_excerpt: None,
+                    selected_source_path: None,
+                    selected_range_label: None,
                 }
             )
             .await

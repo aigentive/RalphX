@@ -87,6 +87,9 @@ fn test_queued_message_to_send_options_preserves_references_and_attachments() {
         url: Some("https://example.atlassian.net/browse/RX-42".to_string()),
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     };
     let attachment_id = crate::domain::entities::ChatAttachmentId::new();
 

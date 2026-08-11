@@ -3897,6 +3897,9 @@ async fn start_agent_conversation_with_ticket_default_base_uses_canonical_branch
             url: None,
             summary_excerpt: None,
             include_transcript: None,
+            selected_excerpt: None,
+            selected_source_path: None,
+            selected_range_label: None,
         }],
         composer_artifact_references: Vec::new(),
     })

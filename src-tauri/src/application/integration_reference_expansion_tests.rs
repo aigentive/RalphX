@@ -317,6 +317,9 @@ fn reference(provider: &str, kind: &str, id: &str) -> ComposerIntegrationReferen
         url: None,
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }
 }
 
@@ -535,4 +538,87 @@ async fn dispatcher_reports_granola_provider_unavailable_without_failing_prompt(
         expansion.skipped_references[0].reason,
         SkippedIntegrationReferenceReason::ProviderUnavailable
     );
+}
+
+fn reference_with_selected_excerpt(
+    provider: &str,
+    kind: &str,
+    id: &str,
+    excerpt: &str,
+) -> ComposerIntegrationReference {
+    ComposerIntegrationReference {
+        selected_excerpt: Some(excerpt.to_string()),
+        selected_source_path: Some("path/to/source.md".to_string()),
+        selected_range_label: Some("L12-L20".to_string()),
+        ..reference(provider, kind, id)
+    }
+}
+
+#[tokio::test]
+async fn selected_clickup_excerpt_survives_prompt_expansion_without_full_service() {
+    // ClickUp has no dedicated expansion service — proves the selected
+    // excerpt still reaches the prompt instead of being silently dropped.
+    let expansion = expand_integration_references_for_prompt(
+        "Base prompt",
+        &[reference_with_selected_excerpt(
+            "clickup",
+            "clickup",
+            "task-1",
+            "Selected ClickUp ticket excerpt",
+        )],
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    assert!(expansion
+        .rewritten_prompt
+        .contains("Selected ClickUp ticket excerpt"));
+    assert!(expansion
+        .rewritten_prompt
+        .contains("provider=\"clickup\" kind=\"clickup\" id=\"task-1\""));
+    assert!(expansion
+        .rewritten_prompt
+        .contains("Untrusted external context selected by the user"));
+    assert!(expansion.rewritten_prompt.contains("source=\"path/to/source.md\""));
+    assert!(expansion.rewritten_prompt.contains("range=\"L12-L20\""));
+}
+
+#[tokio::test]
+async fn selected_excerpt_is_appended_alongside_full_atlassian_expansion() {
+    let expansion = expand_integration_references_for_prompt(
+        "Base prompt",
+        &[reference_with_selected_excerpt(
+            "atlassian",
+            "jira",
+            "RX-1",
+            "Selected Jira excerpt",
+        )],
+        Some(enabled_atlassian_service().await),
+        None,
+        None,
+    )
+    .await;
+
+    assert!(expansion
+        .rewritten_prompt
+        .contains("expanded user-selected Atlassian references"));
+    assert!(expansion
+        .rewritten_prompt
+        .contains("Selected Jira excerpt"));
+}
+
+#[tokio::test]
+async fn selected_excerpt_without_text_does_not_add_untrusted_block() {
+    let expansion = expand_integration_references_for_prompt(
+        "Base prompt",
+        &[reference("clickup", "clickup", "task-1")],
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    assert!(!expansion.rewritten_prompt.contains("selected_context"));
 }

@@ -529,6 +529,9 @@ async fn expands_linear_issue_references_for_prompt() {
                 url: Some("https://linear.app/acme/issue/LIN-123/example".to_string()),
                 summary_excerpt: None,
                 include_transcript: None,
+                selected_excerpt: None,
+                selected_source_path: None,
+                selected_range_label: None,
             }],
         )
         .await;
@@ -564,6 +567,9 @@ async fn expand_references_skips_non_linear_and_reports_fetch_errors() {
                     url: None,
                     summary_excerpt: None,
                     include_transcript: None,
+                    selected_excerpt: None,
+                    selected_source_path: None,
+                    selected_range_label: None,
                 },
                 ComposerIntegrationReference {
                     provider: "linear".to_string(),
@@ -574,6 +580,9 @@ async fn expand_references_skips_non_linear_and_reports_fetch_errors() {
                     url: None,
                     summary_excerpt: None,
                     include_transcript: None,
+                    selected_excerpt: None,
+                    selected_source_path: None,
+                    selected_range_label: None,
                 },
             ],
         )
@@ -862,6 +871,9 @@ async fn fetch_issue_content_routes_to_client_when_enabled() {
             url: None,
             summary_excerpt: None,
             include_transcript: None,
+            selected_excerpt: None,
+            selected_source_path: None,
+            selected_range_label: None,
         })
         .await
         .unwrap();
@@ -888,6 +900,9 @@ async fn fetch_issue_content_requires_enabled_settings() {
             url: None,
             summary_excerpt: None,
             include_transcript: None,
+            selected_excerpt: None,
+            selected_source_path: None,
+            selected_range_label: None,
         })
         .await
         .unwrap_err();
@@ -962,6 +977,9 @@ async fn expand_references_returns_message_when_not_enabled() {
                 url: None,
                 summary_excerpt: None,
                 include_transcript: None,
+                selected_excerpt: None,
+                selected_source_path: None,
+                selected_range_label: None,
             }],
         )
         .await;
@@ -987,6 +1005,9 @@ async fn expand_references_returns_message_when_only_non_linear_references() {
                 url: None,
                 summary_excerpt: None,
                 include_transcript: None,
+                selected_excerpt: None,
+                selected_source_path: None,
+                selected_range_label: None,
             }],
         )
         .await;
@@ -1012,6 +1033,9 @@ async fn expand_references_truncates_large_issue_body() {
                 url: None,
                 summary_excerpt: None,
                 include_transcript: None,
+                selected_excerpt: None,
+                selected_source_path: None,
+                selected_range_label: None,
             }],
         )
         .await;
@@ -1038,6 +1062,9 @@ async fn expand_references_marks_extra_references_as_budget_exhausted() {
         url: None,
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     };
 
     let expanded = service
@@ -1105,6 +1132,9 @@ async fn empty_client_returns_happy_path_stubs() {
                 url: None,
                 summary_excerpt: None,
                 include_transcript: None,
+                selected_excerpt: None,
+                selected_source_path: None,
+                selected_range_label: None,
             },
         )
         .await
@@ -1141,6 +1171,9 @@ async fn unavailable_client_propagates_reason_across_methods() {
         url: None,
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     };
 
     assert_eq!(client.validate(&auth).await.unwrap_err(), "Linear is down");

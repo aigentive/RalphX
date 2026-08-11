@@ -1869,6 +1869,9 @@ mod tests {
             url: None,
             summary_excerpt: None,
             include_transcript: None,
+            selected_excerpt: None,
+            selected_source_path: None,
+            selected_range_label: None,
         }];
         message.composer_artifact_references = vec![ComposerArtifactReference {
             artifact_id: "artifact-1".to_string(),

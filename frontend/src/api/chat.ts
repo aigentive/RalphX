@@ -1676,6 +1676,9 @@ export interface ComposerIntegrationReference {
   url?: string;
   summaryExcerpt?: string;
   includeTranscript?: boolean;
+  selectedExcerpt?: string;
+  selectedSourcePath?: string;
+  selectedRangeLabel?: string;
 }
 
 export interface ComposerArtifactReference {

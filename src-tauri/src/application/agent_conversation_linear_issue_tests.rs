@@ -93,6 +93,9 @@ fn linear_ref(id: &str, key: Option<&str>) -> ComposerIntegrationReference {
         url: key.map(|value| format!("https://linear.app/acme/issue/{value}/example")),
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }
 }
 
@@ -106,6 +109,9 @@ fn jira_ref(key: &str) -> ComposerIntegrationReference {
         url: Some(format!("https://jira.test/browse/{key}")),
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }
 }
 
