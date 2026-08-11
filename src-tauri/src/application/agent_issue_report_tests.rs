@@ -17,6 +17,7 @@ use chrono::{TimeZone, Utc};
 use std::io::{Error as IoError, ErrorKind};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 struct PathCleanup {
     path: PathBuf,
@@ -404,19 +405,30 @@ async fn build_issue_report_collects_a_rotated_active_and_rolled_pair() {
     std::fs::create_dir_all(&log_root).expect("app log directory");
 
     // Oldest first, so the rotated pair is the newest by modification time —
-    // exactly how a launch that rotated appears on disk.
+    // exactly how a launch that rotated appears on disk. Modification times are
+    // stamped explicitly because write order alone ties on coarse filesystems.
     let seeded = [
         "ralphx_2026-08-11_08-00-00.log",
         "ralphx_2026-08-11_09-00-00.log",
         "ralphx_2026-08-11_10-00-00_rolled.log",
         "ralphx_2026-08-11_10-00-00.log",
     ];
+    let oldest = SystemTime::now() - Duration::from_secs(4 * 3600);
     let mut _cleanups = Vec::new();
-    for name in seeded {
+    for (index, name) in seeded.into_iter().enumerate() {
         let path = log_root.join(name);
         _cleanups.push(PathCleanup { path: path.clone() });
         std::fs::write(&path, format!("warn diagnostic line from {name}\n"))
             .expect("seeded launch log");
+        let file = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open seeded launch log");
+        file.set_times(
+            std::fs::FileTimes::new()
+                .set_modified(oldest + Duration::from_secs(60 * index as u64)),
+        )
+        .expect("stamp seeded launch log modification time");
     }
 
     let draft = build_agent_issue_report_draft(
