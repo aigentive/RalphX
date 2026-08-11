@@ -38,7 +38,9 @@ export class AgentsChatPage extends BasePage {
   async seedConversation(conversationId: string, empty = false, messagePairs = 1): Promise<void> {
     await this.page.evaluate(async ({ id, isEmpty, pairCount }) => {
       const projectId = "project-mock-1";
-      const createdAt = "2026-08-04T12:00:00.000Z";
+      // Must stay within the mock inbox's stale threshold (7 days) so the
+      // seeded conversation renders under the default "Recent" tab.
+      const createdAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
       const conversation = {
         id, contextType: "project", contextId: projectId, claudeSessionId: null,
         providerSessionId: `thread-${id}`, providerHarness: "codex",
