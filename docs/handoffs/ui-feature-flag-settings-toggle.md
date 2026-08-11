@@ -34,7 +34,7 @@ The config default was just set to `automations_page: true` (`config/ralphx.yaml
 ### 2.2 The read command is a pure, argument-less read; there is no write path
 - `get_ui_feature_flags` — `src-tauri/src/commands/ui_commands.rs:24-37`. `#[tauri::command] pub fn get_ui_feature_flags() -> UiFeatureFlagsResponse`. Takes **no input, no `app_state`, no `db`** — pure read of the cached config.
 - Response `UiFeatureFlagsResponse` — `ui_commands.rs:9-20`, `#[serde(rename_all = "camelCase")]` → serializes `automationsPage` etc. (test asserts camelCase: `ui_commands_tests.rs:21-22,54-55`).
-- Registration: `commands/mod.rs:356` → `register_tauri_commands!` at `commands/registry.rs:462` → handler installed `lib.rs:192`.
+- Registration: `commands/mod.rs:418` → `register_tauri_commands!` at `shell/command_registry.rs:539` → handler installed `lib.rs:208`.
 - **NO `set_ui_feature_flags` exists** (grep across `src-tauri` + `frontend` = 0). Read-only today.
 
 ### 2.3 The flag is a pure FRONTEND nav-visibility concern
@@ -103,7 +103,7 @@ Migration via `python3 scripts/new_sqlite_migration.py ui_feature_flag_overrides
 **NEW:** `enum UiOverridableFlag { AutomationsPage }` (domain), with a fixed mapping enum-variant → column. The `set` command accepts this enum, never a raw column string. This is the rule-5 / CodeQL guard: user/request input selects a variant, not a DB column name.
 
 ### 5.2 Repository (3-file pattern)
-**NEW:** `UiFeatureFlagOverridesRepository` trait (`domain/repositories/`) + SQLite impl (`infrastructure/sqlite/sqlite_ui_feature_flag_overrides_repo.rs`) + memory impl (`infrastructure/memory/`). Register on both AppState instances (dual-AppState, constructed in `run_app_setup`, `application/app_setup.rs`). All access via `db.run(|conn| …)` (DbConnection rule). Methods:
+**NEW:** `UiFeatureFlagOverridesRepository` trait (`domain/repositories/`) + SQLite impl (`infrastructure/sqlite/sqlite_ui_feature_flag_overrides_repo.rs`) + memory impl (`infrastructure/memory/`). Register on both AppState instances (dual-AppState, constructed in `run_app_setup`, `shell/app_setup.rs`). All access via `db.run(|conn| …)` (DbConnection rule). Methods:
 - `get_overrides() -> AppResult<UiFeatureFlagOverrides>` (a struct of `Option<bool>` per flag; fresh read, NOT cached).
 - `set_override(flag: UiOverridableFlag, value: Option<bool>) -> AppResult<()>` (upsert singleton; `value = None` clears → inherit).
 
@@ -138,7 +138,7 @@ pub async fn set_ui_feature_flag_override(
     input: SetUiFeatureFlagOverrideInput,   // #[serde(rename_all="camelCase")] { flag: UiOverridableFlag, enabled: Option<bool> }
 ) -> Result<UiFeatureFlagsResponse, String>
 ```
-Writes the override (`enabled = None` clears), then returns the freshly-merged flags (so the caller updates its stores from the authoritative merged result, not an optimistic guess). Register in `commands/mod.rs` + `register_tauri_commands!` (`commands/registry.rs`). Struct param → frontend invokes `{ input: { flag, enabled } }` (tauri-invoke-conventions: wrap under `input`, camelCase).
+Writes the override (`enabled = None` clears), then returns the freshly-merged flags (so the caller updates its stores from the authoritative merged result, not an optimistic guess). Register in `commands/mod.rs` + `register_tauri_commands!` (`shell/command_registry.rs`). Struct param → frontend invokes `{ input: { flag, enabled } }` (tauri-invoke-conventions: wrap under `input`, camelCase).
 
 ---
 
@@ -209,7 +209,7 @@ Small enough to be one PR; split for review clarity. P2 depends on P1's command.
 ---
 
 ## 11. File-touch checklist
-**Backend:** `infrastructure/sqlite/migrations/vYYYY…_ui_feature_flag_overrides.rs` (+ `_tests.rs`) · `migrations/mod.rs` (register + `SCHEMA_VERSION`) · `domain/repositories/mod.rs` (trait) · `infrastructure/sqlite/sqlite_ui_feature_flag_overrides_repo.rs` · `infrastructure/memory/…` · domain `UiOverridableFlag` enum · `application/app_setup.rs` (repo on AppState) · `commands/ui_commands.rs` (rewrite `get`, add `set`, `SetUiFeatureFlagOverrideInput`) · `commands/mod.rs` + `commands/registry.rs` (register `set`) · `commands/ui_commands_tests.rs` (async update).
+**Backend:** `infrastructure/sqlite/migrations/vYYYY…_ui_feature_flag_overrides.rs` (+ `_tests.rs`) · `migrations/mod.rs` (register + `SCHEMA_VERSION`) · `domain/repositories/mod.rs` (trait) · `infrastructure/sqlite/sqlite_ui_feature_flag_overrides_repo.rs` · `infrastructure/memory/…` · domain `UiOverridableFlag` enum · `shell/app_setup.rs` (repo on AppState) · `commands/ui_commands.rs` (rewrite `get`, add `set`, `SetUiFeatureFlagOverrideInput`) · `commands/mod.rs` + `shell/command_registry.rs` (register `set`) · `commands/ui_commands_tests.rs` (async update).
 **Frontend:** `api/featureFlags.ts` (**NEW**) · `components/settings/settings-registry.ts` (id + section) · `components/settings/SettingsSectionContent.tsx` (lazy + gate) · `components/settings/sections/LabsSection.tsx` (**NEW**) · tests listed in §9.
 
 ---

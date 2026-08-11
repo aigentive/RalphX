@@ -112,12 +112,19 @@ RULES: list[dict[str, Any]] = [
         ],
     },
     # Deliberately still a baseline after phase 4. The ideation apply cohort
-    # (`apply_proposals_core` and friends) was scoped for descent here, but
-    # `http_server/helpers.rs` imports `TaskProposalResponse` from the same
-    # module, so moving ~1200 lines of apply logic into `application` would
-    # close only `handlers/external/mod.rs` and leave the helpers.rs entry
-    # standing. The response-DTO cohort is phase 4.5 scope; both descend
-    # together or neither is worth the churn.
+    # DID descend: `apply_proposals_core`, `apply_pending_proposals_core`,
+    # `is_local_proposal`, `ApplyProposalsInput` and `TaskProposalResponse` now
+    # live in `application::ideation_apply_service` (re-exported from
+    # `commands::ideation_commands` for the Tauri callers), and
+    # `http_server/helpers.rs` imports them straight from `application`.
+    # What still holds this rule on baseline is a wider set of command-family
+    # edges, not the apply cohort: the ideation append/migrate cohort
+    # (`handlers/internal.rs`, `handlers/ideation/append.rs`,
+    # `handlers/external/ideation_runtime/append.rs`) plus
+    # `unified_chat_commands`, `diff_commands`, `git_commands`,
+    # `task_commands::helpers`, `review_commands_types` and
+    # `project_commands`. Phase 4.5 has to descend those cohorts before this
+    # rule can flip to hard zero.
     {
         "id": "root_http_no_commands_imports",
         "mode": "baseline",
