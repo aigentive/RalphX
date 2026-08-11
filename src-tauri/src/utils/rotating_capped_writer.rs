@@ -69,10 +69,7 @@ impl RotatingCappedWriter {
 
     fn write_active(&mut self, bytes: &[u8]) -> io::Result<()> {
         let Some(file) = self.active.as_mut() else {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "rotating log writer has no active file",
-            ));
+            return Err(io::Error::other("rotating log writer has no active file"));
         };
         file.write_all(bytes)?;
         self.bytes_in_chunk += bytes.len();
