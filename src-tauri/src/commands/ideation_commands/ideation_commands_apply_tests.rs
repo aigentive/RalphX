@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::ideation_commands_apply::{
+use crate::application::ideation_apply_service::{
     derive_plan_branch_pr_eligibility, inspect_plan_branch_pr_eligibility,
     phase_insert_execution_plan, recheck_exact_plan_verification,
 };
@@ -90,7 +90,7 @@ async fn apply_rejects_capability_inspection_failure_before_creating_pipeline_ro
         .expect("proposal should persist");
 
     let execution_state = Arc::new(ExecutionState::new());
-    let error = super::ideation_commands_apply::apply_proposals_core(
+    let error = super::apply_proposals_core(
         &state,
         &execution_state,
         super::ideation_commands_types::ApplyProposalsInput {

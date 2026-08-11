@@ -83,13 +83,15 @@ impl<E: TauriCompletionEventEmitter> EventSink for CorrelatedTauriBusEventSink<E
 }
 
 /// Shared production event infrastructure for the Tauri and HTTP AppState graphs.
-pub(crate) struct AgentCompletionEventRuntime {
-    pub(crate) sink: Arc<dyn EventSink>,
-    pub(crate) bus: InternalEventBus,
+#[doc(hidden)]
+pub struct AgentCompletionEventRuntime {
+    pub sink: Arc<dyn EventSink>,
+    pub bus: InternalEventBus,
     pub(crate) correlation: Arc<CompletionCorrelationRegistry>,
 }
 
-pub(crate) fn create_agent_completion_event_runtime<R: Runtime>(
+#[doc(hidden)]
+pub fn create_agent_completion_event_runtime<R: Runtime>(
     app_handle: AppHandle<R>,
 ) -> AgentCompletionEventRuntime {
     let config = stream_timeouts();

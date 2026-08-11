@@ -1008,11 +1008,6 @@
         "text": "use crate::commands::ideation_commands::{"
       },
       {
-        "path": "src-tauri/src/http_server/handlers/external/mod.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ideation_commands::{apply_proposals_core, ApplyProposalsInput};"
-      },
-      {
         "path": "src-tauri/src/http_server/handlers/git.rs",
         "target": "crate::commands",
         "text": "let commits = crate::commands::git_commands::get_task_commits_for_state("
@@ -1041,16 +1036,6 @@
         "path": "src-tauri/src/http_server/handlers/projects.rs",
         "target": "crate::commands",
         "text": "crate::commands::project_commands::spawn_project_analyzer("
-      },
-      {
-        "path": "src-tauri/src/http_server/helpers.rs",
-        "target": "crate::commands",
-        "text": ") -> AppResult<crate::commands::ideation_commands::ApplyProposalsResult> {"
-      },
-      {
-        "path": "src-tauri/src/http_server/helpers.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ideation_commands::{"
       },
       {
         "path": "src-tauri/src/http_server/types.rs",

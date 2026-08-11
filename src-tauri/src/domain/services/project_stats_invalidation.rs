@@ -35,3 +35,6 @@ pub fn invalidate_project_stats(project_id: &str) {
         invalidate(project_id);
     }
 }
+
+#[cfg(test)]
+mod project_stats_invalidation_tests;

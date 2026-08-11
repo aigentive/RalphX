@@ -194,6 +194,13 @@ impl StreamingStateCache {
         }
     }
 
+    /// Returns the raw allocation address of the inner Arc for pointer-identity comparison.
+    /// Used by integration tests to verify dual-AppState sharing without exposing inner types.
+    #[doc(hidden)]
+    pub fn arc_ptr(&self) -> *const () {
+        Arc::as_ptr(&self.states) as *const ()
+    }
+
     /// Bind subsequent cached state to the current run for stale-attempt rejection.
     pub async fn set_run_id(&self, conversation_id: &str, run_id: Option<String>) {
         let mut states = self.states.lock().await;

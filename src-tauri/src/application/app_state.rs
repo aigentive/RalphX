@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
-use tauri::AppHandle;
+use tauri::{AppHandle, Runtime};
 use tokio::sync::Mutex;
 
 use super::services::PrPollerRegistry;
@@ -612,7 +612,7 @@ impl AppState {
             return Arc::clone(service);
         }
 
-        Arc::new(Self::build_notification_service(
+        Arc::new(Self::build_notification_service::<tauri::Wry>(
             Arc::clone(&self.notification_repo),
             Arc::clone(&self.notification_settings_repo),
             Arc::clone(&self.window_focus_state),
@@ -621,12 +621,12 @@ impl AppState {
         ))
     }
 
-    fn build_notification_service(
+    fn build_notification_service<R: Runtime>(
         notification_repo: Arc<dyn NotificationRepository>,
         notification_settings_repo: Arc<dyn NotificationSettingsRepository>,
         window_focus_state: Arc<WindowFocusState>,
         project_repo: Arc<dyn ProjectRepository>,
-        app_handle: Option<AppHandle>,
+        app_handle: Option<AppHandle<R>>,
     ) -> NotificationService {
         let emitter: Arc<dyn NotificationEventEmitter> = match app_handle.as_ref() {
             Some(app_handle) => Arc::new(TauriNotificationEventEmitter::new(app_handle.clone())),
@@ -666,6 +666,25 @@ impl AppState {
 
     fn null_event_runtime() -> (Arc<dyn EventSink>, InternalEventBus) {
         (Arc::new(NullEventSink), InternalEventBus::new())
+    }
+
+    /// Returns a raw pointer identity for the notification service cache Arc.
+    /// Used by integration tests to verify dual-AppState sharing without exposing the inner type.
+    #[doc(hidden)]
+    pub fn notification_service_cache_arc_ptr(&self) -> *const () {
+        Arc::as_ptr(&self.notification_service_cache) as *const ()
+    }
+
+    /// Returns a raw pointer identity for the repair publish continuation Arc.
+    #[doc(hidden)]
+    pub fn repair_publish_continuation_arc_ptr(&self) -> *const () {
+        Arc::as_ptr(&self.agent_workspace_repair_publish_continuation) as *const ()
+    }
+
+    /// Returns a raw pointer identity for the PR-fix review publish resumer Arc.
+    #[doc(hidden)]
+    pub fn pr_fix_review_publish_resumer_arc_ptr(&self) -> *const () {
+        Arc::as_ptr(&self.agent_workspace_pr_fix_review_publish_resumer) as *const ()
     }
 
     fn build_managed_team_sqlite(
@@ -1469,8 +1488,8 @@ impl AppState {
         )
     }
 
-    pub fn new_production_shared_with_paths_and_events(
-        app_handle: AppHandle,
+    pub fn new_production_shared_with_paths_and_events<R: Runtime>(
+        app_handle: AppHandle<R>,
         shared_conn: Arc<Mutex<rusqlite::Connection>>,
         app_paths: AppPaths,
         events: Arc<dyn EventSink>,
@@ -1486,8 +1505,8 @@ impl AppState {
     }
 
     /// Internal helper: build all SQLite repositories from a pre-existing shared connection.
-    fn build_from_shared_conn(
-        app_handle: AppHandle,
+    fn build_from_shared_conn<R: Runtime>(
+        app_handle: AppHandle<R>,
         shared_conn: Arc<Mutex<rusqlite::Connection>>,
         app_paths: AppPaths,
         events: Arc<dyn EventSink>,

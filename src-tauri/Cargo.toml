@@ -111,6 +111,11 @@ tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.4", features = ["util"] }
 
 [[test]]
+name = "tauri_events"
+path = "tests/tauri_events/main.rs"
+required-features = ["test-utils"]
+
+[[test]]
 name = "suite_agent_workspace"
 path = "tests/suite_agent_workspace/main.rs"
 

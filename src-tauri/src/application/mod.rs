@@ -150,6 +150,7 @@ pub mod harness_runtime_registry;
 pub mod http_shutdown;
 #[cfg(test)]
 mod http_shutdown_tests;
+pub mod ideation_apply_service;
 pub mod ideation_effort_bootstrap;
 pub mod ideation_harness_availability;
 pub mod ideation_model_bootstrap;

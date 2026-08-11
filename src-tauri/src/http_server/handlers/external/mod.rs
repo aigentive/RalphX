@@ -18,7 +18,7 @@ use tracing::error;
 
 use crate::application::chat_service::{ChatService, SendMessageOptions};
 use crate::application::task_cleanup_service::TaskCleanupService;
-use crate::commands::ideation_commands::{apply_proposals_core, ApplyProposalsInput};
+use crate::application::ideation_apply_service::{apply_proposals_core, ApplyProposalsInput};
 use crate::domain::entities::{
     ideation::IdeationSession, task::Task, types::ProjectId, ChatContextType, IdeationSessionFlow,
     IdeationSessionId, InternalStatus, SessionOrigin, TaskId,

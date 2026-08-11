@@ -5,7 +5,7 @@
 //! may import `crate::shell` — that inversion is a hard zero enforced by
 //! `scripts/check-layering.py`.
 
-pub(crate) mod agent_completion_event_runtime;
+pub mod agent_completion_event_runtime;
 #[cfg(test)]
 mod agent_completion_event_runtime_tests;
 pub mod agent_workspace_completion_testkit;

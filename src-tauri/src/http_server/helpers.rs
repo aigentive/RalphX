@@ -9,7 +9,7 @@ use std::str::FromStr;
 use crate::application::git_service::GitService;
 use crate::application::task_context_service::resolve_task_blueprint_artifact_id;
 use crate::application::{AppState, CreateProposalOptions, UpdateProposalOptions, UpdateSource};
-use crate::commands::ideation_commands::{
+use crate::application::ideation_apply_service::{
     apply_pending_proposals_core, apply_proposals_core, is_local_proposal, ApplyProposalsInput,
     TaskProposalResponse,
 };
@@ -1132,7 +1132,7 @@ pub async fn apply_pending_proposals_core_for_session(
     state: &AppState,
     execution_state: &std::sync::Arc<crate::application::app_state::ApplicationExecutionState>,
     session_id: &str,
-) -> AppResult<crate::commands::ideation_commands::ApplyProposalsResult> {
+) -> AppResult<crate::application::ideation_apply_service::ApplyProposalsResult> {
     let session_id_typed = IdeationSessionId::from_string(session_id.to_string());
 
     let _session = state
