@@ -972,7 +972,7 @@ async fn block_agent_workspace_repair_pr_handoff(
     Ok(())
 }
 
-async fn has_authoritative_observed_agent_workspace_repair_push(
+pub(crate) async fn has_authoritative_observed_agent_workspace_repair_push(
     state: &AppState,
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> AppResult<bool> {

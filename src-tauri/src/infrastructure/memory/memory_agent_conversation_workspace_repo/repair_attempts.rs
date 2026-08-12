@@ -596,6 +596,10 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
         &self,
         idempotency_key: &str,
     ) -> AppResult<Option<AgentWorkspaceRepairEffect>> {
+        #[cfg(test)]
+        if let Some(message) = self.next_repair_effect_read_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
         Ok(self
             .repair_effects
             .read()

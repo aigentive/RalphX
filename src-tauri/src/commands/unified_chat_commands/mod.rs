@@ -65,6 +65,9 @@ use crate::application::agent_planning_session_titles::{
     hydrate_agent_conversation_planning_session_title,
     sync_linked_planning_session_title_from_conversation,
 };
+use crate::application::agent_workspace_base_staleness::{
+    classify_health_hold_disposition, BaseStalenessObservation, HealthHoldDisposition,
+};
 use crate::application::agent_workspace_bridge::{
     wake_agent_workspace_for_bridge_events,
     wake_agent_workspace_for_bridge_events_with_service_factory,
@@ -101,7 +104,8 @@ use crate::application::agent_workspace_publish_lease::{
     stop_publish_operation_lease_heartbeat, PublishOperationScopeGuard,
 };
 use crate::application::agent_workspace_publish_recovery::{
-    agent_workspace_repair_owns_unpublished_publish_continuation, pr_autofix_fingerprint_spend,
+    agent_workspace_repair_owns_unpublished_publish_continuation,
+    blocked_repair_fences_new_base_work, pr_autofix_fingerprint_spend,
     recover_stale_publish_repair_for_workspace_in_state,
 };
 use crate::application::agent_workspace_publish_repair_state::{
@@ -6995,8 +6999,26 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             base_commit,
             target_ref,
         } => (true, target_ref, base_commit),
-        PublishBranchFreshnessOutcome::NeedsAgent { message, .. }
-        | PublishBranchFreshnessOutcome::OperationalError { message } => {
+        PublishBranchFreshnessOutcome::NeedsAgent {
+            message,
+            base_commit: observed_base_commit,
+            ..
+        } => {
+            mark_agent_workspace_base_conflict_failure_with_routing(
+                state,
+                &workspace,
+                &message,
+                &repair_service,
+                true,
+                &publish_target.repair_target(),
+                AgentWorkspacePostRepairAction::UpdateOnly,
+                false,
+                &observed_base_commit,
+            )
+            .await;
+            return Err(message);
+        }
+        PublishBranchFreshnessOutcome::OperationalError { message } => {
             mark_agent_workspace_update_failure_with_target(
                 state,
                 &workspace,
@@ -7548,7 +7570,7 @@ async fn recover_duplicate_agent_workspace_pr_publish(
         &duplicate_target,
     )
     .ok_or_else(|| AppError::Validation("unable to bind duplicate PR target".to_string()))?;
-    let decision = get_or_draft_agent_workspace_pr_metadata_decision(
+    let decision = match get_or_draft_agent_workspace_pr_metadata_decision(
         state,
         conversation,
         project,
@@ -7558,8 +7580,22 @@ async fn recover_duplicate_agent_workspace_pr_publish(
         &duplicate_target,
         cache_key,
     )
-    .await?
-    .decision;
+    .await
+    {
+        Ok(outcome) => outcome.decision,
+        Err(error) => {
+            tracing::warn!(
+                target: "ralphx_lib::commands::agent_workspace_publish",
+                operation = "pr_description_fallback",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                error = %error,
+                "PR description failed during duplicate recovery; preserving existing PR metadata"
+            );
+            AgentWorkspacePrMetadataDecision::Preserve
+        }
+    };
     let decision = normalize_drafted_agent_workspace_pr_metadata_decision(
         state,
         conversation,
@@ -8695,6 +8731,29 @@ async fn publish_agent_conversation_workspace_for_app_state_inner(
     .await
 }
 
+/// Resolves the description used to create a new PR.
+///
+/// A drafted decision always carries a body, so the normal path reuses it. When the describe step
+/// degraded there is no LLM metadata at all: publishing an empty description makes
+/// `pr_publish_service` derive the conversation title and the managed-only body, which is the
+/// deliberate no-template fallback. `None` keeps a genuine contract violation failing closed.
+fn new_pr_description_for_publish(
+    decision: &AgentWorkspacePrMetadataDecision,
+    describer_degraded: bool,
+) -> Option<AgentWorkspacePrDescription> {
+    match decision {
+        AgentWorkspacePrMetadataDecision::Patch {
+            title,
+            body_markdown: Some(body_markdown),
+        } => Some(AgentWorkspacePrDescription::new(
+            title.clone(),
+            body_markdown.clone(),
+        )),
+        _ if describer_degraded => Some(AgentWorkspacePrDescription::new(None, String::new())),
+        _ => None,
+    }
+}
+
 async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
@@ -9036,16 +9095,21 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     let refreshed_base_commit = match freshness_outcome {
         PublishBranchFreshnessOutcome::AlreadyFresh { base_commit, .. }
         | PublishBranchFreshnessOutcome::Updated { base_commit, .. } => base_commit,
-        PublishBranchFreshnessOutcome::NeedsAgent { message, .. } => {
-            mark_agent_workspace_publish_failure_with_routing(
+        PublishBranchFreshnessOutcome::NeedsAgent {
+            message,
+            base_commit: observed_base_commit,
+            ..
+        } => {
+            mark_agent_workspace_base_conflict_failure_with_routing(
                 state,
                 &workspace,
                 &message,
-                None,
                 &repair_service,
                 route_fixable_failures_to_agent,
                 &repair_target,
+                AgentWorkspacePostRepairAction::Publish,
                 explicit_user_publish,
+                &observed_base_commit,
             )
             .await;
             return Err(message);
@@ -9195,6 +9259,10 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         .await
         .map_err(|e| e.to_string())?;
     let describe_started = Instant::now();
+    // A describe-only failure must never fail the publish (and therefore never block a repair
+    // continuation). When set, the decision is `Preserve` and a new PR publishes with the
+    // programmatic metadata `pr_publish_service` already derives.
+    let mut describer_degraded = false;
     let mut pr_metadata_decision = match if let Some(cache_key) = pr_description_cache_key {
         get_or_draft_agent_workspace_pr_metadata_decision(
             state,
@@ -9250,15 +9318,18 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     } {
         Ok(decision) => decision,
         Err(error) => {
-            let error = error.to_string();
-            mark_agent_workspace_publish_description_failure(
-                state,
-                &workspace,
-                &error,
-                operation_scope,
-            )
-            .await;
-            return Err(error);
+            tracing::warn!(
+                target: "ralphx_lib::commands::agent_workspace_publish",
+                operation = "pr_description_fallback",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                elapsed_ms = describe_started.elapsed().as_millis(),
+                error = %error,
+                "PR description failed; publishing without drafted metadata"
+            );
+            describer_degraded = true;
+            AgentWorkspacePrMetadataDecision::Preserve
         }
     };
     pr_metadata_decision = normalize_drafted_agent_workspace_pr_metadata_decision(
@@ -9421,15 +9492,17 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                     .await
                 }
                 Err(error) => {
-                    let error = error.to_string();
-                    mark_agent_workspace_publish_description_failure(
-                        state,
-                        &workspace,
-                        &error,
-                        operation_scope,
-                    )
-                    .await;
-                    return Err(error);
+                    tracing::warn!(
+                        target: "ralphx_lib::commands::agent_workspace_publish",
+                        operation = "pr_description_fallback",
+                        conversation_id = %workspace.conversation_id,
+                        project_id = %workspace.project_id,
+                        branch = %workspace.branch_name,
+                        error = %error,
+                        "PR description re-draft failed; preserving existing PR metadata"
+                    );
+                    describer_degraded = true;
+                    AgentWorkspacePrMetadataDecision::Preserve
                 }
             };
             if matches!(
@@ -9500,16 +9573,11 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         publisher = publisher.with_plan_markdown(markdown);
     }
     let publish_pr_started = Instant::now();
-    let pr_result = match (&pr_target, &pr_metadata_decision) {
-        (
-            ResolvedAgentWorkspacePrTarget::NewPr,
-            AgentWorkspacePrMetadataDecision::Patch {
-                title,
-                body_markdown: Some(body_markdown),
-            },
-        ) => {
-            let description =
-                AgentWorkspacePrDescription::new(title.clone(), body_markdown.clone());
+    let pr_result = match (
+        &pr_target,
+        new_pr_description_for_publish(&pr_metadata_decision, describer_degraded),
+    ) {
+        (ResolvedAgentWorkspacePrTarget::NewPr, Some(description)) => {
             let publish_result = match publisher
                 .publish_draft_pr_without_duplicate_recovery(
                     &worktree_path,
@@ -9556,17 +9624,17 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 result => result,
             }
         }
-        (ResolvedAgentWorkspacePrTarget::NewPr, _) => Err(AppError::Validation(
+        (ResolvedAgentWorkspacePrTarget::NewPr, None) => Err(AppError::Validation(
             "new pull requests require a complete metadata body patch".to_string(),
         )),
-        (ResolvedAgentWorkspacePrTarget::Existing(snapshot), decision) => publisher
+        (ResolvedAgentWorkspacePrTarget::Existing(snapshot), _) => publisher
             .publish_existing_pr_metadata_decision(
                 &worktree_path,
                 &conversation,
                 snapshot.number,
                 snapshot.url.as_deref(),
                 snapshot.body.as_deref(),
-                decision,
+                &pr_metadata_decision,
             )
             .await
             .map(AgentWorkspacePrPublishResult::Published),
@@ -10283,6 +10351,40 @@ async fn mark_agent_workspace_update_failure_with_target<S>(
         target,
         AgentWorkspacePostRepairAction::UpdateOnly,
         false,
+        None,
+    )
+    .await;
+}
+
+/// Routing for a base-freshness conflict, which is the only failure that carries proof of a base
+/// tip the workspace has not integrated yet. That observed tip is what authorizes a background
+/// supersede of a continuation-stage blocked repair, so it must not be discarded like it is on
+/// every other failure route.
+#[allow(clippy::too_many_arguments)]
+async fn mark_agent_workspace_base_conflict_failure_with_routing<S>(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    error: &str,
+    repair_service: &S,
+    route_fixable_failures_to_agent: bool,
+    target: &AgentConversationWorkspaceRepairTarget,
+    post_repair_action: AgentWorkspacePostRepairAction,
+    explicit_user_publish: bool,
+    observed_base_commit: &str,
+) where
+    S: ChatService + ?Sized,
+{
+    mark_agent_workspace_failure_with_routing_and_action(
+        state,
+        workspace,
+        error,
+        None,
+        repair_service,
+        route_fixable_failures_to_agent,
+        target,
+        post_repair_action,
+        explicit_user_publish,
+        Some(observed_base_commit),
     )
     .await;
 }
@@ -10309,10 +10411,12 @@ async fn mark_agent_workspace_publish_failure_with_routing<S>(
         target,
         AgentWorkspacePostRepairAction::Publish,
         explicit_user_publish,
+        None,
     )
     .await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn mark_agent_workspace_failure_with_routing_and_action<S>(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -10323,6 +10427,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
     target: &AgentConversationWorkspaceRepairTarget,
     post_repair_action: AgentWorkspacePostRepairAction,
     explicit_user_publish: bool,
+    observed_base_commit: Option<&str>,
 ) where
     S: ChatService + ?Sized,
 {
@@ -10363,6 +10468,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
         return;
     }
     let failure_class = classify_publish_failure(error);
+    let retry_blocked = background_supersede_allowed(state, workspace, observed_base_commit).await;
     mark_agent_workspace_failure_with_routing_and_action_classified(
         state,
         workspace,
@@ -10373,10 +10479,61 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
         target,
         post_repair_action,
         failure_class,
-        false,
+        retry_blocked,
         explicit_user_publish,
+        observed_base_commit,
     )
     .await;
+}
+
+/// Background failure routing may supersede a blocked repair generation only when a base-freshness
+/// conflict observed a base tip that the blocked attempt never targeted, and only when that block
+/// happened after its repair already reached the remote. Every other failure carries no observed
+/// tip and therefore can never supersede; the successor records the tip it was authorized by
+/// (see the start request below), so one base tip authorizes at most one supersede even though the
+/// successor resets the automatic retry budget.
+async fn background_supersede_allowed(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    observed_base_commit: Option<&str>,
+) -> bool {
+    let Some(observed_base_commit) = observed_base_commit
+        .map(str::trim)
+        .filter(|commit| !commit.is_empty())
+    else {
+        return false;
+    };
+    let attempt = match state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+    {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Could not read the current repair attempt before background supersede; keeping the blocked generation"
+            );
+            return false;
+        }
+    };
+    if attempt.phase != AgentWorkspaceRepairPhase::Blocked {
+        return false;
+    }
+    if blocked_repair_fences_new_base_work(state, &attempt).await {
+        return false;
+    }
+    matches!(
+        classify_health_hold_disposition(BaseStalenessObservation {
+            merge_state_status: None,
+            observed_base_oid: Some(observed_base_commit),
+            attempt_target_base_commit: attempt.target_base_commit.as_deref(),
+            last_base_update_oid: attempt.base_update_target_commit.as_deref(),
+        }),
+        HealthHoldDisposition::SupersedeForNewEvidence { .. }
+    )
 }
 
 async fn releasable_orphaned_publish_operation_lease_token(
@@ -10428,9 +10585,12 @@ async fn durable_repair_owns_publish_continuation(
     }
 }
 
-/// Only direct user actions may supersede a blocked repair generation. Background failure
-/// routing reaches the same dispatcher through the default `false` above. The dispatch target
-/// must carry the resolved canonical worktree, or the superseding successor can never be sent.
+/// Direct user actions may supersede any blocked repair generation. Background failure routing
+/// reaches the same dispatcher, but only through `background_supersede_allowed` above: exactly the
+/// continuation-stage blocked generation (observed push, no human hold) and only when a
+/// base-freshness conflict observed a base tip that attempt had not targeted. Everything else still
+/// requires explicit user action. The dispatch target must carry the resolved canonical worktree,
+/// or the superseding successor can never be sent.
 async fn retry_blocked_agent_workspace_repair_for_explicit_user_action<S>(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -10532,6 +10692,7 @@ where
         PublishFailureClass::AgentFixable,
         true,
         matches!(post_repair_action, AgentWorkspacePostRepairAction::Publish),
+        None,
     )
     .await;
     true
@@ -10600,6 +10761,7 @@ fn compose_blocked_repair_retry_context(
     context
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -10612,6 +10774,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     failure_class: PublishFailureClass,
     retry_blocked: bool,
     explicit_user_publish: bool,
+    observed_base_commit: Option<&str>,
 ) where
     S: ChatService + ?Sized,
 {
@@ -10670,7 +10833,12 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
                 }
             },
             target_base_ref: target.base_ref.clone(),
-            target_base_commit: workspace.base_commit.clone(),
+            // Record the base tip this attempt actually targets. For a conflict route that is the
+            // freshly observed tip, not the last integrated one, so the same tip cannot read as new
+            // evidence again and re-authorize another supersede.
+            target_base_commit: observed_base_commit
+                .map(str::to_string)
+                .or_else(|| workspace.base_commit.clone()),
             verified_newer_base: false,
             reason: error.to_string(),
             summary: post_repair_action.repair_requested_summary().to_string(),
