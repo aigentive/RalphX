@@ -44,8 +44,36 @@ class SharedMatcherTests(unittest.TestCase):
                 rule_utils.GENERATED_PATH_EXEMPLARS,
             )
             self.assertIs(module.parse_paths, rule_utils.parse_paths)
+            self.assertIs(
+                module.ALWAYS_ON_BUDGET_BYTES, rule_utils.ALWAYS_ON_BUDGET_BYTES
+            )
         self.assertIs(validator.matching_paths, rule_utils.matching_paths)
         self.assertIs(activation.matches, rule_utils.matches)
+
+    def test_every_activation_ceiling_keeps_its_headroom_band(self) -> None:
+        activation = load_script(
+            "test_claude_rules_activation_ceilings",
+            SCRIPTS_DIR / "tests" / "test-claude-rules-activation.py",
+        )
+
+        for scenario in activation.SCENARIOS:
+            with self.subTest(scenario=scenario.name):
+                if scenario.pinned_ceiling_bytes is not None:
+                    # A pinned ceiling is a policy constant, so it only has to stay
+                    # reachable; the always-on budget owns how tight it may get.
+                    self.assertEqual(
+                        scenario.pinned_ceiling_bytes,
+                        rule_utils.ALWAYS_ON_BUDGET_BYTES,
+                    )
+                    self.assertLessEqual(
+                        scenario.baseline_bytes, scenario.ceiling_bytes
+                    )
+                    continue
+                headroom = (
+                    scenario.ceiling_bytes - scenario.baseline_bytes
+                ) / scenario.baseline_bytes
+                self.assertGreaterEqual(headroom, activation.HEADROOM_RATIO * 0.9)
+                self.assertLessEqual(headroom, activation.HEADROOM_RATIO * 2)
 
     def test_shared_matcher_handles_braces_and_recursive_globs(self) -> None:
         pattern = "frontend/src/**/*.{ts,tsx}"

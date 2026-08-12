@@ -15,6 +15,13 @@ pub struct McpRuntimeContext {
     pub enforce_filesystem_roots: bool,
     pub lead_session_id: Option<String>,
     pub parent_conversation_id: Option<String>,
+    /// Runtime-injected MCP tool grants that are additive to the canonical
+    /// per-agent allowlist.
+    ///
+    /// Used for role-tiered grants that cannot live in canonical `agent.yaml`
+    /// because they depend on run/project/role context. Bare snake_case names.
+    /// Unlike `explicit_allowed_tools`, these append rather than replace.
+    pub extra_allowed_mcp_tools: Vec<String>,
 }
 
 pub fn append_mcp_runtime_query(url: &mut String, runtime_context: Option<&McpRuntimeContext>) {

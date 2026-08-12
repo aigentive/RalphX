@@ -6,7 +6,8 @@ use serde::Deserialize;
 use serde_yaml::{Mapping, Value};
 
 use crate::domain::agents::{
-    AgentHarnessKind, LogicalEffort, ManualRoleDefault, ManualServiceTier, RoutingRole,
+    AgentHarnessKind, AtlassianMcpAccess, LogicalEffort, ManualRoleDefault, ManualServiceTier,
+    RoutingRole,
 };
 use crate::domain::entities::{CoordinationMode, PersonaId};
 use crate::error::{AppError, AppResult};
@@ -37,6 +38,8 @@ struct RawManualRoleDefault {
     approval_policy: Option<String>,
     #[serde(default)]
     sandbox_mode: Option<String>,
+    #[serde(default)]
+    atlassian_access: Option<AtlassianMcpAccess>,
 }
 
 impl TryFrom<RawManualRoleDefault> for ManualRoleDefault {
@@ -52,6 +55,7 @@ impl TryFrom<RawManualRoleDefault> for ManualRoleDefault {
             persona_id: raw.persona_id,
             approval_policy: raw.approval_policy,
             sandbox_mode: raw.sandbox_mode,
+            atlassian_access: raw.atlassian_access,
         })
     }
 }

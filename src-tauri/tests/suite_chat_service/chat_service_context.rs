@@ -333,6 +333,7 @@ async fn persona_builder_attachment_uses_real_app_data_when_project_path_contain
             0,
             None,
             None,
+            &[],
             None,
             None,
         )
@@ -708,6 +709,7 @@ async fn queued_flush_uses_persona_builder_read_roots() {
             0,
             None,
             None,
+            &[],
             None,
             None,
         )
@@ -875,6 +877,7 @@ async fn assert_suppressed_persona_has_no_final_command_block(
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -916,6 +919,7 @@ async fn fresh_spawn_prompt_includes_bound_persona_block() {
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -959,6 +963,7 @@ async fn codex_fresh_persona_builder_spawn_uses_conversation_identity_and_cli_en
         None,
         None,
         false,
+        Vec::new(),
         None,
         None,
     )
@@ -1131,6 +1136,7 @@ async fn resume_command_prompt_includes_bound_persona_block() {
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -1172,6 +1178,7 @@ async fn recovery_command_prompt_includes_bound_persona_block() {
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -1397,6 +1404,7 @@ async fn codex_fresh_command_forwards_a_resolved_persona_block() {
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -1448,6 +1456,7 @@ async fn persona_codex_command_reports_reasoned_skip_when_agent_prompt_is_missin
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -2806,6 +2815,7 @@ async fn codex_recovery_resume_command_forwards_a_resolved_persona_block() {
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -2899,6 +2909,7 @@ async fn persona_codex_resume_command_uses_resume_subcommand_and_reports_injecti
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -2919,6 +2930,285 @@ async fn persona_codex_resume_command_uses_resume_subcommand_and_reports_injecti
     );
     assert!(result.persona_injected());
     assert_eq!(result.persona_injection_skipped_reason(), None);
+}
+
+// ─── Role-tiered Atlassian MCP grants reach the production launch/resume seams ───
+
+#[tokio::test]
+async fn claude_launch_plan_appends_role_tiered_atlassian_grant_to_canonical_allowlist() {
+    let (root, project_repo, project_id, _project_directory, working_directory) =
+        persona_read_root_fixture().await;
+    let cli_path = stub_claude_cli(root.path());
+    let app_data_dir = root.path().join("app-data");
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    conversation.builder_draft_id = Some("atlassian-grant-draft".to_string());
+    let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &working_directory,
+        conversation.agent_mode,
+        Some(&conversation.id.as_str()),
+        Some(&app_data_dir),
+    )
+    .await;
+
+    let agent_name =
+        ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_PERSONA_EXTRACTOR;
+    let mut resolved_spawn_settings =
+        ralphx_lib::application::agent_lane_resolution::resolve_agent_spawn_settings(
+            agent_name,
+            Some(project_id.as_str()),
+            ChatContextType::Project,
+            None,
+            Some(AgentHarnessKind::Claude),
+            None,
+            None,
+        )
+        .await;
+    resolved_spawn_settings.extra_allowed_mcp_tools = vec!["jira_create_issue".to_string()];
+
+    let launch = with_claude_spawn_allowed_in_tests(|| async {
+        build_launch_plan_for_harness_with_persona_for_test(
+            AgentHarnessKind::Claude,
+            &cli_path,
+            &repo_plugin_dir(),
+            &conversation,
+            "grant atlassian tools",
+            None,
+            Some(agent_name),
+            None,
+            conversation.context_type,
+            conversation.context_id.as_str(),
+            Some(conversation.id.as_str()),
+            None,
+            &working_directory,
+            None,
+            Some(project_id.as_str()),
+            &roots,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            Arc::new(MemoryDelegatedSessionRepository::new()),
+            Arc::new(MemoryTaskRepository::new()),
+            &[],
+            0,
+            false,
+            None,
+            &resolved_spawn_settings,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("Claude launch plan should build with an Atlassian grant");
+
+    let command = match launch {
+        ResolvedChatHarnessLaunch::Interactive { spawnable, .. } => spawnable,
+        ResolvedChatHarnessLaunch::Background { .. } => {
+            panic!("Claude launch plan must stay interactive")
+        }
+    };
+
+    let args = mcp_runtime_args(&command);
+    let allowed_arg = args
+        .iter()
+        .find(|arg| arg.starts_with("--allowed-tools="))
+        .expect("--allowed-tools should be present");
+    let allowed_tools: Vec<&str> = allowed_arg
+        .strip_prefix("--allowed-tools=")
+        .expect("prefix")
+        .split(',')
+        .collect();
+
+    assert!(
+        allowed_tools.contains(&"jira_create_issue"),
+        "role-tiered Atlassian grant must reach the Claude launch plan: {allowed_tools:?}"
+    );
+    assert!(
+        allowed_tools.contains(&"fs_read_file"),
+        "canonical tool must survive runtime injection (append, not replace): {allowed_tools:?}"
+    );
+}
+
+#[tokio::test]
+async fn claude_launch_plan_with_no_atlassian_grant_omits_jira_and_confluence_tools() {
+    let (root, project_repo, project_id, _project_directory, working_directory) =
+        persona_read_root_fixture().await;
+    let cli_path = stub_claude_cli(root.path());
+    let app_data_dir = root.path().join("app-data");
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    conversation.builder_draft_id = Some("no-atlassian-grant-draft".to_string());
+    let roots = resolve_mcp_filesystem_read_roots(
+        ChatContextType::Project,
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &working_directory,
+        conversation.agent_mode,
+        Some(&conversation.id.as_str()),
+        Some(&app_data_dir),
+    )
+    .await;
+
+    let agent_name =
+        ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_PERSONA_EXTRACTOR;
+    let resolved_spawn_settings =
+        ralphx_lib::application::agent_lane_resolution::resolve_agent_spawn_settings(
+            agent_name,
+            Some(project_id.as_str()),
+            ChatContextType::Project,
+            None,
+            Some(AgentHarnessKind::Claude),
+            None,
+            None,
+        )
+        .await;
+    assert!(
+        resolved_spawn_settings.extra_allowed_mcp_tools.is_empty(),
+        "resolver default must stay empty absent an explicit grant"
+    );
+
+    let launch = with_claude_spawn_allowed_in_tests(|| async {
+        build_launch_plan_for_harness_with_persona_for_test(
+            AgentHarnessKind::Claude,
+            &cli_path,
+            &repo_plugin_dir(),
+            &conversation,
+            "no atlassian tools",
+            None,
+            Some(agent_name),
+            None,
+            conversation.context_type,
+            conversation.context_id.as_str(),
+            Some(conversation.id.as_str()),
+            None,
+            &working_directory,
+            None,
+            Some(project_id.as_str()),
+            &roots,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            Arc::new(MemoryDelegatedSessionRepository::new()),
+            Arc::new(MemoryTaskRepository::new()),
+            &[],
+            0,
+            false,
+            None,
+            &resolved_spawn_settings,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("Claude launch plan should build without an Atlassian grant");
+
+    let command = match launch {
+        ResolvedChatHarnessLaunch::Interactive { spawnable, .. } => spawnable,
+        ResolvedChatHarnessLaunch::Background { .. } => {
+            panic!("Claude launch plan must stay interactive")
+        }
+    };
+
+    let args = mcp_runtime_args(&command);
+    let allowed_arg = args
+        .iter()
+        .find(|arg| arg.starts_with("--allowed-tools="))
+        .expect("--allowed-tools should be present for an agent with canonical tools");
+    assert!(
+        !allowed_arg.contains("jira_") && !allowed_arg.contains("confluence_"),
+        "no Atlassian tool may appear without a grant: {allowed_arg}"
+    );
+}
+
+#[tokio::test]
+async fn codex_resume_command_appends_role_tiered_atlassian_grant_to_enabled_and_allowed_tools() {
+    let home = make_codex_home_with_session("session-123");
+    let cli_temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = make_fake_codex_cli(&cli_temp);
+    let plugin_dir = cli_temp.path().join("plugins").join("app");
+    fs::create_dir_all(&plugin_dir).expect("create plugin dir");
+    write_file(
+        &plugin_dir.join("ralphx-mcp-server/build/index.js"),
+        "// fake mcp server",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-chat-project/agent.yaml"),
+        "name: ralphx-chat-project\nrole: project_chat\n",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-chat-project/codex/prompt.md"),
+        "You are the RalphX project chat agent.",
+    );
+    let working_dir = cli_temp.path().to_path_buf();
+
+    let result = with_provider_state_home_override(home.path(), || async {
+        build_resume_command_for_harness(
+            AgentHarnessKind::Codex,
+            &cli_path,
+            &plugin_dir,
+            ChatContextType::Project,
+            "project-1",
+            CoordinationMode::Solo,
+            "codex-project-atlassian-resume-conversation",
+            None,
+            None,
+            "continue",
+            None,
+            None,
+            None,
+            &working_dir,
+            "session-123",
+            None,
+            &[],
+            None,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            Arc::new(MockIdeationRepo::empty()),
+            empty_delegated_session_repo(),
+            Arc::new(MockTaskRepo),
+            &[],
+            0,
+            None,
+            None,
+            false,
+            vec!["confluence_get_page".to_string()],
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("codex resume command should build with an Atlassian grant");
+
+    let args = result.spawnable.get_args_for_test();
+    let enabled_tools_arg = args
+        .iter()
+        .find(|arg| arg.contains("enabled_tools"))
+        .expect("enabled_tools override should be present");
+    assert!(
+        enabled_tools_arg.contains("confluence_get_page"),
+        "role-tiered Atlassian grant must reach Codex enabled_tools: {enabled_tools_arg}"
+    );
+    let allowed_tools_arg = args
+        .iter()
+        .find(|arg| arg.contains("--allowed-tools"))
+        .expect("--allowed-tools override should be present");
+    assert!(
+        allowed_tools_arg.contains("confluence_get_page"),
+        "role-tiered Atlassian grant must reach Codex --allowed-tools: {allowed_tools_arg}"
+    );
 }
 
 #[tokio::test]
@@ -2997,6 +3287,7 @@ async fn codex_legacy_verification_session_uses_active_ideation_features() {
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -4523,6 +4814,7 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             0,
             None,
             None,
+            &[],
             None,
             None,
         )

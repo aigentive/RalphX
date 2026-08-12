@@ -720,6 +720,7 @@ async fn manual_role_default_preserves_exact_standard_speed_in_spawn_settings() 
                 persona_id: None,
                 approval_policy: Some("on-request".to_string()),
                 sandbox_mode: Some("workspace-write".to_string()),
+                atlassian_access: None,
             },
         )
         .await
@@ -779,6 +780,7 @@ async fn explicit_provider_defaults_ignore_the_roles_configured_runtime() {
                 persona_id: None,
                 approval_policy: Some("never".to_string()),
                 sandbox_mode: Some("danger-full-access".to_string()),
+                atlassian_access: None,
             },
         )
         .await
@@ -1038,6 +1040,7 @@ async fn workspace_plan_codex_override_ignores_configured_claude_model() {
                 persona_id: None,
                 approval_policy: None,
                 sandbox_mode: None,
+                atlassian_access: None,
             },
         )
         .await
@@ -1092,6 +1095,7 @@ async fn workspace_plan_claude_override_ignores_configured_codex_model() {
                 persona_id: None,
                 approval_policy: None,
                 sandbox_mode: None,
+                atlassian_access: None,
             },
         )
         .await

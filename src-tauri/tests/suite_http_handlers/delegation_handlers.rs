@@ -4779,6 +4779,7 @@ async fn test_legacy_verification_child_uses_ideation_subagent_harness_when_omit
                 persona_id: None,
                 approval_policy: Some("never".to_string()),
                 sandbox_mode: Some("danger-full-access".to_string()),
+                atlassian_access: None,
             },
         )
         .await
@@ -4917,6 +4918,7 @@ async fn test_delegate_start_uses_ideation_subagent_harness_when_harness_is_omit
                 persona_id: None,
                 approval_policy: Some("never".to_string()),
                 sandbox_mode: Some("danger-full-access".to_string()),
+                atlassian_access: None,
             },
         )
         .await
