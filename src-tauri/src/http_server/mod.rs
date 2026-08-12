@@ -15,7 +15,7 @@ use tokio::sync::oneshot;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 use crate::application::AppState;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::error::AppResult;
 use crate::utils::backend_endpoint::{backend_http_base_url, backend_http_bind_addr};
 use delegation::DelegationService;
@@ -463,6 +463,64 @@ pub async fn start_http_server_with_listener_ready(
         .route(
             "/api/ticket_attachments/fetch",
             post(fetch_ticket_attachment_http),
+        )
+        // Atlassian MCP tools (role-tiered; enforcement re-derives the tier per
+        // request from the run's persisted routing role and project).
+        .route(
+            "/api/atlassian-mcp/jira/search",
+            post(atlassian_mcp::jira::jira_search_issues),
+        )
+        .route(
+            "/api/atlassian-mcp/jira/issue",
+            post(atlassian_mcp::jira::jira_get_issue),
+        )
+        .route(
+            "/api/atlassian-mcp/jira/projects",
+            post(atlassian_mcp::jira::jira_list_projects),
+        )
+        .route(
+            "/api/atlassian-mcp/jira/transitions",
+            post(atlassian_mcp::jira::jira_list_transitions),
+        )
+        .route(
+            "/api/atlassian-mcp/jira/issue/create",
+            post(atlassian_mcp::jira::jira_create_issue),
+        )
+        .route(
+            "/api/atlassian-mcp/jira/issue/update",
+            post(atlassian_mcp::jira::jira_update_issue),
+        )
+        .route(
+            "/api/atlassian-mcp/jira/issue/comment",
+            post(atlassian_mcp::jira::jira_add_comment),
+        )
+        .route(
+            "/api/atlassian-mcp/jira/issue/transition",
+            post(atlassian_mcp::jira::jira_transition_issue),
+        )
+        .route(
+            "/api/atlassian-mcp/jira/issue/assign",
+            post(atlassian_mcp::jira::jira_assign_issue),
+        )
+        .route(
+            "/api/atlassian-mcp/confluence/search",
+            post(atlassian_mcp::confluence::confluence_search_pages),
+        )
+        .route(
+            "/api/atlassian-mcp/confluence/page",
+            post(atlassian_mcp::confluence::confluence_get_page),
+        )
+        .route(
+            "/api/atlassian-mcp/confluence/page/create",
+            post(atlassian_mcp::confluence::confluence_create_page),
+        )
+        .route(
+            "/api/atlassian-mcp/confluence/page/update",
+            post(atlassian_mcp::confluence::confluence_update_page),
+        )
+        .route(
+            "/api/atlassian-mcp/request",
+            post(atlassian_mcp::raw::atlassian_api_request),
         )
         .route("/api/issue_progress/:task_id", get(get_issue_progress_http))
         .route(

@@ -17,6 +17,54 @@ pub use clickup_settings::{ClickUpIntegrationSettings, ClickUpIntegrationSetting
 mod granola_settings;
 pub use granola_settings::{GranolaIntegrationSettings, GranolaIntegrationSettingsRepository};
 
+pub mod linear_settings;
+pub mod linear_webhook;
+
+pub mod jira_agile_types;
+pub use jira_agile_types::{
+    JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary,
+};
+
+pub mod atlassian_resources;
+pub use atlassian_resources::{
+    AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
+    AtlassianJiraAttachment, AtlassianJiraComment, AtlassianJiraTransition,
+    AtlassianOAuthAuthorization, AtlassianOAuthResource, AtlassianOAuthTokenResponse,
+    AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
+    AtlassianResourceUrlResolution, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
+};
+
+pub mod atlassian_api_error;
+pub use atlassian_api_error::AtlassianApiError;
+#[cfg(test)]
+mod atlassian_api_error_tests;
+
+pub mod atlassian_mcp_ops;
+pub use atlassian_mcp_ops::{
+    validate_atlassian_raw_path, AtlassianRawMethod, AtlassianRawResponse, ConfluencePageContent,
+    ConfluencePageCreateRequest, ConfluencePageUpdateRequest, JiraIssueCreateRequest,
+    JiraIssueCreated, JiraIssueUpdateRequest, ATLASSIAN_RAW_PATH_PREFIXES,
+    ATLASSIAN_RAW_RESPONSE_MAX_BYTES,
+};
+
+pub mod clickup_tasks;
+pub use clickup_tasks::{
+    ClickUpApiClient, ClickUpAttachment, ClickUpAuthContext, ClickUpComment, ClickUpFolder,
+    ClickUpList, ClickUpSpace, ClickUpStatus, ClickUpTag, ClickUpTaskContent, ClickUpTaskListOptions,
+    ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace,
+};
+
+pub mod granola_notes;
+pub use granola_notes::{
+    is_valid_granola_note_id, GranolaApiClient, GranolaApiError, GranolaAuthContext,
+    GranolaNoteDetail, GranolaNoteListPage, GranolaNoteSummary, GranolaTranscriptEntry,
+};
+pub use linear_settings::{
+    LinearApiClient, LinearAttachment, LinearAuthContext, LinearComment, LinearIntegrationSettings,
+    LinearIntegrationSettingsRepository, LinearIssueContent, LinearIssueSummary, LinearLabel,
+    LinearProject, LinearUser, LinearWorkflowState,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntegrationValidationStatus {

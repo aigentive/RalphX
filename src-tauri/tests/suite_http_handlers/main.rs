@@ -16,6 +16,7 @@ mod agent_workspace_review_context;
 mod agent_workspace_review_diff;
 mod api_keys_handlers;
 mod artifacts_handlers;
+mod atlassian_mcp_handlers;
 mod automations_handlers;
 mod chat_service_streaming;
 mod conversations_handlers;

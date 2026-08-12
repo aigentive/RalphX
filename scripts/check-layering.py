@@ -44,10 +44,18 @@ RULES: list[dict[str, Any]] = [
         "paths": ["src-tauri/src/domain/**/*.rs"],
         "forbidden": [
             "crate::application",
-            "crate::commands",
             "crate::infrastructure",
             "crate::http_server",
         ],
+    },
+    # Phase 4 reached zero here by giving domain its own stats-invalidation
+    # port instead of calling into the command layer. Kept as a hard zero so it
+    # cannot be re-baselined.
+    {
+        "id": "root_domain_no_commands_imports",
+        "mode": "hard-zero",
+        "paths": ["src-tauri/src/domain/**/*.rs"],
+        "forbidden": ["crate::commands"],
     },
     {
         "id": "root_domain_no_tauri_usage",
@@ -55,15 +63,47 @@ RULES: list[dict[str, Any]] = [
         "paths": ["src-tauri/src/domain/**/*.rs"],
         "forbidden": ["tauri::"],
     },
+    # `src/shell` is the Tauri composition root introduced in phase 4. It may
+    # import every layer below it; nothing below it may import back. Without
+    # this rule the shell tree would be unscanned and the moves would reduce
+    # enforcement rather than increase it.
+    {
+        "id": "root_no_imports_from_shell",
+        "mode": "hard-zero",
+        "paths": [
+            "src-tauri/src/domain/**/*.rs",
+            "src-tauri/src/application/**/*.rs",
+            "src-tauri/src/infrastructure/**/*.rs",
+            "src-tauri/src/http_server/**/*.rs",
+            "src-tauri/src/commands/**/*.rs",
+        ],
+        "forbidden": ["crate::shell"],
+    },
+    # The shell owns composition, not persistence: it must not reach for raw
+    # SQLite or reimplement repository access.
+    {
+        "id": "root_shell_no_direct_sqlite",
+        "mode": "baseline",
+        "paths": ["src-tauri/src/shell/**/*.rs"],
+        "forbidden": ["rusqlite::", "crate::infrastructure::sqlite::"],
+    },
+    # Phase 4 drove this to zero (ExecutionState split, spawner move, and the
+    # http_server descents). Hard zero so phases 5/12 keep a clean precondition.
     {
         "id": "root_application_no_commands_or_http_imports",
-        "mode": "baseline",
+        "mode": "hard-zero",
         "paths": ["src-tauri/src/application/**/*.rs"],
         "forbidden": ["crate::commands", "crate::http_server"],
     },
+    # Phase 4 drove this to zero: the spawner moved up into `application`, and
+    # every remaining upward reach was a type the repositories/clients own —
+    # question/permission records, verification markers, integration settings,
+    # client ports and DTOs — which now live in `domain` (plus the config read in
+    # `crate::runtime_config`). Hard zero so persistence can never again pull on
+    # a service.
     {
         "id": "root_infrastructure_no_upper_layer_imports",
-        "mode": "baseline",
+        "mode": "hard-zero",
         "paths": ["src-tauri/src/infrastructure/**/*.rs"],
         "forbidden": [
             "crate::application",
@@ -71,6 +111,20 @@ RULES: list[dict[str, Any]] = [
             "crate::http_server",
         ],
     },
+    # Deliberately still a baseline after phase 4. The ideation apply cohort
+    # DID descend: `apply_proposals_core`, `apply_pending_proposals_core`,
+    # `is_local_proposal`, `ApplyProposalsInput` and `TaskProposalResponse` now
+    # live in `application::ideation_apply_service` (re-exported from
+    # `commands::ideation_commands` for the Tauri callers), and
+    # `http_server/helpers.rs` imports them straight from `application`.
+    # What still holds this rule on baseline is a wider set of command-family
+    # edges, not the apply cohort: the ideation append/migrate cohort
+    # (`handlers/internal.rs`, `handlers/ideation/append.rs`,
+    # `handlers/external/ideation_runtime/append.rs`) plus
+    # `unified_chat_commands`, `diff_commands`, `git_commands`,
+    # `task_commands::helpers`, `review_commands_types` and
+    # `project_commands`. Phase 4.5 has to descend those cohorts before this
+    # rule can flip to hard zero.
     {
         "id": "root_http_no_commands_imports",
         "mode": "baseline",
@@ -122,7 +176,7 @@ RULES: list[dict[str, Any]] = [
             "src-tauri/src/application/agent_conversation_start_service/project_setup.rs",
             "src-tauri/src/application/agent_conversation_start_service/helpers/spawn_glue.rs",
             "src-tauri/src/application/startup_background.rs",
-            "src-tauri/src/application/startup_runtime_builders.rs",
+            "src-tauri/src/shell/startup_runtime_builders.rs",
             "src-tauri/src/application/chat_resumption.rs",
             "src-tauri/src/application/task_cleanup_service.rs",
         ],
@@ -140,7 +194,7 @@ RULES: list[dict[str, Any]] = [
             "src-tauri/src/application/agent_conversation_start_service/finish_flow.rs",
             "src-tauri/src/application/agent_conversation_start_service/project_setup.rs",
             "src-tauri/src/application/startup_background.rs",
-            "src-tauri/src/application/startup_runtime_builders.rs",
+            "src-tauri/src/shell/startup_runtime_builders.rs",
         ],
         "forbidden": [
             "AppChatService<",

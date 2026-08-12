@@ -13,7 +13,7 @@ use super::types::Blocker;
 use crate::application::ChatService;
 use crate::application::PrPollerRegistry;
 use crate::application::TaskTransitionService;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::PlanBranchId;
 use crate::domain::repositories::{
     ActivityEventRepository, ArtifactRepository, BranchUpdateRepository, IdeationSessionRepository,

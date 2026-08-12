@@ -28,7 +28,8 @@ use crate::application::agent_workspace_publish_repair_state::{
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::publish_resilience::{
-    reconcile_blocked_agent_workspace_repair_pr_handoff, BlockedRepairPrHandoffReconciliation,
+    reconcile_blocked_agent_workspace_repair_pr_handoff,
+    terminate_orphaned_blocked_repair_pr_handoff_effect, BlockedRepairPrHandoffReconciliation,
 };
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
@@ -521,7 +522,22 @@ async fn reconcile_agent_workspace_repair_attempt(
                 Ok(BlockedRepairPrHandoffReconciliation::Stale) => {
                     return Ok(DurableRepairRecoveryOutcome::Stale);
                 }
-                Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable) => {}
+                Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable) => {
+                    // The handoff was not a no-op, so the reconciler cannot finish it. If its
+                    // durable effect is merely orphaned, clearing that fence here is what lets the
+                    // retry evaluation below re-run the real publish in this same pass.
+                    if let Err(error) =
+                        terminate_orphaned_blocked_repair_pr_handoff_effect(state, &current).await
+                    {
+                        tracing::warn!(
+                            conversation_id = current.conversation_id.as_str(),
+                            attempt_id = current.id.as_str(),
+                            %error,
+                            "Orphaned blocked PR-handoff effect could not be terminated; leaving the attempt unsettled"
+                        );
+                        return Ok(DurableRepairRecoveryOutcome::Noop);
+                    }
+                }
                 Err(error) => {
                     tracing::warn!(
                         conversation_id = current.conversation_id.as_str(),

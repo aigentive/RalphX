@@ -17,7 +17,7 @@ use crate::application::{
     GranolaIntegrationService, InteractiveProcessRegistry, LinearIntegrationService,
     PrPollerRegistry, TaskSchedulerService, TaskTransitionService,
 };
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
     AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,

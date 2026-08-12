@@ -9,11 +9,12 @@ use std::str::FromStr;
 use crate::application::git_service::GitService;
 use crate::application::task_context_service::resolve_task_blueprint_artifact_id;
 use crate::application::{AppState, CreateProposalOptions, UpdateProposalOptions, UpdateSource};
-use crate::commands::ideation_commands::{
+use crate::application::ideation_apply_service::{
     apply_pending_proposals_core, apply_proposals_core, is_local_proposal, ApplyProposalsInput,
     TaskProposalResponse,
 };
 use crate::domain::entities::{
+    compute_validation_hint,
     AcceptanceStatus, Artifact, ArtifactContent, ArtifactSummary, ArtifactType,
     AutomationRunStatus, AutomationStatus, Complexity, IdeationSession, IdeationSessionId,
     IdeationSessionStatus, InternalStatus, Priority, ProposalCategory, ScopeDriftStatus,
@@ -1131,7 +1132,7 @@ pub async fn apply_pending_proposals_core_for_session(
     state: &AppState,
     execution_state: &std::sync::Arc<crate::application::app_state::ApplicationExecutionState>,
     session_id: &str,
-) -> AppResult<crate::commands::ideation_commands::ApplyProposalsResult> {
+) -> AppResult<crate::application::ideation_apply_service::ApplyProposalsResult> {
     let session_id_typed = IdeationSessionId::from_string(session_id.to_string());
 
     let _session = state
@@ -1569,68 +1570,6 @@ async fn resolve_task_context_base_branch(
         .get_by_id(&task.project_id)
         .await?
         .map(|project| project.base_branch_or_default().to_string()))
-}
-
-/// Pure function to compute the validation hint and human-readable message from a cache entry
-/// and the current HEAD SHA.
-///
-/// No git calls, no side effects — fully unit-testable.
-///
-/// Returns `(validation_hint, hint_message)` where `validation_hint` is one of:
-/// - `"skip_tests"` — tests passed on the same SHA
-/// - `"skip_test_validation"` — no tests ran at execution time
-/// - `"run_tests"` — SHA mismatch, tests failed, or cache is otherwise stale
-pub fn compute_validation_hint(
-    cache: &ValidationCacheMetadata,
-    current_sha: &str,
-    episode_entered_at: Option<chrono::DateTime<chrono::Utc>>,
-) -> (String, String) {
-    if current_sha != cache.commit_sha {
-        (
-            "run_tests".to_string(),
-            format!(
-                "Cache stale (SHA changed from {} to {}). Run tests normally.",
-                &cache.commit_sha[..8.min(cache.commit_sha.len())],
-                &current_sha[..8.min(current_sha.len())]
-            ),
-        )
-    } else if episode_entered_at
-        .map(|entered_at| cache.captured_at < entered_at)
-        .unwrap_or(true)
-    {
-        (
-            "run_tests".to_string(),
-            format!(
-                "Cache was not captured during the current execution episode (commit {}). Run tests normally.",
-                &cache.commit_sha[..8.min(cache.commit_sha.len())]
-            ),
-        )
-    } else if !cache.tests_ran {
-        (
-            "skip_test_validation".to_string(),
-            format!(
-                "No tests were run during execution (commit {}). Skip test validation.",
-                &cache.commit_sha[..8.min(cache.commit_sha.len())]
-            ),
-        )
-    } else if cache.tests_passed {
-        (
-            "skip_tests".to_string(),
-            format!(
-                "Tests passed on commit {}. Skip test re-run.",
-                &cache.commit_sha[..8.min(cache.commit_sha.len())]
-            ),
-        )
-    } else {
-        // tests_ran=true but tests_passed=false → must re-run
-        (
-            "run_tests".to_string(),
-            format!(
-                "Tests failed on commit {}. Run tests normally.",
-                &cache.commit_sha[..8.min(cache.commit_sha.len())]
-            ),
-        )
-    }
 }
 
 async fn compute_first_class_validation_cache(

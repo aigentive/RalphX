@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 
-use crate::application::app_setup::StartupAttemptLauncher;
 use crate::application::startup_status::{
-    StartupCoordinator, StartupFailureCode, StartupFrontendMilestone, StartupSnapshot, StartupStage,
+    StartupAttemptLauncher, StartupCoordinator, StartupFailureCode, StartupFrontendMilestone,
+    StartupSnapshot, StartupStage,
 };
 
 #[derive(Debug, Deserialize)]

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::application::shutdown::run_exit_steps;
+use crate::shell::shutdown::run_exit_steps;
 
 struct OrderTracker {
     counter: AtomicU64,

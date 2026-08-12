@@ -531,7 +531,7 @@ pub fn uses_execution_slot(context_type: ChatContextType) -> bool {
 
 fn claude_launches_paused(
     context_type: ChatContextType,
-    execution_state: Option<&Arc<crate::commands::ExecutionState>>,
+    execution_state: Option<&Arc<crate::application::execution_state::ExecutionState>>,
 ) -> bool {
     matches!(
         context_type,
@@ -1710,7 +1710,7 @@ pub struct AppChatService {
     plan_verification_completion: Option<Arc<PlanVerificationCompletionAdapter>>,
     runtime_factory_deps: Option<crate::application::runtime_factory::ChatRuntimeFactoryDeps>,
     external_mcp_supervisor: Option<Arc<crate::infrastructure::ExternalMcpSupervisor>>,
-    execution_state: Option<Arc<crate::commands::ExecutionState>>,
+    execution_state: Option<Arc<crate::application::execution_state::ExecutionState>>,
     question_state: Option<Arc<QuestionState>>,
     plan_branch_repo: std::sync::Mutex<Option<Arc<dyn PlanBranchRepository>>>,
     branch_update_repo: std::sync::Mutex<Option<Arc<dyn BranchUpdateRepository>>>,
@@ -1895,7 +1895,7 @@ impl AppChatService {
         }
     }
 
-    pub fn with_execution_state(mut self, state: Arc<crate::commands::ExecutionState>) -> Self {
+    pub fn with_execution_state(mut self, state: Arc<crate::application::execution_state::ExecutionState>) -> Self {
         self.execution_state = Some(state);
         self
     }
@@ -3468,7 +3468,7 @@ impl AppChatService {
             };
 
             if task.project_id != *project_id
-                || !crate::commands::execution_commands::context_matches_running_status_for_gc(
+                || !crate::application::execution_state::context_matches_running_status_for_gc(
                     context_type,
                     task.internal_status,
                 )
@@ -4475,6 +4475,7 @@ impl AppChatService {
             total_available,
             None, // effort_override: callers pre-resolve if needed
             None, // model_override: callers pre-resolve if needed
+            &[],  // extra_allowed_mcp_tools: dead-code fallback path
             agent_runtime_context.as_deref(),
             None, // attachment_context_override
         )
@@ -7448,6 +7449,28 @@ impl ChatService for AppChatService {
                 )
                 .await
             };
+
+        // Role-tiered Atlassian MCP grants. This is a runtime-injected layer on
+        // top of the canonical per-agent allowlist: it depends on the routing
+        // role, the project, and live integration state, none of which exist at
+        // generated-plugin materialization time. Any launch path without both
+        // services injects nothing.
+        resolved_spawn_settings.extra_allowed_mcp_tools = match (
+            self.atlassian_integration_service.as_ref(),
+            self.manual_role_default_service.as_ref(),
+        ) {
+            (Some(integration), Some(defaults)) => {
+                crate::application::atlassian_mcp_tools_for_spawn(
+                    integration,
+                    defaults,
+                    Some(routing_role),
+                    project_id.as_deref(),
+                    project_root.as_deref(),
+                )
+                .await
+            }
+            _ => Vec::new(),
+        };
         if let Some(runtime) = continuation_runtime.as_ref() {
             runtime.apply_defaults(
                 &mut resolved_spawn_settings,
@@ -7672,6 +7695,11 @@ impl ChatService for AppChatService {
             effective_effort: Some(effective_effort),
         };
         pre_spawn_assistant_attribution = Some(assistant_message_attribution.clone());
+
+        // Authoritative spawn-time identity for per-request authorization
+        // (Atlassian MCP tiers). `launch_role` above stays display attribution.
+        agent_run.routing_role = Some(routing_role);
+        agent_run.project_id = project_id.clone();
 
         let run_agent_name = agent_run.agent_name.clone();
         let run_launch_role = agent_run.launch_role.clone();
@@ -8760,7 +8788,7 @@ mod stale_registry_gate_tests {
         runtime_context_id_for_send, AgentRunStatus, ChatContextType, ChatConversationId,
         RegistryCleanupCaller, RunningAgentInfo,
     };
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -9186,7 +9214,7 @@ fi
 mod provider_spawn_gate_tests {
     use super::{AppChatService, ChatService, SendMessageOptions};
     use crate::application::AppState;
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
     use crate::domain::entities::{ChatContextType, InternalStatus, Project, Task};
     use std::sync::Arc;
 
@@ -9322,7 +9350,7 @@ mod agent_workspace_send_tests {
         InteractiveProcessKey, InteractiveProcessMetadata,
     };
     use crate::application::AppState;
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
     use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
@@ -10120,7 +10148,7 @@ mod agent_workspace_send_tests {
 mod bulk_running_state_tests {
     use super::{AgentRuntimeStatus, ChatContextType, ChatService};
     use crate::application::AppState;
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ChatConversation,
         ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession, Project,

@@ -5,6 +5,7 @@ pub(crate) mod agent_run_error_message;
 pub mod agents;
 pub mod atlassian_client;
 pub(crate) mod atlassian_jira_fields;
+pub(crate) mod atlassian_mcp_client;
 pub mod clickup_client;
 pub(crate) mod git_auth;
 #[cfg(test)]
@@ -25,9 +26,7 @@ pub mod webhook_http_client;
 pub mod webhook_publisher;
 
 // Re-export commonly used items
-pub use agents::{
-    AgenticClientSpawner, ClaudeCodeClient, MockAgenticClient, MockCall, MockCallType,
-};
+pub use agents::{ClaudeCodeClient, MockAgenticClient, MockCall, MockCallType};
 pub use atlassian_client::HyperAtlassianApiClient;
 pub use clickup_client::HyperClickUpApiClient;
 pub use granola_client::HyperGranolaApiClient;
@@ -52,6 +51,8 @@ mod atlassian_client_tests;
 mod atlassian_client_unit_tests;
 #[cfg(test)]
 mod atlassian_jira_fields_tests;
+#[cfg(test)]
+mod atlassian_mcp_client_tests;
 #[cfg(test)]
 mod jira_agile_client_tests;
 #[cfg(test)]
