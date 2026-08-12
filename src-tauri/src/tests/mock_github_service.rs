@@ -609,10 +609,27 @@ impl GithubServiceTrait for MockGithubService {
         working_dir: &Path,
         pr_numbers: &[i64],
     ) -> AppResult<HashMap<i64, PrStatusSnapshot>> {
-        let known = {
+        let (known, health_merge_state_status, health_mergeable) = {
             let mut s = self.state.lock().expect("lock poisoned");
             s.fetch_pr_status_snapshots_calls.push(pr_numbers.to_vec());
-            s.fetch_pr_status_snapshots_known.clone()
+            // Peek at the configured health result (without consuming it) so tests that set
+            // `fetch_pr_health_result` continue to drive conflict detection via the snapshot-hub
+            // path.
+            let health_merge_state_status = s
+                .fetch_pr_health_result
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .and_then(|h| h.sync_state.merge_state_status.clone());
+            let health_mergeable = s
+                .fetch_pr_health_result
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .and_then(|h| h.sync_state.mergeable.clone());
+            (
+                s.fetch_pr_status_snapshots_known.clone(),
+                health_merge_state_status,
+                health_mergeable,
+            )
         };
         let mut out = HashMap::new();
         for number in pr_numbers {
@@ -624,6 +641,8 @@ impl GithubServiceTrait for MockGithubService {
             let status = self.check_pr_status(working_dir, *number).await?;
             let mut snapshot = batched_pr_status_snapshot(*number);
             snapshot.sync_state.status = status;
+            snapshot.sync_state.merge_state_status = health_merge_state_status.clone();
+            snapshot.sync_state.mergeable = health_mergeable.clone();
             out.insert(*number, snapshot);
         }
         Ok(out)
