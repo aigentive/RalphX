@@ -450,6 +450,7 @@ async fn test_verification_turn_uses_active_ideation_subagent() {
         0,
         None,
         None, // model_override: persisted conversation context owns active-agent routing
+        &[],  // extra_allowed_mcp_tools
         None, // agent_runtime_context
         None, // attachment_context_override
     )

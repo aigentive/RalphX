@@ -14,8 +14,8 @@ use crate::application::manual_role_default_service::{
 use crate::application::personas::PersonaService;
 use crate::application::AppState;
 use crate::domain::agents::{
-    AgentHarnessKind, LogicalEffort, ManualRoleDefault, ManualServiceTier, RoutingRole,
-    RoutingRoleFamily, StoredManualRoleDefault, ROUTING_ROLES,
+    AgentHarnessKind, AtlassianMcpAccess, LogicalEffort, ManualRoleDefault, ManualServiceTier,
+    RoutingRole, RoutingRoleFamily, StoredManualRoleDefault, ROUTING_ROLES,
 };
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, ChatContextType, ChatConversationId, CoordinationMode,
@@ -38,6 +38,7 @@ pub struct ManualRoleDefaultResponse {
     pub persona_id: Option<String>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub atlassian_access: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +93,8 @@ pub struct ManualRoleDefaultInput {
     pub persona_id: Option<String>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    #[serde(default)]
+    pub atlassian_access: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -671,6 +674,10 @@ pub(super) fn parse_input(input: ManualRoleDefaultInput) -> Result<ManualRoleDef
         persona_id: trim(input.persona_id).map(PersonaId::from),
         approval_policy: trim(input.approval_policy),
         sandbox_mode: trim(input.sandbox_mode),
+        atlassian_access: trim(input.atlassian_access)
+            .as_deref()
+            .map(AtlassianMcpAccess::from_str)
+            .transpose()?,
     })
 }
 
@@ -684,6 +691,7 @@ fn parse_response(value: &ManualRoleDefaultResponse) -> Result<ManualRoleDefault
         persona_id: value.persona_id.clone(),
         approval_policy: value.approval_policy.clone(),
         sandbox_mode: value.sandbox_mode.clone(),
+        atlassian_access: value.atlassian_access.clone(),
     })
 }
 
@@ -708,5 +716,6 @@ fn response(value: &ManualRoleDefault) -> ManualRoleDefaultResponse {
         persona_id: value.persona_id.as_ref().map(ToString::to_string),
         approval_policy: value.approval_policy.clone(),
         sandbox_mode: value.sandbox_mode.clone(),
+        atlassian_access: value.atlassian_access.map(|access| access.to_string()),
     }
 }

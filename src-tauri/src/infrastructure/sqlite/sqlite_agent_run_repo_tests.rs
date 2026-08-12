@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
+use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef, RoutingRole};
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
     AgentRunActionKind, AgentRunAttribution, AgentRunUsage, IdeationSessionId,
@@ -1223,4 +1223,39 @@ fn truncate_persisted_error_message_is_utf8_safe() {
     assert!(truncated.len() < multibyte.len());
     assert!(truncated.ends_with('é'));
     assert!(truncated.contains("bytes elided"));
+}
+
+#[tokio::test]
+async fn authoritative_routing_role_and_project_round_trip_in_sqlite() {
+    let (db, repo) = setup_repo();
+    let mut run = AgentRun::new(db.seed_ideation_conversation().id);
+    let run_id = run.id;
+    // `launch_role` is display attribution and intentionally disagrees with the
+    // authoritative routing role here.
+    run.launch_role = Some("workspace_reviewer".to_string());
+    run.routing_role = Some(RoutingRole::WorkspaceEdit);
+    run.project_id = Some("project-42".to_string());
+
+    repo.create(run).await.unwrap();
+
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(persisted.routing_role, Some(RoutingRole::WorkspaceEdit));
+    assert_eq!(persisted.project_id.as_deref(), Some("project-42"));
+    assert_eq!(persisted.launch_role.as_deref(), Some("workspace_reviewer"));
+}
+
+#[tokio::test]
+async fn runs_without_a_persisted_routing_role_read_back_as_none() {
+    let (db, repo) = setup_repo();
+    let run = AgentRun::new(db.seed_ideation_conversation().id);
+    let run_id = run.id;
+
+    repo.create(run).await.unwrap();
+
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(
+        persisted.routing_role, None,
+        "absent role must stay absent so authorization fails closed"
+    );
+    assert_eq!(persisted.project_id, None);
 }

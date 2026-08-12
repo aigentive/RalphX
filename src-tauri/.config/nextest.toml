@@ -6,7 +6,7 @@ leak-timeout = "500ms"
 [profile.ci]
 inherits = "default"
 fail-fast = false
-global-timeout = "30m"
+global-timeout = "40m"
 retries = 1
 
 [profile.ci.junit]

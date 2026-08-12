@@ -15,6 +15,7 @@ pub mod agent_workspace_review_approval;
 pub mod agent_workspaces;
 pub mod api_keys;
 pub mod artifacts;
+pub mod atlassian_mcp;
 pub mod automations;
 pub mod branch_update;
 pub mod conversations;

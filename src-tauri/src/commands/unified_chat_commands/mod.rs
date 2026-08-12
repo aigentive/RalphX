@@ -106,16 +106,16 @@ use crate::application::agent_workspace_publish_recovery::{
 };
 use crate::application::agent_workspace_publish_repair_state::{
     classify_agent_workspace_repair_delivery, last_human_repair_reason,
-    reserve_agent_workspace_repair_dispatch, resume_current_agent_workspace_repair_publish,
-    resume_ready_agent_workspace_repair_for_publish,
+    rerun_agent_workspace_ci_for_hold, reserve_agent_workspace_repair_dispatch,
+    resume_current_agent_workspace_repair_publish, resume_ready_agent_workspace_repair_for_publish,
     retry_agent_workspace_pr_autofix_hold_override,
     retry_agent_workspace_publication_effect as retry_agent_workspace_publication_effect_service,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
-    stop_agent_workspace_pr_autofix_for_hold, AgentWorkspacePrAutofixHoldActionOutcome,
-    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
-    AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PublishAuthority,
-    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+    stop_agent_workspace_pr_autofix_for_hold, AgentWorkspaceCiRerunActionOutcome,
+    AgentWorkspacePrAutofixHoldActionOutcome, AgentWorkspaceRepairDispatchOutcome,
+    AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
+    AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
+    AgentWorkspaceRepairTransitionOutcome, PublishAuthority, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
 };
 use crate::application::agent_workspace_review::{
     load_workspace_review_publish_blocker, lock_workspace_review_lifecycle,
@@ -5005,6 +5005,83 @@ pub async fn stop_pr_autofix_for_failure(
     execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     apply_pr_autofix_hold_action(input, state.inner(), execution_state.inner(), false).await
+}
+
+/// Reruns the failed GitHub Actions checks for a generation held at exactly
+/// `pr_autofix_base_parity_transient`, only when the UI's exact durable attempt version still
+/// owns it.
+#[tauri::command]
+pub async fn rerun_agent_workspace_failed_checks(
+    input: AgentWorkspaceRepairHoldActionInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let updated_at = DateTime::parse_from_rfc3339(&input.updated_at)
+        .map_err(|error| format!("invalid repair updated_at: {error}"))?
+        .with_timezone(&Utc);
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+    let pr_number = workspace
+        .publication_pr_number
+        .ok_or_else(|| "CI rerun requires a linked pull request".to_string())?;
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
+    let working_dir = resolve_valid_agent_conversation_workspace_path(&project, &workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    let github: Arc<dyn GithubServiceTrait> = state
+        .github_service
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| "GitHub service is unavailable for CI rerun.".to_string())?;
+
+    let outcome = rerun_agent_workspace_ci_for_hold(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        github,
+        &conversation_id,
+        &AgentWorkspaceRepairAttemptId::from_string(input.attempt_id),
+        input.generation,
+        updated_at,
+        &working_dir,
+        pr_number,
+        "Rerunning failed GitHub Actions checks by explicit user request.",
+        workspace.pr_auto_merge_current,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    if !matches!(outcome, AgentWorkspaceCiRerunActionOutcome::Applied(_)) {
+        return Err(match outcome {
+            AgentWorkspaceCiRerunActionOutcome::BudgetExhausted(_) => {
+                "The transient CI rerun budget is exhausted.".to_string()
+            }
+            AgentWorkspaceCiRerunActionOutcome::NotHeld(_) => {
+                "This workspace is no longer held for a transient CI classification.".to_string()
+            }
+            AgentWorkspaceCiRerunActionOutcome::Stale(_)
+            | AgentWorkspaceCiRerunActionOutcome::Missing
+            | AgentWorkspaceCiRerunActionOutcome::Applied(_) => {
+                "The workspace repair hold changed before this action could be applied.".to_string()
+            }
+        });
+    }
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+    agent_workspace_response_for_state(state.inner(), workspace).await
 }
 
 /// Clears a continuation's publication-effect attention hold only when the UI's exact durable

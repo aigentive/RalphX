@@ -728,6 +728,7 @@ async fn test_explicit_reviewer_role_default_wins_over_legacy_review_settings() 
                 persona_id: None,
                 approval_policy: None,
                 sandbox_mode: None,
+                atlassian_access: None,
             },
         )
         .await

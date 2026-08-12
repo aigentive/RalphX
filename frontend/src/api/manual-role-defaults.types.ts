@@ -1,5 +1,8 @@
 export type ManualServiceTier = "provider_default" | "standard" | "fast";
 
+/** Atlassian MCP tool tier for a routing role. */
+export type AtlassianMcpAccess = "none" | "read" | "read_write";
+
 export interface ManualRoleDefault {
   provider: string;
   model: string | null;
@@ -9,6 +12,8 @@ export interface ManualRoleDefault {
   personaId: string | null;
   approvalPolicy: string | null;
   sandboxMode: string | null;
+  /** `null` means "use this role's built-in Atlassian tier". */
+  atlassianAccess: AtlassianMcpAccess | null;
 }
 
 export type ManualRoleRuntimeSelection = Pick<
