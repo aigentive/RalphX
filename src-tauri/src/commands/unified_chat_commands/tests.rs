@@ -8842,22 +8842,23 @@ async fn publish_workspace_creates_pr_with_programmatic_metadata_when_pr_descrip
         .pr_poller_registry
         .stop_agent_workspace_polling(&conversation_id);
 
-    let github_state = github.state();
-    assert_eq!(github_state.push_branch_calls, 1);
-    assert_eq!(github_state.create_draft_pr_calls, 1);
-    let (_, _, created_title, _) = github_state
-        .last_create_draft_pr_args
-        .clone()
-        .expect("draft PR should have been created");
-    assert_eq!(created_title, "Decouple repair from describer");
-    let created_body = github_state
-        .last_create_draft_pr_body
-        .clone()
-        .expect("draft PR body should have been written");
-    assert!(!created_body.trim().is_empty());
-    assert!(created_body.contains(RALPHX_GENERATED_FOOTER));
-    assert!(!created_body.contains("Cached publication title"));
-    drop(github_state);
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.push_branch_calls, 1);
+        assert_eq!(github_state.create_draft_pr_calls, 1);
+        let (_, _, created_title, _) = github_state
+            .last_create_draft_pr_args
+            .clone()
+            .expect("draft PR should have been created");
+        assert_eq!(created_title, "Decouple repair from describer");
+        let created_body = github_state
+            .last_create_draft_pr_body
+            .clone()
+            .expect("draft PR body should have been written");
+        assert!(!created_body.trim().is_empty());
+        assert!(created_body.contains(RALPHX_GENERATED_FOOTER));
+        assert!(!created_body.contains("Cached publication title"));
+    }
 
     assert_eq!(
         response.workspace.publication_push_status.as_deref(),
