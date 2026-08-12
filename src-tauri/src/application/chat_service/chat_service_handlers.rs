@@ -29,7 +29,7 @@ use crate::application::task_notification_producer::TaskPipelineNotificationProd
 use crate::application::task_scheduler_service::TaskSchedulerService;
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::application::InteractiveProcessRegistry;
-use crate::commands::{execution_commands::AGENT_ACTIVE_STATUSES, ExecutionState};
+use crate::application::execution_state::{ExecutionState, AGENT_ACTIVE_STATUSES};
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentRunId, AgentRunStatus, ChatContextType, ChatConversation,
@@ -2789,6 +2789,22 @@ pub(super) async fn handle_stream_error(
                             None,
                         )
                         .await;
+                        // Role-tiered Atlassian MCP grants for the stream-error retry,
+                        // resolved from the errored run's persisted routing_role/project_id
+                        // (never re-derived). Absent services or role yields no tools.
+                        let retry_extra_allowed_mcp_tools = match runtime_factory_deps {
+                            Some(deps) => {
+                                crate::application::atlassian_mcp_tools_for_resumed_run(
+                                    agent_run_repo,
+                                    &deps.project_repo,
+                                    deps.atlassian_integration_service.as_ref(),
+                                    deps.manual_role_default_service.as_ref(),
+                                    Some(agent_run_id),
+                                )
+                                .await
+                            }
+                            None => Vec::new(),
+                        };
                         let retry_provider_spawnable =
                             match (retry_persona, retry_folder_refs, external_readiness) {
                             (Ok(persona), Ok((folder_refs_block, filesystem_read_roots)), Ok(())) => {
@@ -2834,6 +2850,7 @@ pub(super) async fn handle_stream_error(
                                     None,
                                     None,
                                     false,
+                                    retry_extra_allowed_mcp_tools,
                                     retry_agent_runtime_context.as_deref(),
                                     None,
                                 )

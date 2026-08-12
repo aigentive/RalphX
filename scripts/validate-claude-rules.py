@@ -11,6 +11,7 @@ from pathlib import Path
 
 from claude_rule_utils import (
     ALWAYS_ON_ALLOWLIST,
+    ALWAYS_ON_BUDGET_BYTES,
     GENERATED_PATH_EXEMPLARS,
     matching_paths,
     parse_paths,
@@ -20,7 +21,6 @@ from claude_rule_utils import (
 ROOT = Path(__file__).resolve().parents[1]
 RULES_DIR = ROOT / ".claude" / "rules"
 ROOT_CLAUDE = ROOT / "CLAUDE.md"
-ALWAYS_ON_BUDGET_BYTES = 17_000
 MARKDOWN_IMPORT_RE = re.compile(
     r"(?:^|[\s(])@[A-Za-z0-9_~./-]+\.(?:md|mdc)", re.MULTILINE
 )

@@ -10,7 +10,6 @@ pub mod mcp_runtime_context;
 pub mod mock;
 pub mod persona_overlay;
 pub mod spawn_isolation;
-pub mod spawner;
 
 // Re-export commonly used items
 pub use claude::ClaudeCodeClient;
@@ -53,7 +52,6 @@ pub use mcp_launch_policy::apply_mcp_launch_policy;
 pub(crate) use mcp_launch_policy::ensure_no_reserved_native_mcp_collision_at;
 pub use mcp_runtime_context::McpRuntimeContext;
 pub use mock::{MockAgenticClient, MockCall, MockCallType};
-pub use spawner::AgenticClientSpawner;
 
 pub fn agent_requires_external_mcp(
     provider: crate::domain::agents::AgentHarnessKind,

@@ -177,6 +177,7 @@ async fn build_standalone_codex_noninteractive_resume_command(
         None,
         None,
         false,
+        Vec::new(),
         None,
         None,
     )

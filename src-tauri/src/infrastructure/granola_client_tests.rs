@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use hyper::Method;
 use serde_json::{json, Value};
 
-use crate::application::{GranolaApiClient, GranolaApiError, GranolaAuthContext};
+use crate::domain::integrations::{GranolaApiClient, GranolaApiError, GranolaAuthContext};
 
 use super::granola_client::{
     granola_authorization_header, GranolaJsonRequester, GranolaRequestError, HyperGranolaApiClient,

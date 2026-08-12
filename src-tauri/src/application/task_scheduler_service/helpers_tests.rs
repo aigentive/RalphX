@@ -1,6 +1,6 @@
 use super::*;
 use crate::application::AppState;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{ExecutionPlan, ExecutionPlanHaltMode, ExecutionPlanId, Project};
 use crate::domain::repositories::ExecutionPlanRepository;
 use crate::error::{AppError, AppResult};

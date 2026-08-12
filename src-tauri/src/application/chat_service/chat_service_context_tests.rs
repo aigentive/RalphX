@@ -1738,6 +1738,7 @@ async fn noninteractive_fresh_and_recovery_family_keeps_runtime_state_for_both_h
             None,
             None,
             false,
+            Vec::new(),
             Some(runtime_context),
             None,
         )
@@ -2247,6 +2248,7 @@ async fn resume_commands_append_captured_attachment_context_for_claude_and_codex
             None,
             None,
             false,
+            Vec::new(),
             Some("<agent_runtime_state><active_delegations count=\"1\"/></agent_runtime_state>"),
             Some(attachment_context),
         )
@@ -2365,6 +2367,7 @@ async fn resume_commands_pass_current_run_identity_to_mcp() {
                 None,
                 None,
                 false,
+                Vec::new(),
                 None,
                 None,
             )
@@ -2482,6 +2485,7 @@ async fn project_resume_commands_use_plan_agent_profile_for_claude_and_codex() {
             None,
             None,
             false,
+            Vec::new(),
             None,
             None,
         )
@@ -2769,6 +2773,7 @@ async fn codex_project_noninteractive_resume_keeps_current_conversation_id_for_m
         None,
         None,
         false,
+        Vec::new(),
         None,
         None,
     )
@@ -2847,6 +2852,7 @@ async fn codex_project_noninteractive_resume_without_resume_capability_uses_reco
         None,
         None,
         false,
+        Vec::new(),
         None,
         None,
     )

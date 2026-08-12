@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::agents::{
     AgentConfig, AgentError, AgentHandle, AgentHarnessKind, AgentLane, AgentLaneSettings,
     AgentOutput, AgentProviderCliManagementMode, AgentProviderSettings, AgentResponse, AgentResult,
@@ -728,6 +728,7 @@ async fn test_explicit_reviewer_role_default_wins_over_legacy_review_settings() 
                 persona_id: None,
                 approval_policy: None,
                 sandbox_mode: None,
+                atlassian_access: None,
             },
         )
         .await

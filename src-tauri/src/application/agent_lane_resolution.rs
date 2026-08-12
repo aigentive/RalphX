@@ -149,7 +149,7 @@ pub fn routing_role_for_spawner_agent(
 }
 
 #[async_trait::async_trait]
-impl crate::infrastructure::agents::spawner::StateMachineRoleResolver for ManualRoleDefaultService {
+impl crate::application::agents::spawner::StateMachineRoleResolver for ManualRoleDefaultService {
     async fn resolve_state_machine_role(
         &self,
         agent_name: &str,
@@ -157,7 +157,7 @@ impl crate::infrastructure::agents::spawner::StateMachineRoleResolver for Manual
         entity_status: Option<&str>,
         project_id: Option<&str>,
         project_root: Option<&Path>,
-    ) -> Result<Option<crate::infrastructure::agents::spawner::StateMachineRoleSettings>, String>
+    ) -> Result<Option<crate::application::agents::spawner::StateMachineRoleSettings>, String>
     {
         let Some(role) = routing_role_for_spawner_agent(agent_type, entity_status) else {
             return Ok(None);
@@ -175,7 +175,7 @@ impl crate::infrastructure::agents::spawner::StateMachineRoleResolver for Manual
         .await
         .map_err(|error| format!("Failed to resolve manual default for {role}: {error}"))?;
         Ok(Some(
-            crate::infrastructure::agents::spawner::StateMachineRoleSettings {
+            crate::application::agents::spawner::StateMachineRoleSettings {
                 harness: resolved.effective_harness,
                 model: resolved.model,
                 logical_effort: resolved.logical_effort,
@@ -206,6 +206,13 @@ pub struct ResolvedAgentSpawnSettings {
     pub configured_subagent_model_cap: Option<String>,
     pub subagent_model_cap: Option<String>,
     pub runtime_source: RuntimeSource,
+    /// Runtime-injected, role-tiered MCP tool grants that are additive to the
+    /// agent's canonical allowlist (bare snake_case names).
+    ///
+    /// Resolved by the launch path, which owns the async integration/role
+    /// lookups, and carried here into the harness command builders. Empty means
+    /// "inject nothing".
+    pub extra_allowed_mcp_tools: Vec<String>,
 }
 
 /// Integration-test seam (doc-hidden): suites resolve spawn settings to feed
@@ -269,6 +276,7 @@ pub async fn resolve_agent_spawn_settings(
             configured_subagent_model_cap: None,
             subagent_model_cap: None,
             runtime_source: RuntimeSource::HarnessFallback,
+            extra_allowed_mcp_tools: Vec::new(),
         };
     }
 
@@ -398,6 +406,7 @@ pub async fn resolve_agent_spawn_settings(
         service_tier: None,
         configured_subagent_model_cap,
         subagent_model_cap,
+        extra_allowed_mcp_tools: Vec::new(),
         runtime_source: if primary_project_row.is_some() {
             RuntimeSource::ProjectDefault
         } else if primary_global_row.is_some() {
@@ -447,6 +456,7 @@ pub async fn resolve_manual_role_spawn_settings(
             persona_id: runtime_override.persona_id.clone(),
             approval_policy: resolved.value.approval_policy.clone(),
             sandbox_mode: resolved.value.sandbox_mode.clone(),
+            atlassian_access: resolved.value.atlassian_access,
         })
     } else {
         None
@@ -547,6 +557,7 @@ pub async fn resolve_manual_role_spawn_settings(
             persona_id: selected_runtime.persona_id.clone(),
             approval_policy: selected_runtime.approval_policy.clone(),
             sandbox_mode: selected_runtime.sandbox_mode.clone(),
+            atlassian_access: selected_runtime.atlassian_access,
         };
         service
             .validate_explicit_value(role, &complete_runtime)
@@ -589,6 +600,7 @@ pub async fn resolve_manual_role_spawn_settings(
         service_tier,
         configured_subagent_model_cap,
         subagent_model_cap,
+        extra_allowed_mcp_tools: Vec::new(),
         runtime_source: if runtime_override.is_some() {
             RuntimeSource::ConversationOverride
         } else {

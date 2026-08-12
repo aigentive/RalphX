@@ -2,6 +2,7 @@ import { useId, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 import type {
+  AtlassianMcpAccess,
   ManualRoleCatalogEntry,
   ManualRoleDefault,
 } from "@/api/manual-role-defaults.types";
@@ -101,6 +102,8 @@ function EditorSelect({
 export interface AgentRoleDefaultEditorProps {
   entry: ManualRoleCatalogEntry;
   disabled: boolean;
+  /** Whether the Atlassian integration is connected and validated. */
+  atlassianAvailable?: boolean;
   providers: readonly string[];
   modelsForProvider: (provider: string) => readonly AgentModelCatalogEntry[];
   personas: readonly Persona[];
@@ -112,6 +115,7 @@ export interface AgentRoleDefaultEditorProps {
 export function AgentRoleDefaultEditor({
   entry,
   disabled,
+  atlassianAvailable = true,
   providers,
   modelsForProvider,
   personas,
@@ -125,7 +129,8 @@ export function AgentRoleDefaultEditor({
     () => Boolean(
       entry.configured?.personaId ||
       entry.configured?.approvalPolicy ||
-      entry.configured?.sandboxMode,
+      entry.configured?.sandboxMode ||
+      entry.configured?.atlassianAccess,
     ),
   );
   const showPersonaAccess = forcePersonaAccessOpen || personaAccessExpanded;
@@ -214,6 +219,33 @@ export function AgentRoleDefaultEditor({
               disabled={blocked}
               onValueChange={(sandboxMode) =>
                 commit({ sandboxMode: nullableValue(sandboxMode) })
+              }
+            />
+            <EditorSelect
+              label="Atlassian"
+              ariaLabel={`${entry.displayName} Atlassian access`}
+              value={value.atlassianAccess ?? DEFAULT_VALUE}
+              options={[
+                { value: DEFAULT_VALUE, label: "Role default" },
+                { value: "none", label: "None" },
+                { value: "read", label: "Read" },
+                { value: "read_write", label: "Read + write" },
+              ]}
+              disabled={blocked || !atlassianAvailable}
+              helpContent={
+                atlassianAvailable ? undefined : (
+                  <p>
+                    Connect Atlassian in Settings &gt; Integrations to grant Jira and
+                    Confluence tools.
+                  </p>
+                )
+              }
+              onValueChange={(atlassianAccess) =>
+                commit({
+                  atlassianAccess: nullableValue(
+                    atlassianAccess,
+                  ) as AtlassianMcpAccess | null,
+                })
               }
             />
           </div>

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use rusqlite::{params_from_iter, Connection};
 
-use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
+use crate::domain::agents::{AgentHarnessKind, LogicalEffort, RoutingRole};
 
 pub(crate) use crate::infrastructure::agent_run_error_message::truncate_persisted_error_message;
 
@@ -98,6 +98,10 @@ fn row_to_agent_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRun> {
         sandbox_mode: row.get("sandbox_mode")?,
         agent_name: row.get("agent_name")?,
         launch_role: row.get("launch_role")?,
+        routing_role: row
+            .get::<_, Option<String>>("routing_role")?
+            .and_then(|value| value.parse::<RoutingRole>().ok()),
+        project_id: row.get("project_id")?,
         runtime_source: row
             .get::<_, Option<String>>("runtime_source")?
             .and_then(|value| value.parse::<RuntimeSource>().ok()),
@@ -160,11 +164,11 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
                         raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens,
                         raw_usage_estimated_usd,
-                        approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                        approval_policy, sandbox_mode, agent_name, launch_role, routing_role, project_id, runtime_source, run_chain_id, parent_run_id,
                         action_kind, action_context_id, action_target_id,
                         persona_id, persona_slug, persona_version, persona_content_hash,
                         persona_injected, persona_skipped_reason
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42)",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44)",
                     rusqlite::params![
                         run.id.as_str(),
                         run.conversation_id.as_str(),
@@ -196,6 +200,8 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         run.sandbox_mode,
                         run.agent_name,
                         run.launch_role,
+                        run.routing_role.map(|value| value.to_string()),
+                        run.project_id,
                         run.runtime_source.map(|value| value.to_string()),
                         run.run_chain_id,
                         run.parent_run_id,
@@ -226,7 +232,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
                             usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
                             raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
-                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            approval_policy, sandbox_mode, agent_name, launch_role, routing_role, project_id, runtime_source, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
                             persona_injected, persona_skipped_reason
@@ -256,7 +262,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
                             usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
                             raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
-                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            approval_policy, sandbox_mode, agent_name, launch_role, routing_role, project_id, runtime_source, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
                             persona_injected, persona_skipped_reason
@@ -285,7 +291,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
                             usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
                             raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
-                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            approval_policy, sandbox_mode, agent_name, launch_role, routing_role, project_id, runtime_source, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
                             persona_injected, persona_skipped_reason
@@ -315,7 +321,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
                             usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
                             raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
-                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            approval_policy, sandbox_mode, agent_name, launch_role, routing_role, project_id, runtime_source, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
                             persona_injected, persona_skipped_reason
@@ -346,7 +352,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
                             usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
                             raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
-                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            approval_policy, sandbox_mode, agent_name, launch_role, routing_role, project_id, runtime_source, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
                             persona_injected, persona_skipped_reason
@@ -378,7 +384,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
                             usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
                             raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
-                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            approval_policy, sandbox_mode, agent_name, launch_role, routing_role, project_id, runtime_source, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
                             persona_injected, persona_skipped_reason
@@ -418,7 +424,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
                             usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
                             raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
-                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            approval_policy, sandbox_mode, agent_name, launch_role, routing_role, project_id, runtime_source, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
                             persona_injected, persona_skipped_reason
@@ -452,7 +458,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
                             usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
                             raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
-                            approval_policy, sandbox_mode, agent_name, launch_role, runtime_source, run_chain_id, parent_run_id,
+                            approval_policy, sandbox_mode, agent_name, launch_role, routing_role, project_id, runtime_source, run_chain_id, parent_run_id,
                             action_kind, action_context_id, action_target_id,
                             persona_id, persona_slug, persona_version, persona_content_hash,
                             persona_injected, persona_skipped_reason
@@ -870,6 +876,8 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         ar.sandbox_mode,
                         ar.agent_name,
                         ar.launch_role,
+                        ar.routing_role,
+                        ar.project_id,
                         ar.runtime_source,
                         ar.run_chain_id,
                         ar.parent_run_id,
@@ -1010,6 +1018,10 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             sandbox_mode: row.get("sandbox_mode")?,
                             agent_name: row.get("agent_name")?,
                             launch_role: row.get("launch_role")?,
+                            routing_role: row
+                                .get::<_, Option<String>>("routing_role")?
+                                .and_then(|value| value.parse::<RoutingRole>().ok()),
+                            project_id: row.get("project_id")?,
                             runtime_source: row
                                 .get::<_, Option<String>>("runtime_source")?
                                 .and_then(|value| value.parse::<RuntimeSource>().ok()),

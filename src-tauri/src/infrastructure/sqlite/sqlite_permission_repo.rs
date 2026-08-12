@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use rusqlite::Connection;
 
 use super::DbConnection;
-use crate::application::permission_state::{PendingPermissionInfo, PermissionDecision};
+use crate::domain::entities::permission_request::{PendingPermissionInfo, PermissionDecision};
 use crate::domain::repositories::permission_repository::PermissionRepository;
 use crate::error::{AppError, AppResult};
 

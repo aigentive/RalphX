@@ -37,6 +37,8 @@ export interface AgentRoleDefaultRowProps {
   entry: ManualRoleCatalogEntry;
   expanded: boolean;
   disabled: boolean;
+  /** Whether the Atlassian integration is connected and validated. */
+  atlassianAvailable?: boolean;
   providers: readonly string[];
   modelsForProvider: (provider: string) => readonly AgentModelCatalogEntry[];
   personas: readonly Persona[];
@@ -64,6 +66,7 @@ export function AgentRoleDefaultRow({
   entry,
   expanded,
   disabled,
+  atlassianAvailable,
   providers,
   modelsForProvider,
   personas,
@@ -177,6 +180,7 @@ export function AgentRoleDefaultRow({
           <AgentRoleDefaultEditor
             entry={entry}
             disabled={disabled}
+            {...(atlassianAvailable !== undefined && { atlassianAvailable })}
             providers={providers}
             modelsForProvider={modelsForProvider}
             personas={personas}

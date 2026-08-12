@@ -1,17 +1,11 @@
 use super::*;
-use crate::domain::execution::context_matches_running_status;
 pub use crate::domain::execution::{
     ExecutionCapacitySummary, ExecutionLaneUsage, RunningIdeationSession, RunningProcess,
     RunningProcessesResponse, RunningWorkspaceSession, DEFAULT_WORKSPACE_MAX_CONCURRENT,
 };
 
 #[doc(hidden)]
-pub fn context_matches_running_status_for_gc(
-    context_type: ChatContextType,
-    status: InternalStatus,
-) -> bool {
-    context_matches_running_status(context_type, status)
-}
+pub use crate::application::execution_state::context_matches_running_status_for_gc;
 
 pub(super) async fn prune_stale_execution_registry_entries(
     app_state: &AppState,

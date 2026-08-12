@@ -581,11 +581,11 @@ impl ChatMessageRepository for SqliteChatMessageRepository {
         let conv_id_str = conversation_id.as_str().to_string();
         let content_like_pattern = format!(
             "%{}%",
-            crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_MARKER
+            crate::domain::verification_markers::VERIFICATION_RESULT_MARKER
         );
         let metadata_like_pattern = format!(
             "%\"{}\"%",
-            crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_METADATA_KEY
+            crate::domain::verification_markers::VERIFICATION_RESULT_METADATA_KEY
         );
         self.db
             .run(move |conn| {

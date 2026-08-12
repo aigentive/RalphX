@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry};
 
 // ============================================================================
