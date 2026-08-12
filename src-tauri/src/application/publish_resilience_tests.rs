@@ -446,6 +446,28 @@ fn rejects_agent_workspace_repair_when_base_still_ahead() {
 }
 
 #[test]
+fn rejects_agent_workspace_repair_when_branch_does_not_contain_captured_target_base() {
+    // A conflict-routed attempt records the freshly observed origin tip as its target base, so
+    // `captured == target` and `is_base_ahead` is false even though the branch never merged it.
+    // Only the ancestry proof can reject this.
+    let unintegrated_status = publish_branch_freshness_status_from_commits_and_branch(
+        Some("new-base"),
+        "origin/main",
+        "new-base",
+        false,
+    );
+    let mut check = repaired_workspace_check();
+    check.freshness_status = &unintegrated_status;
+
+    let error = verify_agent_workspace_repair_completion(check)
+        .expect_err("unintegrated base must reject repair completion");
+    assert!(
+        error.contains("does not contain base"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn rejects_agent_workspace_repair_when_reported_base_commit_mismatches_current_target() {
     let mut check = repaired_workspace_check();
     check.resolved_base_commit = "other-base";
