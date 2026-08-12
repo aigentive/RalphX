@@ -486,6 +486,14 @@ export const AGENT_WORKSPACE_TOOLS = [
                     pattern: "^[0-9a-f]{40}$",
                     description: "Full 40-character SHA of the current committed workspace HEAD. Required for a fixed completion; RalphX verifies the actual branch head changed from dispatch.",
                 },
+                what_happened: {
+                    type: "string",
+                    description: "Optional 1-2 plain-language sentences describing what happened. Write for someone who doesn't know what a CI runner is; summary stays the engineer-facing field. Max 480 characters; over-cap is rejected, not truncated.",
+                },
+                what_i_did: {
+                    type: "string",
+                    description: "Optional 1-2 plain-language sentences describing what you did about it. Write for someone who doesn't know what a CI runner is; summary stays the engineer-facing field. Max 480 characters; over-cap is rejected, not truncated.",
+                },
             },
             required: ["conversation_id", "summary"],
         },
@@ -516,6 +524,14 @@ export const AGENT_WORKSPACE_TOOLS = [
                     type: "string",
                     pattern: "^[0-9a-f]{40}$",
                     description: "Full 40-character SHA of the current committed workspace HEAD. Required for a fixed repair completion; RalphX verifies the actual branch head changed from dispatch.",
+                },
+                what_happened: {
+                    type: "string",
+                    description: "Optional 1-2 plain-language sentences describing what happened. Write for someone who doesn't know what a CI runner is; summary stays the engineer-facing field. Max 480 characters; over-cap is rejected, not truncated.",
+                },
+                what_i_did: {
+                    type: "string",
+                    description: "Optional 1-2 plain-language sentences describing what you did about it. Write for someone who doesn't know what a CI runner is; summary stays the engineer-facing field. Max 480 characters; over-cap is rejected, not truncated.",
                 },
             },
             required: ["summary"],
@@ -778,17 +794,19 @@ export async function callReadAgentWorkspacePrCommentTool(callTauriGet, args) {
     return callTauriGet(`agent-workspaces/${conversation_id}/pr-comments/${encodeURIComponent(comment_id)}`);
 }
 export async function callCompleteAgentWorkspacePrFixTool(callTauri, args, runtimeContext) {
-    const { conversation_id, summary, blocker, resolution, fix_commit_sha } = args;
+    const { conversation_id, summary, blocker, resolution, fix_commit_sha, what_happened, what_i_did } = args;
     return callTauri(`agent-workspaces/${conversation_id}/complete-pr-fix`, {
         summary,
         blocker,
         resolution,
         fix_commit_sha,
         created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
+        ...(what_happened === undefined ? {} : { what_happened }),
+        ...(what_i_did === undefined ? {} : { what_i_did }),
     });
 }
 export async function callCompleteAgentWorkspaceRepairTool(callTauri, args, runtimeContext) {
-    const { summary, blocker, resolution, fix_commit_sha } = (args && typeof args === "object" ? args : {});
+    const { summary, blocker, resolution, fix_commit_sha, what_happened, what_i_did } = (args && typeof args === "object" ? args : {});
     const conversation_id = resolveRuntimeAgentWorkspaceConversationId("complete_agent_workspace_repair", runtimeContext);
     const headers = buildRuntimeIdentityTransportHeaders({
         agentRunId: runtimeContext?.agentRunId,
@@ -802,6 +820,8 @@ export async function callCompleteAgentWorkspaceRepairTool(callTauri, args, runt
         blocker,
         ...(resolution === undefined ? {} : { resolution }),
         ...(fix_commit_sha === undefined ? {} : { reported_fix_commit_sha: fix_commit_sha }),
+        ...(what_happened === undefined ? {} : { what_happened }),
+        ...(what_i_did === undefined ? {} : { what_i_did }),
     }, { headers });
 }
 export async function callSubmitAgentWorkspacePrDescriptionTool(callTauri, args) {

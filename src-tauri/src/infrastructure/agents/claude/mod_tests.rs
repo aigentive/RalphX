@@ -422,6 +422,7 @@ fn test_create_mcp_config_injects_runtime_context_args() {
         lead_session_id: Some("lead-456".to_string()),
         parent_conversation_id: Some("conversation-789".to_string()),
         agent_run_id: Some("run-123".to_string()),
+        extra_allowed_mcp_tools: Vec::new(),
     };
 
     let json = build_mcp_config_with_runtime_context(
@@ -2041,5 +2042,158 @@ fn test_materialize_generated_plugin_dir_uses_fallback_runtime_entries_when_loca
         read_test_file(generated_dir.join("agents/ralphx-utility-session-namer.md"))
             .contains("Local canonical test prompt"),
         "generated plugin should keep canonical prompts from the local RalphX checkout"
+    );
+}
+
+// ─── Role-tiered Atlassian MCP grants (runtime-injected) ───────────────────
+
+fn runtime_context_with_extra_tools(tools: &[&str]) -> McpRuntimeContext {
+    McpRuntimeContext {
+        extra_allowed_mcp_tools: tools.iter().map(|tool| (*tool).to_string()).collect(),
+        ..McpRuntimeContext::default()
+    }
+}
+
+#[test]
+fn runtime_injected_atlassian_tools_append_to_the_canonical_allowlist() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    seed_live_agent_yaml(&root, "ralphx-ideation");
+
+    let baseline = build_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "ralphx-ideation",
+        None,
+        false,
+        None,
+    )
+    .expect("baseline config");
+    let baseline_arg =
+        allowed_tools_arg_from_mcp_config(&baseline).expect("agent should have canonical tools");
+    let baseline_tools: Vec<String> = baseline_arg
+        .strip_prefix("--allowed-tools=")
+        .expect("prefix")
+        .split(',')
+        .map(str::to_string)
+        .collect();
+    assert!(
+        !baseline_tools.is_empty() && baseline_tools != vec!["__NONE__".to_string()],
+        "fixture agent must have canonical tools to prove append-not-replace: {baseline_tools:?}"
+    );
+
+    let context = runtime_context_with_extra_tools(&["jira_search_issues", "jira_create_issue"]);
+    let injected = build_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "ralphx-ideation",
+        None,
+        false,
+        Some(&context),
+    )
+    .expect("injected config");
+    let injected_arg = allowed_tools_arg_from_mcp_config(&injected).expect("allowed-tools arg");
+    let injected_tools: Vec<&str> = injected_arg
+        .strip_prefix("--allowed-tools=")
+        .expect("prefix")
+        .split(',')
+        .collect();
+
+    for canonical in &baseline_tools {
+        assert!(
+            injected_tools.contains(&canonical.as_str()),
+            "canonical tool {canonical} must survive runtime injection; got {injected_tools:?}"
+        );
+    }
+    assert!(injected_tools.contains(&"jira_search_issues"));
+    assert!(injected_tools.contains(&"jira_create_issue"));
+}
+
+#[test]
+fn no_runtime_grants_leaves_the_allowlist_exactly_as_configured() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    seed_live_agent_yaml(&root, "ralphx-ideation");
+
+    let baseline = build_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "ralphx-ideation",
+        None,
+        false,
+        None,
+    )
+    .expect("baseline config");
+    let empty_extras = runtime_context_with_extra_tools(&[]);
+    let with_empty = build_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "ralphx-ideation",
+        None,
+        false,
+        Some(&empty_extras),
+    )
+    .expect("config with empty extras");
+
+    assert_eq!(
+        allowed_tools_arg_from_mcp_config(&baseline),
+        allowed_tools_arg_from_mcp_config(&with_empty),
+        "an empty grant list must not change the allowlist"
+    );
+    let arg = allowed_tools_arg_from_mcp_config(&with_empty).expect("allowed-tools arg");
+    assert!(
+        !arg.contains("jira_") && !arg.contains("confluence_") && !arg.contains("atlassian_"),
+        "no Atlassian tool may appear without a grant: {arg}"
+    );
+}
+
+#[test]
+fn runtime_grants_emit_the_allowlist_arg_even_when_the_agent_has_no_config() {
+    let (_dir, plugin_dir) = make_temp_plugin_dir();
+
+    let no_extras = build_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "definitely-not-a-canonical-agent",
+        None,
+        false,
+        None,
+    )
+    .expect("config without agent metadata");
+    assert_eq!(
+        allowed_tools_arg_from_mcp_config(&no_extras),
+        None,
+        "absent agent config plus no extras must still skip the arg entirely"
+    );
+
+    let context = runtime_context_with_extra_tools(&["jira_search_issues"]);
+    let with_extras = build_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "definitely-not-a-canonical-agent",
+        None,
+        false,
+        Some(&context),
+    )
+    .expect("config with extras");
+    assert_eq!(
+        allowed_tools_arg_from_mcp_config(&with_extras).as_deref(),
+        Some("--allowed-tools=jira_search_issues")
+    );
+}
+
+#[test]
+fn duplicate_runtime_grants_are_injected_once() {
+    let (_dir, plugin_dir) = make_temp_plugin_dir();
+    let context = runtime_context_with_extra_tools(&[
+        "jira_search_issues",
+        "jira_search_issues",
+        "confluence_get_page",
+    ]);
+
+    let config = build_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "definitely-not-a-canonical-agent",
+        None,
+        false,
+        Some(&context),
+    )
+    .expect("config with duplicate extras");
+
+    assert_eq!(
+        allowed_tools_arg_from_mcp_config(&config).as_deref(),
+        Some("--allowed-tools=jira_search_issues,confluence_get_page")
     );
 }

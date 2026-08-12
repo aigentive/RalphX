@@ -1,4 +1,6 @@
-use crate::domain::agents::{AgentHarnessKind, ManualRoleDefault, ManualServiceTier, RoutingRole};
+use crate::domain::agents::{
+    AgentHarnessKind, AtlassianMcpAccess, ManualRoleDefault, ManualServiceTier, RoutingRole,
+};
 use crate::domain::repositories::ManualRoleDefaultRepository;
 use crate::testing::SqliteTestDb;
 
@@ -20,6 +22,7 @@ fn value(model: &str, tier: ManualServiceTier) -> ManualRoleDefault {
         persona_id: None,
         approval_policy: Some("never".to_string()),
         sandbox_mode: Some("danger-full-access".to_string()),
+        atlassian_access: None,
     }
 }
 
@@ -185,4 +188,76 @@ async fn malformed_persisted_value_fails_closed() {
     });
 
     assert!(repo.get_global(RoutingRole::WorkspaceChat).await.is_err());
+}
+
+#[tokio::test]
+async fn atlassian_access_round_trips_through_value_json() {
+    let (_db, repo) = setup_repo();
+    let mut stored_value = value("gpt-atlassian", ManualServiceTier::ProviderDefault);
+    stored_value.atlassian_access = Some(AtlassianMcpAccess::ReadWrite);
+
+    let stored = repo
+        .upsert_global(RoutingRole::WorkspaceReviewer, &stored_value)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        stored.value.atlassian_access,
+        Some(AtlassianMcpAccess::ReadWrite)
+    );
+
+    let fetched = repo
+        .get_global(RoutingRole::WorkspaceReviewer)
+        .await
+        .unwrap()
+        .expect("row should exist");
+    assert_eq!(
+        fetched.value.atlassian_access,
+        Some(AtlassianMcpAccess::ReadWrite)
+    );
+}
+
+#[tokio::test]
+async fn omitted_atlassian_access_round_trips_as_none() {
+    let (_db, repo) = setup_repo();
+    repo.upsert_global(
+        RoutingRole::WorkspaceChat,
+        &value("gpt-plain", ManualServiceTier::ProviderDefault),
+    )
+    .await
+    .unwrap();
+
+    let fetched = repo
+        .get_global(RoutingRole::WorkspaceChat)
+        .await
+        .unwrap()
+        .expect("row should exist");
+    assert_eq!(fetched.value.atlassian_access, None);
+}
+
+#[test]
+fn legacy_value_json_without_atlassian_access_deserializes() {
+    let legacy = r#"{
+        "harness": "codex",
+        "model": "legacy-model",
+        "serviceTier": "standard",
+        "approvalPolicy": "never",
+        "sandboxMode": "danger-full-access"
+    }"#;
+
+    let parsed = serde_json::from_str::<ManualRoleDefault>(legacy).unwrap();
+    assert_eq!(parsed.model.as_deref(), Some("legacy-model"));
+    assert_eq!(parsed.atlassian_access, None);
+}
+
+#[test]
+fn serialized_value_json_omits_absent_atlassian_access() {
+    let json =
+        serde_json::to_string(&value("gpt-plain", ManualServiceTier::ProviderDefault)).unwrap();
+    assert!(!json.contains("atlassianAccess"), "unexpected key in {json}");
+
+    let mut with_access = value("gpt-plain", ManualServiceTier::ProviderDefault);
+    with_access.atlassian_access = Some(AtlassianMcpAccess::Read);
+    let json = serde_json::to_string(&with_access).unwrap();
+    assert!(json.contains("\"atlassianAccess\":\"read\""), "{json}");
 }

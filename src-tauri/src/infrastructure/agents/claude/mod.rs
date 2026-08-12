@@ -1090,6 +1090,15 @@ fn build_internal_mcp_server_config(
             None => None,
         }
     };
+    // Append runtime-injected role-tiered grants. These extend the canonical
+    // list rather than replacing it, and an absent agent config with extras
+    // present still emits the arg.
+    let validated_tools = append_runtime_mcp_tool_grants(
+        agent_type,
+        validated_tools,
+        mcp_runtime_context,
+        is_external_mcp,
+    );
     if let Some(arg_value) = format_allowed_tools_arg_value(validated_tools.as_deref()) {
         args_vec.push(format!("--allowed-tools={}", arg_value));
     }
@@ -1100,6 +1109,32 @@ fn build_internal_mcp_server_config(
         "command": node_command,
         "args": args_vec,
     })
+}
+
+/// Append the runtime context's additive MCP grants to an agent's canonical
+/// tool list, preserving order and dropping duplicates.
+///
+/// `None` in means "no allowlist arg"; that is preserved only when there are no
+/// extras to inject.
+fn append_runtime_mcp_tool_grants(
+    agent_type: &str,
+    validated_tools: Option<Vec<String>>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+    is_external_mcp: bool,
+) -> Option<Vec<String>> {
+    let extras = mcp_runtime_context
+        .map(|context| context.extra_allowed_mcp_tools.as_slice())
+        .unwrap_or_default();
+    if extras.is_empty() {
+        return validated_tools;
+    }
+    let mut tools = validated_tools.unwrap_or_default();
+    for tool in validated_mcp_tools(agent_type, extras, is_external_mcp) {
+        if !tools.contains(&tool) {
+            tools.push(tool);
+        }
+    }
+    Some(tools)
 }
 
 fn validated_mcp_tools(agent_type: &str, tools: &[String], is_external_mcp: bool) -> Vec<String> {
