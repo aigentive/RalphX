@@ -221,6 +221,7 @@ mod provider_onboarding_gate_tests;
 pub mod provider_session_fork;
 pub mod prune_engine;
 pub mod publish_resilience;
+pub mod publish_resilience_repair_effects;
 pub mod pull_request_detail;
 pub mod qa_service;
 pub mod question_state;
