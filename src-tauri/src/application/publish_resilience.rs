@@ -75,6 +75,13 @@ pub struct PublishBranchFreshnessStatus {
     pub captured_base_commit: Option<String>,
     pub target_base_commit: String,
     pub is_base_ahead: bool,
+    /// Whether the source branch provably contains `target_base_commit`.
+    ///
+    /// This is a positive ancestry proof, not the inverse of `is_base_ahead`: a conflict-routed
+    /// attempt can record the freshly observed origin tip as its captured base, which makes
+    /// `is_base_ahead` false while the branch has never merged that tip. Constructors with no
+    /// ancestry evidence must report `false`, so an unknown state fails closed.
+    pub source_contains_target_base: bool,
 }
 
 /// The exact local/remote postconditions established by a repair-owned push. The normal
@@ -976,7 +983,7 @@ async fn block_agent_workspace_repair_pr_handoff(
     Ok(())
 }
 
-async fn has_authoritative_observed_agent_workspace_repair_push(
+pub(crate) async fn has_authoritative_observed_agent_workspace_repair_push(
     state: &AppState,
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> AppResult<bool> {
@@ -2071,6 +2078,8 @@ pub(crate) async fn verify_agent_workspace_repair_pr_handoff(
             captured_base_commit: Some(handoff.target_base_commit.clone()),
             target_base_commit,
             is_base_ahead: false,
+            // The verified push receipt above is the ancestry evidence for this path.
+            source_contains_target_base: true,
         },
     ))
 }
@@ -2117,6 +2126,8 @@ pub fn publish_branch_freshness_status_from_commits(
         captured_base_commit,
         target_base_commit: target_base_commit.to_string(),
         is_base_ahead,
+        // This constructor has no ancestry input, so it must never assert integration.
+        source_contains_target_base: false,
     }
 }
 
@@ -2132,6 +2143,7 @@ pub fn publish_branch_freshness_status_from_commits_and_branch(
             captured_base_commit: Some(target_base_commit.to_string()),
             target_base_commit: target_base_commit.to_string(),
             is_base_ahead: false,
+            source_contains_target_base: true,
         };
     }
 
@@ -2215,6 +2227,16 @@ pub fn verify_agent_workspace_repair_completion(
     if check.freshness_status.is_base_ahead {
         return Err(format!(
             "workspace branch is still behind {} at {}",
+            check.freshness_status.target_ref, check.freshness_status.target_base_commit
+        ));
+    }
+
+    // `is_base_ahead` compares captured against target, so it cannot see a conflict-routed attempt
+    // whose captured base is the observed tip the branch never merged. Require the positive
+    // ancestry proof, which is absent by default whenever the status carried no ancestry evidence.
+    if !check.freshness_status.source_contains_target_base {
+        return Err(format!(
+            "workspace branch does not contain base {} at {}",
             check.freshness_status.target_ref, check.freshness_status.target_base_commit
         ));
     }

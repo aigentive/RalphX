@@ -387,7 +387,7 @@ fn apply_compatibility_projection(
              pr_supervision_summary = ?4,
              pr_supervision_updated_at = ?5,
              pr_auto_merge_current = ?6,
-             base_commit = ?7,
+             base_commit = COALESCE(?7, base_commit),
              pr_autofix_enabled = COALESCE(?8, pr_autofix_enabled),
              pr_auto_merge_desired = COALESCE(?9, pr_auto_merge_desired),
              updated_at = ?10
