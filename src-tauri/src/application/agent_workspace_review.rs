@@ -2166,6 +2166,33 @@ where
                         elapsed_ms = wait_started.elapsed().as_millis(),
                         "Failed to poll workspace Review child chat run"
                     );
+                    // The wall-clock cap must hold even when the run row is unreadable.
+                    // Idle is meaningless without a run, so only the unconditional cap fires here.
+                    // No stop_agent: with the run row unreadable there is no verified child to stop,
+                    // and stopping blind would re-open the "stopped by user" error overwrite.
+                    if wait_started.elapsed() >= deadlines.max_wall_clock {
+                        warn!(
+                            target: WORKSPACE_REVIEW_LOG_TARGET,
+                            operation = "child_chat_deadline_tripped",
+                            conversation_id = %workspace.conversation_id,
+                            project_id = %workspace.project_id,
+                            branch = %workspace.branch_name,
+                            run_id = %run_id,
+                            deadline = WorkspaceReviewDeadlineKind::WallClock.as_str(),
+                            elapsed_ms = wait_started.elapsed().as_millis(),
+                            target_scope = %target.scope,
+                            "Workspace Review deadline tripped on run-poll error; failing the gate"
+                        );
+                        mark_workspace_review_blocked(
+                            &state,
+                            &workspace,
+                            &target,
+                            &run_id,
+                            WORKSPACE_REVIEW_ERR_TIMED_OUT_NO_REVIEW.to_string(),
+                        )
+                        .await;
+                        return;
+                    }
                     sleep(Duration::from_millis(WORKSPACE_REVIEW_RUN_POLL_INTERVAL_MS)).await;
                     continue;
                 }

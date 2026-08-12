@@ -3621,6 +3621,244 @@ async fn workspace_review_waiter_treats_failed_liveness_read_as_active() {
     handle.abort();
 }
 
+/// Wraps the memory agent-run repo and fails `get_by_id` while `should_fail` is set,
+/// letting setup writes through before the flag is raised.
+struct FailingAgentRunRepository {
+    inner: Arc<crate::infrastructure::memory::MemoryAgentRunRepository>,
+    should_fail: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl crate::domain::repositories::AgentRunRepository for FailingAgentRunRepository {
+    async fn create(
+        &self,
+        run: crate::domain::entities::AgentRun,
+    ) -> crate::error::AppResult<crate::domain::entities::AgentRun> {
+        self.inner.create(run).await
+    }
+
+    async fn get_by_id(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+    ) -> crate::error::AppResult<Option<crate::domain::entities::AgentRun>> {
+        if self.should_fail.load(std::sync::atomic::Ordering::SeqCst) {
+            Err(crate::error::AppError::Infrastructure(
+                "simulated run-repo read failure".to_string(),
+            ))
+        } else {
+            self.inner.get_by_id(id).await
+        }
+    }
+
+    async fn get_latest_for_conversation(
+        &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+    ) -> crate::error::AppResult<Option<crate::domain::entities::AgentRun>> {
+        self.inner.get_latest_for_conversation(conversation_id).await
+    }
+
+    async fn get_active_for_conversation(
+        &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+    ) -> crate::error::AppResult<Option<crate::domain::entities::AgentRun>> {
+        self.inner.get_active_for_conversation(conversation_id).await
+    }
+
+    async fn get_by_conversation(
+        &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+    ) -> crate::error::AppResult<Vec<crate::domain::entities::AgentRun>> {
+        self.inner.get_by_conversation(conversation_id).await
+    }
+
+    async fn update_status(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+        status: crate::domain::entities::AgentRunStatus,
+    ) -> crate::error::AppResult<()> {
+        self.inner.update_status(id, status).await
+    }
+
+    async fn update_usage(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+        usage: &crate::domain::entities::AgentRunUsage,
+    ) -> crate::error::AppResult<()> {
+        self.inner.update_usage(id, usage).await
+    }
+
+    async fn update_attribution(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+        attribution: &crate::domain::entities::AgentRunAttribution,
+    ) -> crate::error::AppResult<()> {
+        self.inner.update_attribution(id, attribution).await
+    }
+
+    async fn complete(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+    ) -> crate::error::AppResult<()> {
+        self.inner.complete(id).await
+    }
+
+    async fn complete_if_prune_cancelled(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+    ) -> crate::error::AppResult<bool> {
+        self.inner.complete_if_prune_cancelled(id).await
+    }
+
+    async fn fail(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+        error_message: &str,
+    ) -> crate::error::AppResult<()> {
+        self.inner.fail(id, error_message).await
+    }
+
+    async fn cancel(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+    ) -> crate::error::AppResult<()> {
+        self.inner.cancel(id).await
+    }
+
+    async fn cancel_with_reason(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+        reason: &str,
+    ) -> crate::error::AppResult<()> {
+        self.inner.cancel_with_reason(id, reason).await
+    }
+
+    async fn delete(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+    ) -> crate::error::AppResult<()> {
+        self.inner.delete(id).await
+    }
+
+    async fn delete_by_conversation(
+        &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+    ) -> crate::error::AppResult<()> {
+        self.inner.delete_by_conversation(conversation_id).await
+    }
+
+    async fn count_by_status(
+        &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+        status: crate::domain::entities::AgentRunStatus,
+    ) -> crate::error::AppResult<u32> {
+        self.inner.count_by_status(conversation_id, status).await
+    }
+
+    async fn cancel_all_running(&self) -> crate::error::AppResult<u32> {
+        self.inner.cancel_all_running().await
+    }
+
+    async fn cancel_running_started_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> crate::error::AppResult<u32> {
+        self.inner.cancel_running_started_before(cutoff).await
+    }
+
+    async fn get_interrupted_conversations(
+        &self,
+    ) -> crate::error::AppResult<Vec<crate::domain::entities::InterruptedConversation>> {
+        self.inner.get_interrupted_conversations().await
+    }
+}
+
+/// Proof Obligation 5 (run-poll error path): a sustained `get_by_id` failure must not leave the
+/// waiter task running forever — the wall-clock cap must still fire and exit. Idle is not evaluated
+/// on this path. No `stop_agent` call because the run row is unreadable.
+#[tokio::test]
+async fn workspace_review_waiter_exits_and_fails_gate_when_run_poll_errors_past_wall_clock() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let inner_run_repo =
+        Arc::new(crate::infrastructure::memory::MemoryAgentRunRepository::new());
+    let should_fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let mut state = AppState::new_test();
+    state.agent_run_repo = Arc::new(FailingAgentRunRepository {
+        inner: Arc::clone(&inner_run_repo),
+        should_fail: Arc::clone(&should_fail),
+    });
+    let state = Arc::new(state);
+
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load");
+    let target = context.target.expect("target should exist");
+
+    let child_conversation_id = ChatConversationId::new();
+    let mut run = AgentRun::new(child_conversation_id.clone());
+    run.started_at = Utc::now() - chrono::Duration::seconds(3_600);
+    let run_id = run.id.as_str().to_string();
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("running reviewer run should persist");
+
+    let mut reviewing_monitor = context.monitor.clone();
+    apply_current_target_to_monitor(&mut reviewing_monitor, Some(&target));
+    reviewing_monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    reviewing_monitor.review_conversation_id = Some(child_conversation_id.clone());
+    reviewing_monitor.last_run_id = Some(run_id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(reviewing_monitor)
+        .await
+        .expect("reviewing monitor should persist");
+
+    // All get_by_id calls now fail — this is the sustained read failure the fold-in fixes.
+    should_fail.store(true, Ordering::SeqCst);
+
+    let chat_service = Arc::new(MockChatService::new());
+    let handle = spawn_workspace_review_waiter_with_chat_service(
+        Arc::clone(&state),
+        workspace.clone(),
+        target.clone(),
+        run_id.clone(),
+        WorkspaceReviewWaiterDeadlines {
+            idle_timeout: Duration::from_secs(60),
+            max_wall_clock: Duration::from_millis(150),
+            completion_grace: Duration::from_millis(50),
+        },
+        Arc::clone(&chat_service),
+    );
+    handle.await.expect("waiter should complete");
+
+    let monitor = read_monitor(&state, &workspace).await;
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        monitor.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        monitor.last_error.as_deref(),
+        Some(WORKSPACE_REVIEW_ERR_TIMED_OUT_NO_REVIEW)
+    );
+    assert!(
+        chat_service.get_stop_agent_calls().await.is_empty(),
+        "stop_agent must not be called when the run row is unreadable"
+    );
+}
+
 /// Wraps the memory workspace repo and fails `get_workspace_review_monitor` while `should_fail`
 /// is set, letting setup writes through before the flag is raised.
 struct FailingMonitorReadRepository {
