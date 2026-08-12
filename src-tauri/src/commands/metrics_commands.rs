@@ -86,6 +86,16 @@ impl Default for MetricsConfig {
 /// Called by the transition handler on every task state exit so the next
 /// popover open always reflects the latest data.
 /// Clears all week_start_day variants of the cache key.
+/// Wire the command-layer stats caches into the domain invalidation port.
+///
+/// Called once from the composition root, before the startup pipeline can run
+/// any transition, so no state change is missed.
+pub fn register_stats_cache_invalidator() {
+    crate::domain::services::project_stats_invalidation::register_project_stats_invalidator(
+        std::sync::Arc::new(invalidate_project_stats_cache),
+    );
+}
+
 pub fn invalidate_project_stats_cache(project_id: &str) {
     let prefix = format!("project:{}:", project_id);
     STATS_CACHE.retain(|k, _| !k.starts_with(&prefix));

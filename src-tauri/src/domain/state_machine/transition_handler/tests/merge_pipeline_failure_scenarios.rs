@@ -29,7 +29,7 @@ use crate::domain::state_machine::{State, TransitionHandler};
 fn make_services_with_execution_state(
     task_repo: Arc<MemoryTaskRepository>,
     project_repo: Arc<MemoryProjectRepository>,
-    execution_state: Arc<crate::commands::ExecutionState>,
+    execution_state: Arc<crate::application::execution_state::ExecutionState>,
 ) -> TaskServices {
     TaskServices::new(
         Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
@@ -177,7 +177,7 @@ async fn test_rc2_merge_runs_and_succeeds_with_agents_active() {
     project_repo.create(project).await.unwrap();
 
     // Simulate the TOCTOU window: another task's agent is running concurrently
-    let execution_state = Arc::new(crate::commands::ExecutionState::new());
+    let execution_state = Arc::new(crate::application::execution_state::ExecutionState::new());
     execution_state.increment_running(); // running_count = 1
 
     let services = make_services_with_execution_state(

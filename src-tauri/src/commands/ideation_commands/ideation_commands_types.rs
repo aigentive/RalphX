@@ -4,11 +4,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::domain::entities::{
-    DependencyGraph, IdeationAnalysisBaseRefKind, IdeationSession, TaskProposal,
+    DependencyGraph, IdeationAnalysisBaseRefKind, IdeationSession,
 };
 
 // Re-export shared ChatMessageResponse
 pub use crate::commands::chat_responses::ChatMessageResponse;
+
+// Re-export types that descended to application/ideation_apply_service
+pub use crate::application::ideation_apply_service::{ApplyProposalsResult, TaskProposalResponse};
 
 // ============================================================================
 // Session Types
@@ -272,92 +275,6 @@ pub struct UpdateProposalInput {
     pub add_blocks: Vec<String>,
 }
 
-/// Response for TaskProposal
-#[derive(Debug, Serialize)]
-pub struct TaskProposalResponse {
-    pub id: String,
-    pub session_id: String,
-    pub title: String,
-    pub description: Option<String>,
-    pub category: String,
-    pub steps: Vec<String>,
-    pub acceptance_criteria: Vec<String>,
-    pub affected_paths: Vec<String>,
-    pub suggested_priority: String,
-    pub priority_score: i32,
-    pub priority_reason: Option<String>,
-    pub estimated_complexity: String,
-    pub user_priority: Option<String>,
-    pub user_modified: bool,
-    pub status: String,
-    pub selected: bool,
-    pub created_task_id: Option<String>,
-    pub plan_artifact_id: Option<String>,
-    pub plan_version_at_creation: Option<u32>,
-    pub blueprint_artifact_id: Option<String>,
-    pub blueprint_version_at_creation: Option<u32>,
-    pub sort_order: i32,
-    pub created_at: String,
-    pub updated_at: String,
-    /// Optional target project ID for cross-project proposals
-    pub target_project: Option<String>,
-    /// Partial failure contract: non-fatal dependency errors encountered during create/update
-    #[serde(default)]
-    pub dependency_errors: Vec<String>,
-    /// Whether the auto-accept pipeline was triggered for this session
-    pub auto_accept_triggered: bool,
-}
-
-impl From<TaskProposal> for TaskProposalResponse {
-    fn from(proposal: TaskProposal) -> Self {
-        // Parse JSON strings to Vec<String>, defaulting to empty vec
-        let steps: Vec<String> = proposal
-            .steps
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        let acceptance_criteria: Vec<String> = proposal
-            .acceptance_criteria
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        let affected_paths: Vec<String> = proposal
-            .affected_paths
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-
-        Self {
-            id: proposal.id.as_str().to_string(),
-            session_id: proposal.session_id.as_str().to_string(),
-            title: proposal.title,
-            description: proposal.description,
-            category: proposal.category.to_string(),
-            steps,
-            acceptance_criteria,
-            affected_paths,
-            suggested_priority: proposal.suggested_priority.to_string(),
-            priority_score: proposal.priority_score,
-            priority_reason: proposal.priority_reason,
-            estimated_complexity: proposal.estimated_complexity.to_string(),
-            user_priority: proposal.user_priority.map(|p| p.to_string()),
-            user_modified: proposal.user_modified,
-            status: proposal.status.to_string(),
-            selected: proposal.selected,
-            created_task_id: proposal.created_task_id.map(|id| id.as_str().to_string()),
-            plan_artifact_id: proposal.plan_artifact_id.map(|id| id.as_str().to_string()),
-            plan_version_at_creation: proposal.plan_version_at_creation,
-            blueprint_artifact_id: proposal
-                .blueprint_artifact_id
-                .map(|id| id.as_str().to_string()),
-            blueprint_version_at_creation: proposal.blueprint_version_at_creation,
-            sort_order: proposal.sort_order,
-            created_at: proposal.created_at.to_rfc3339(),
-            updated_at: proposal.updated_at.to_rfc3339(),
-            target_project: proposal.target_project.clone(),
-            dependency_errors: Vec::new(),
-            auto_accept_triggered: false,
-        }
-    }
-}
-
 /// Response for priority assessment
 #[derive(Debug, Serialize)]
 pub struct PriorityAssessmentResponse {
@@ -429,45 +346,6 @@ impl From<DependencyGraph> for DependencyGraphResponse {
             }),
         }
     }
-}
-
-/// Input for apply proposals
-#[derive(Debug, Deserialize)]
-pub struct ApplyProposalsInput {
-    pub session_id: String,
-    pub proposal_ids: Vec<String>,
-    pub target_column: String,
-    /// Per-plan override for base branch (None = use project default)
-    #[serde(default)]
-    pub base_branch_override: Option<String>,
-}
-
-/// Core result of apply proposals — transport-agnostic, usable from Tauri IPC and HTTP contexts.
-///
-/// Contains all information produced by [`apply_proposals_core`], plus context fields required
-/// by Tauri-specific side effects (scheduler trigger, session namer).
-#[derive(Debug)]
-pub struct ApplyProposalsResult {
-    pub created_task_ids: Vec<String>,
-    /// Number of proposal-to-proposal dependency edges created (excludes merge task edges).
-    pub dependencies_created: usize,
-    /// Number of plan tasks created (excludes the auto-generated merge task).
-    pub tasks_created: usize,
-    /// Human-readable summary of the finalization result.
-    pub message: Option<String>,
-    pub warnings: Vec<String>,
-    pub session_converted: bool,
-    pub execution_plan_id: Option<String>,
-    /// Project ID — for Tauri `emit_queue_changed` and HTTP scope validation.
-    pub project_id: String,
-    /// Session ID — for Tauri session namer re-trigger.
-    pub session_id: String,
-    /// Whether any tasks were set to Ready status — triggers Tauri scheduler.
-    pub any_ready_tasks: bool,
-    /// Whether the session title was set by the user — suppresses session namer.
-    pub is_user_title: bool,
-    /// Applied proposal titles — context for session namer prompt.
-    pub proposal_titles: Vec<String>,
 }
 
 /// Response for apply proposals

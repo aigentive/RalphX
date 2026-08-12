@@ -8,7 +8,7 @@ use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata,
 };
 use crate::application::{AppState, TaskTransitionService};
-use crate::commands::execution_commands::{ActiveProjectState, ExecutionState};
+use crate::application::execution_state::{ActiveProjectState, ExecutionState};
 use crate::domain::entities::app_state::ExecutionHaltMode;
 use crate::domain::entities::ideation::{IdeationSessionFlow, IdeationSessionStatus};
 use crate::domain::entities::{

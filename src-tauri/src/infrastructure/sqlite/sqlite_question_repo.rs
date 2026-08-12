@@ -6,7 +6,7 @@ use rusqlite::Connection;
 use serde_json::Value;
 
 use super::DbConnection;
-use crate::application::question_state::{PendingQuestionInfo, QuestionAnswer, QuestionOption};
+use crate::domain::entities::question_request::{PendingQuestionInfo, QuestionAnswer, QuestionOption};
 use crate::domain::repositories::question_repository::QuestionRepository;
 use crate::error::{AppError, AppResult};
 

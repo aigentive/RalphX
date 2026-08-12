@@ -327,7 +327,7 @@ The `RALPHX_AGENT_TYPE` env var enables server-side tool filtering in `tools.ts`
 | `config/ralphx.yaml` | Shared runtime compatibility config |
 | `src-tauri/src/infrastructure/agents/claude/agent_config/mod.rs` | YAML parsing, config resolution, tool allowlist generation |
 | `src-tauri/src/infrastructure/agents/claude/mod.rs` | CLI command building, MCP config generation |
-| `src-tauri/src/infrastructure/agents/spawner.rs` | State machine → agent spawn orchestration |
+| `src-tauri/src/application/agents/spawner.rs` | State machine → agent spawn orchestration |
 | `src-tauri/src/domain/agents/types.rs` | Domain agent types (AgentConfig, AgentRole) |
 | `plugins/app/ralphx-mcp-server/src/tools.ts` | Server-side MCP tool registry composition and filtering facade |
 | `agents/*/agent.yaml` + prompt files | Canonical agent definitions and prompt bodies |

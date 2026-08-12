@@ -18,6 +18,7 @@ EXPECTED_TEST_UTILS_TARGETS = {
     "suite_ideation",
     "suite_ipc_commands",
     "suite_transition_git",
+    "tauri_events",
 }
 
 
