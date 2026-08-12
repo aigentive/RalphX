@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use hyper::Method;
 use serde_json::{json, Value};
 
+use crate::domain::integrations::AtlassianApiError;
+
 use super::atlassian_client::{
     AtlassianAuthContext, AtlassianCredential, AtlassianJsonRequester, RequestAuth,
 };
@@ -40,7 +42,7 @@ impl AtlassianJsonRequester for FakeRequester {
         url: String,
         _auth: RequestAuth<'_>,
         _body: Option<Value>,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, AtlassianApiError> {
         assert_eq!(method, Method::GET);
         self.requests.lock().expect("requests").push(url);
         self.responses
@@ -48,6 +50,7 @@ impl AtlassianJsonRequester for FakeRequester {
             .expect("responses")
             .pop_front()
             .unwrap_or_else(|| Err("unexpected Atlassian request".to_string()))
+            .map_err(AtlassianApiError::transport)
     }
 }
 

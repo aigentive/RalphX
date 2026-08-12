@@ -2,8 +2,8 @@ use std::fs;
 use std::sync::Arc;
 
 use crate::domain::agents::{
-    AgentHarnessKind, AgentLane, AgentLaneSettings, AgentProviderSettings, ManualRoleDefault,
-    ManualServiceTier, RoutingRole,
+    AgentHarnessKind, AgentLane, AgentLaneSettings, AgentProviderSettings, AtlassianMcpAccess,
+    ManualRoleDefault, ManualServiceTier, RoutingRole,
 };
 use crate::domain::entities::CoordinationMode;
 use crate::domain::entities::PersonaId;
@@ -27,6 +27,7 @@ fn exact(model: &str) -> ManualRoleDefault {
         persona_id: None,
         approval_policy: Some("never".to_string()),
         sandbox_mode: Some("danger-full-access".to_string()),
+        atlassian_access: None,
     }
 }
 
@@ -339,4 +340,104 @@ fn validate_role_value_rejects_unsupported_manual_controls() {
     .unwrap_err()
     .to_string()
     .contains("Persona is not supported"));
+}
+
+#[tokio::test]
+async fn atlassian_access_falls_back_to_the_built_in_role_default() {
+    let global_root = tempfile::tempdir().unwrap();
+    let (service, _repo, _lane_repo) = service(global_root.path().join("router.yaml"));
+
+    // No rows at all: built-in defaults apply.
+    assert_eq!(
+        service
+            .resolve_atlassian_access(None, None, RoutingRole::WorkspaceEdit)
+            .await
+            .unwrap(),
+        AtlassianMcpAccess::ReadWrite
+    );
+    assert_eq!(
+        service
+            .resolve_atlassian_access(None, None, RoutingRole::WorkspaceReviewer)
+            .await
+            .unwrap(),
+        AtlassianMcpAccess::Read
+    );
+}
+
+#[tokio::test]
+async fn explicit_atlassian_access_override_wins_over_the_built_in_default() {
+    let global_root = tempfile::tempdir().unwrap();
+    let (service, repo, _lane_repo) = service(global_root.path().join("router.yaml"));
+    let mut value = exact("codex-model");
+    value.atlassian_access = Some(AtlassianMcpAccess::None);
+    repo.upsert_for_project("project-1", RoutingRole::WorkspaceEdit, &value)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        service
+            .resolve_atlassian_access(Some("project-1"), None, RoutingRole::WorkspaceEdit)
+            .await
+            .unwrap(),
+        AtlassianMcpAccess::None
+    );
+}
+
+#[tokio::test]
+async fn project_row_omitting_atlassian_access_uses_the_built_in_default_not_the_global_row() {
+    let global_root = tempfile::tempdir().unwrap();
+    let (service, repo, _lane_repo) = service(global_root.path().join("router.yaml"));
+
+    let mut global_value = exact("global-model");
+    global_value.atlassian_access = Some(AtlassianMcpAccess::None);
+    repo.upsert_global(RoutingRole::WorkspaceEdit, &global_value)
+        .await
+        .unwrap();
+
+    // The project row wins as a whole row; omitting the field does NOT inherit
+    // the global row's `None` tier.
+    repo.upsert_for_project(
+        "project-1",
+        RoutingRole::WorkspaceEdit,
+        &exact("project-model"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        service
+            .resolve_atlassian_access(Some("project-1"), None, RoutingRole::WorkspaceEdit)
+            .await
+            .unwrap(),
+        AtlassianMcpAccess::ReadWrite,
+        "row-wins: project row falls back to the built-in default"
+    );
+    assert_eq!(
+        service
+            .resolve_atlassian_access(None, None, RoutingRole::WorkspaceEdit)
+            .await
+            .unwrap(),
+        AtlassianMcpAccess::None,
+        "global row still supplies its own explicit tier"
+    );
+}
+
+#[tokio::test]
+async fn router_yaml_can_express_atlassian_access() {
+    let global_root = tempfile::tempdir().unwrap();
+    let global_path = global_root.path().join("router.yaml");
+    fs::write(
+        &global_path,
+        "manual:\n  defaults:\n    roles:\n      workspace_reviewer:\n        provider: codex\n        atlassian_access: read_write\n",
+    )
+    .unwrap();
+    let (service, _repo, _lane_repo) = service(global_path);
+
+    assert_eq!(
+        service
+            .resolve_atlassian_access(None, None, RoutingRole::WorkspaceReviewer)
+            .await
+            .unwrap(),
+        AtlassianMcpAccess::ReadWrite
+    );
 }
