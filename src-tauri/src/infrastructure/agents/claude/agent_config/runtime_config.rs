@@ -345,6 +345,12 @@ pub struct StreamTimeoutsConfig {
     pub execution_attempt_start_tolerance_secs: u64,
     #[serde(default = "default_desktop_notification_coalesce_window_secs")]
     pub desktop_notification_coalesce_window_secs: u64,
+    #[serde(default = "default_desktop_notification_max_click_waits")]
+    pub desktop_notification_max_click_waits: usize,
+    #[serde(default = "default_desktop_notification_click_wait_ttl_secs")]
+    pub desktop_notification_click_wait_ttl_secs: u64,
+    #[serde(default = "default_desktop_notification_reap_interval_secs")]
+    pub desktop_notification_reap_interval_secs: u64,
     #[serde(default = "default_notification_retention_read_days")]
     pub notification_retention_read_days: u64,
     #[serde(default = "default_notification_retention_max_rows")]
@@ -413,6 +419,18 @@ fn default_execution_attempt_start_tolerance_secs() -> u64 {
 
 fn default_desktop_notification_coalesce_window_secs() -> u64 {
     DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS
+}
+
+fn default_desktop_notification_max_click_waits() -> usize {
+    3
+}
+
+fn default_desktop_notification_click_wait_ttl_secs() -> u64 {
+    900
+}
+
+fn default_desktop_notification_reap_interval_secs() -> u64 {
+    60
 }
 
 fn default_notification_retention_read_days() -> u64 {
@@ -487,6 +505,11 @@ impl Default for StreamTimeoutsConfig {
             execution_attempt_start_tolerance_secs: 1,
             desktop_notification_coalesce_window_secs:
                 DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS,
+            desktop_notification_max_click_waits: default_desktop_notification_max_click_waits(),
+            desktop_notification_click_wait_ttl_secs:
+                default_desktop_notification_click_wait_ttl_secs(),
+            desktop_notification_reap_interval_secs:
+                default_desktop_notification_reap_interval_secs(),
             notification_retention_read_days: DEFAULT_NOTIFICATION_RETENTION_READ_DAYS,
             notification_retention_max_rows: DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS,
             chat_payload_retention_enabled: default_chat_payload_retention_enabled(),
@@ -1112,6 +1135,19 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.stream.desktop_notification_coalesce_window_secs,
         "RALPHX_STREAM_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS"
+    );
+    if let Some(value) = lookup("RALPHX_STREAM_DESKTOP_NOTIFICATION_MAX_CLICK_WAITS") {
+        if let Ok(max_click_waits) = value.parse::<usize>() {
+            cfg.stream.desktop_notification_max_click_waits = max_click_waits;
+        }
+    }
+    env_u64!(
+        cfg.stream.desktop_notification_click_wait_ttl_secs,
+        "RALPHX_STREAM_DESKTOP_NOTIFICATION_CLICK_WAIT_TTL_SECS"
+    );
+    env_u64!(
+        cfg.stream.desktop_notification_reap_interval_secs,
+        "RALPHX_STREAM_DESKTOP_NOTIFICATION_REAP_INTERVAL_SECS"
     );
     env_u64!(
         cfg.stream.notification_retention_read_days,
