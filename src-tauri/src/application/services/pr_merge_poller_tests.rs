@@ -12530,6 +12530,7 @@ async fn base_parity_transient_shape_repeat_poll_short_circuits_then_reenters_on
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
         chat_second.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        Some(&health_a),
     )
     .await
     .expect("unchanged classification poll should complete");
