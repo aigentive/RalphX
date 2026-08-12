@@ -1,4 +1,16 @@
-use crate::domain::services::github_service::{PrHealth, PrHealthCheck};
+use std::path::Path;
+use std::sync::Arc;
+
+use crate::domain::entities::AgentWorkspaceRepairAttempt;
+use crate::domain::repositories::{AgentWorkspaceRepairRepository, BranchUpdateRepository};
+use crate::domain::services::github_service::{GithubServiceTrait, PrHealth, PrHealthCheck};
+use crate::error::{AppError, AppResult};
+
+use super::agent_workspace_publish_repair_state::{
+    block_agent_workspace_repair_completion, reserve_agent_workspace_ci_await,
+    reserve_agent_workspace_ci_rerun, AgentWorkspaceRepairTransitionOutcome,
+    MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES,
+};
 
 /// A check conclusion that ends a job without success.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,7 +117,11 @@ impl CiHoldIdentity {
 pub(crate) enum TransientCiPlan {
     MissingHead,
     NoObservedFailure,
-    /// Formatted `name (conclusion)` strings for the rejection message.
+    /// Formatted `name (conclusion)` strings for the rejection message. Run-scoped: a
+    /// deterministic conclusion inside a workflow run that also has a transient
+    /// (`cancelled`/`timed_out`/`startup_failure`) sibling does not veto here — that run
+    /// is treated as poisoned infrastructure and its deterministic check is excluded, so
+    /// only checks in runs with no transient sibling ever land in this variant.
     DeterministicFailures(Vec<String>),
     AwaitRuns(CiHoldIdentity),
     Rerun {
@@ -124,28 +140,6 @@ pub(crate) fn transient_ci_rerun_plan(health: &PrHealth) -> TransientCiPlan {
         return TransientCiPlan::MissingHead;
     };
 
-    let deterministic_failures = health
-        .checks
-        .iter()
-        .filter(|check| {
-            check
-                .conclusion
-                .as_deref()
-                .and_then(classify_check_conclusion)
-                == Some(CiFailureKind::Deterministic)
-        })
-        .map(|check| {
-            format!(
-                "{} ({})",
-                check.name,
-                check.conclusion.as_deref().unwrap_or_default()
-            )
-        })
-        .collect::<Vec<_>>();
-    if !deterministic_failures.is_empty() {
-        return TransientCiPlan::DeterministicFailures(deterministic_failures);
-    }
-
     let mut transient_run_ids = health
         .checks
         .iter()
@@ -160,6 +154,30 @@ pub(crate) fn transient_ci_rerun_plan(health: &PrHealth) -> TransientCiPlan {
         .collect::<Vec<_>>();
     transient_run_ids.sort_unstable();
     transient_run_ids.dedup();
+
+    let deterministic_failures = health
+        .checks
+        .iter()
+        .filter(|check| {
+            check
+                .conclusion
+                .as_deref()
+                .and_then(classify_check_conclusion)
+                == Some(CiFailureKind::Deterministic)
+        })
+        .filter(|check| workflow_run_id(check).is_none_or(|id| !transient_run_ids.contains(&id)))
+        .map(|check| {
+            format!(
+                "{} ({})",
+                check.name,
+                check.conclusion.as_deref().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>();
+    if !deterministic_failures.is_empty() {
+        return TransientCiPlan::DeterministicFailures(deterministic_failures);
+    }
+
     if transient_run_ids.is_empty() {
         return TransientCiPlan::NoObservedFailure;
     }
@@ -208,4 +226,264 @@ pub(crate) fn ci_rerun_hold_still_pending(health: &PrHealth, fingerprint: Option
     }
 
     false
+}
+
+/// Typed settlement of [`execute_transient_ci_rerun`]. Every variant already carries the exact
+/// message an HTTP adapter renders, so the durable classification/reservation/triage sequence
+/// stays the single source of truth for those strings instead of duplicating them per caller.
+#[derive(Debug)]
+pub(crate) enum TransientCiRerunOutcome {
+    /// The GitHub health reload itself failed; distinct from the other variants because callers
+    /// historically surface this as a different HTTP status than a durable-state settlement.
+    HealthFetchFailed(AppError),
+    Rejected(String),
+    Blocked(String),
+    RerunPending(String),
+    /// A reservation CAS observed a stale or missing durable attempt. Callers that need the full
+    /// current-authority projection must re-derive it themselves; this function only reports that
+    /// the caller's exact generation is no longer current.
+    ReservationStale,
+}
+
+/// Runs the durable transient-CI-rerun sequence: reload PR health, classify it, reserve the
+/// matching durable state, and (for a `Rerun` classification) request the GitHub reruns and
+/// triage any request-level errors. Parameterized by repos and the GitHub service so both the
+/// repair-completion HTTP boundary and a direct user-initiated rerun command share one
+/// implementation instead of re-deriving this sequence.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_transient_ci_rerun(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    branch_update_repo: Arc<dyn BranchUpdateRepository>,
+    github: Arc<dyn GithubServiceTrait>,
+    attempt: AgentWorkspaceRepairAttempt,
+    working_dir: &Path,
+    pr_number: i64,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+    what_happened: Option<&str>,
+    what_i_did: Option<&str>,
+) -> AppResult<TransientCiRerunOutcome> {
+    let health = match github.fetch_pr_health(working_dir, pr_number).await {
+        Ok(health) => health,
+        Err(error) => return Ok(TransientCiRerunOutcome::HealthFetchFailed(error)),
+    };
+
+    match transient_ci_rerun_plan(&health) {
+        TransientCiPlan::MissingHead => Ok(TransientCiRerunOutcome::Rejected(
+            "RalphX could not read the current PR head from fresh GitHub health, so it cannot verify a transient CI classification. Re-check PR health and either fix the failure or report a blocker.".to_string(),
+        )),
+        TransientCiPlan::NoObservedFailure => {
+            block_transient_ci_rerun_outcome(
+                repair_repo,
+                branch_update_repo,
+                attempt,
+                summary,
+                "RalphX could not identify a failed GitHub Actions run from fresh PR health.",
+                auto_merge_current,
+                what_happened,
+                what_i_did,
+            )
+            .await
+        }
+        TransientCiPlan::DeterministicFailures(checks) => Ok(TransientCiRerunOutcome::Rejected(format!(
+            "Rejected `transient_ci`: PR health still reports real failing checks at the current head: {}. Rerunning cannot clear them. Fix the failure and complete with `fixed`, or classify `pre_existing_on_base` / `needs_human`.",
+            checks.join(", ")
+        ))),
+        TransientCiPlan::AwaitRuns(hold) => {
+            await_transient_ci_runs_outcome(
+                repair_repo,
+                attempt,
+                summary,
+                &hold,
+                "RalphX is waiting for the in-progress GitHub Actions run to finish before rerunning it.",
+                auto_merge_current,
+                what_happened,
+                what_i_did,
+            )
+            .await
+        }
+        TransientCiPlan::Rerun { run_ids, hold } => {
+            if attempt.ci_rerun_count >= MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES {
+                return block_transient_ci_rerun_outcome(
+                    repair_repo,
+                    branch_update_repo,
+                    attempt,
+                    summary,
+                    "The transient CI rerun budget is exhausted.",
+                    auto_merge_current,
+                    what_happened,
+                    what_i_did,
+                )
+                .await;
+            }
+            let reserved = match reserve_agent_workspace_ci_rerun(
+                Arc::clone(&repair_repo),
+                attempt,
+                &hold.to_fingerprint(),
+                "Transient CI failure accepted; RalphX is rerunning failed GitHub Actions jobs.",
+                auto_merge_current,
+                what_happened,
+                what_i_did,
+            )
+            .await?
+            {
+                AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+                AgentWorkspaceRepairTransitionOutcome::Stale(_)
+                | AgentWorkspaceRepairTransitionOutcome::Missing => {
+                    return Ok(TransientCiRerunOutcome::ReservationStale);
+                }
+            };
+
+            let mut rerun_errors = Vec::new();
+            for workflow_run_id in run_ids {
+                if let Err(error) = github.rerun_failed_workflow(working_dir, workflow_run_id).await {
+                    rerun_errors.push((github_rerun_error_is_transient(&error), error.to_string()));
+                }
+            }
+            if rerun_errors.is_empty() {
+                return Ok(TransientCiRerunOutcome::RerunPending(
+                    "RalphX accepted the transient CI classification and reran the failed GitHub Actions jobs.".to_string(),
+                ));
+            }
+            if let Some((_, error)) = rerun_errors.iter().find(|(transient, _)| !transient) {
+                return block_transient_ci_rerun_outcome(
+                    repair_repo,
+                    branch_update_repo,
+                    reserved,
+                    summary,
+                    &format!("GitHub Actions rerun failed: {error}"),
+                    auto_merge_current,
+                    what_happened,
+                    what_i_did,
+                )
+                .await;
+            }
+            let errors = rerun_errors
+                .into_iter()
+                .map(|(_, error)| error)
+                .collect::<Vec<_>>()
+                .join("; ");
+            await_transient_ci_runs_outcome(
+                repair_repo,
+                reserved,
+                summary,
+                &hold,
+                &format!("GitHub Actions rerun is temporarily unavailable: {errors}"),
+                auto_merge_current,
+                what_happened,
+                what_i_did,
+            )
+            .await
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn await_transient_ci_runs_outcome(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    hold: &CiHoldIdentity,
+    message: &str,
+    auto_merge_current: Option<bool>,
+    what_happened: Option<&str>,
+    what_i_did: Option<&str>,
+) -> AppResult<TransientCiRerunOutcome> {
+    match reserve_agent_workspace_ci_await(
+        repair_repo,
+        attempt,
+        &hold.to_fingerprint(),
+        summary,
+        auto_merge_current,
+        what_happened,
+        what_i_did,
+    )
+    .await?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(_) => {
+            Ok(TransientCiRerunOutcome::RerunPending(message.to_string()))
+        }
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => {
+            Ok(TransientCiRerunOutcome::ReservationStale)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn block_transient_ci_rerun_outcome(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    branch_update_repo: Arc<dyn BranchUpdateRepository>,
+    attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    blocker: &str,
+    auto_merge_current: Option<bool>,
+    what_happened: Option<&str>,
+    what_i_did: Option<&str>,
+) -> AppResult<TransientCiRerunOutcome> {
+    match block_agent_workspace_repair_completion(
+        repair_repo,
+        branch_update_repo,
+        attempt,
+        summary,
+        blocker,
+        auto_merge_current,
+        what_happened,
+        what_i_did,
+    )
+    .await?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(_) => {
+            Ok(TransientCiRerunOutcome::Blocked(blocker.to_string()))
+        }
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(TransientCiRerunOutcome::Blocked(
+            "The CI rerun request became stale before it could be settled.".to_string(),
+        )),
+    }
+}
+
+fn github_rerun_error_is_transient(error: &AppError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    let rate_limited = message.contains("rate limit") || message.contains("secondary rate");
+    if message.contains("not found")
+        || mentions_http_status(&message, "404")
+        || message.contains("no such run")
+        || message.contains("authentication")
+        || message.contains("unauthorized")
+        || mentions_http_status(&message, "401")
+        || (message.contains("403 forbidden") && !rate_limited)
+        || message.contains("gh auth")
+        || message.contains("workflow file")
+        || message.contains("cannot be rerun")
+    {
+        return false;
+    }
+    rate_limited
+        || message.contains("in progress")
+        || message.contains("currently in progress")
+        || message.contains("timeout")
+        || message.contains("timed out")
+        || message.contains("connection")
+        || message.contains("network")
+        || message.contains("temporarily")
+        || mentions_http_status(&message, "502")
+        || mentions_http_status(&message, "503")
+        || mentions_http_status(&message, "504")
+        || message.contains("server error")
+}
+
+/// True when `code` appears as an HTTP status token rather than as a substring of an
+/// unrelated number such as a workflow run id echoed in a `gh` API URL.
+fn mentions_http_status(message: &str, code: &str) -> bool {
+    message.match_indices(code).any(|(start, _)| {
+        let bytes = message.as_bytes();
+        let before_is_digit = start
+            .checked_sub(1)
+            .is_some_and(|index| bytes[index].is_ascii_digit());
+        let after_is_digit = bytes
+            .get(start + code.len())
+            .is_some_and(|byte| byte.is_ascii_digit());
+        !before_is_digit && !after_is_digit
+    })
 }

@@ -548,6 +548,7 @@ async fn block_valid_current_attempt(
             blocker: Some("Choose the safe repair path before continuing.".to_string()),
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         }),
     )
     .await
@@ -611,6 +612,7 @@ async fn legacy_pr_fix_transport_without_a_durable_attempt_fails_closed_without_
             fix_commit_sha: None,
             created_by_run_id: Some(owner_run_id.to_string()),
             resolution: None,
+            ..Default::default()
         },
     )
     .await;
@@ -671,6 +673,7 @@ async fn legacy_pr_fix_transport_rejects_wrong_durable_run_without_effects() {
             fix_commit_sha: None,
             created_by_run_id: Some(wrong_run_id.to_string()),
             resolution: None,
+            ..Default::default()
         },
     )
     .await;
@@ -704,6 +707,7 @@ async fn legacy_pr_fix_transport_uses_durable_completion_without_legacy_publish_
             fix_commit_sha: Some("f".repeat(40)),
             created_by_run_id: Some(owner_run_id.to_string()),
             resolution: None,
+            ..Default::default()
         },
     )
     .await;
@@ -779,6 +783,7 @@ async fn transport_authority_rejects_missing_runtime_headers_without_mutation() 
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         },
     )
     .await;
@@ -821,6 +826,7 @@ async fn transport_authority_rejects_malformed_runtime_run_without_mutation() {
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         },
     )
     .await;
@@ -849,6 +855,7 @@ async fn transport_authority_rejects_header_conversation_mismatch_without_mutati
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         },
     )
     .await;
@@ -885,6 +892,7 @@ async fn transport_authority_rejects_cross_conversation_runtime_run_without_muta
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         },
     )
     .await;
@@ -921,6 +929,7 @@ async fn transport_authority_rejects_nonowning_runtime_run_without_mutation() {
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         },
     )
     .await;
@@ -955,6 +964,7 @@ async fn transport_authority_rejects_missing_current_run_row_without_mutation() 
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         },
     )
     .await;
@@ -989,6 +999,7 @@ async fn transport_authority_rejects_nonrunning_current_run_without_mutation() {
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         },
     )
     .await;
@@ -1018,6 +1029,7 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
                 blocker: None,
                 reported_fix_commit_sha: None,
                 resolution: None,
+                ..Default::default()
             },
         )
         .await,
@@ -1059,6 +1071,7 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
                 blocker: None,
                 reported_fix_commit_sha: None,
                 resolution: None,
+                ..Default::default()
             },
         )
         .await,
@@ -1079,6 +1092,7 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
                 blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
                 reported_fix_commit_sha: None,
                 resolution: None,
+                ..Default::default()
             },
         )
         .await,
@@ -1137,6 +1151,7 @@ async fn transport_authority_keeps_semantic_repair_outcomes_successful() {
                 blocker: None,
                 reported_fix_commit_sha: None,
                 resolution: None,
+                ..Default::default()
             },
         )
         .await,
@@ -1172,6 +1187,7 @@ async fn unknown_run_is_rejected_before_any_git_probe_or_attempt_mutation() {
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         }),
     )
     .await
@@ -1236,6 +1252,7 @@ async fn stale_validation_reservation_returns_before_every_git_probe() {
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         }),
     ));
     reservation_gate.wait().await;
@@ -1316,6 +1333,7 @@ async fn racing_success_handoff_for_the_same_run_is_already_completed_without_du
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         }),
     ));
     continuation_gate.wait().await;
@@ -1412,6 +1430,7 @@ async fn racing_success_duplicates_for_the_same_run_skip_extra_git_and_complete_
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         })
     };
     let mut first = tokio::spawn(complete_agent_workspace_repair(
@@ -1514,6 +1533,7 @@ async fn racing_blocker_duplicates_for_the_same_run_are_already_blocked_without_
             blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         }),
     ));
     let second = tokio::spawn(complete_agent_workspace_repair(
@@ -1525,6 +1545,7 @@ async fn racing_blocker_duplicates_for_the_same_run_are_already_blocked_without_
             blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         }),
     ));
     blocker_gate.wait().await;
@@ -1607,6 +1628,7 @@ async fn completion_from_a_superseded_generation_stays_superseded_without_side_e
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         }),
     )
     .await
@@ -1651,6 +1673,7 @@ async fn trusted_blocker_settles_the_generation_once_without_git_or_audit_side_e
             blocker: Some("Choose whether to preserve the legacy schema.".to_string()),
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         }),
     )
     .await
@@ -1687,6 +1710,7 @@ async fn trusted_blocker_settles_the_generation_once_without_git_or_audit_side_e
             blocker: Some("Different stale blocker".to_string()),
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         }),
     )
     .await
@@ -1756,6 +1780,7 @@ async fn blocked_exact_run_with_clean_repair_resurrects_through_validation_and_c
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         }),
     )
     .await
@@ -1814,6 +1839,7 @@ async fn blocked_exact_run_with_unproven_repair_stays_blocked_without_continuati
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         }),
     )
     .await
@@ -1863,6 +1889,7 @@ async fn blocked_different_run_cannot_resurrect_the_current_generation() {
             blocker: None,
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         },
     )
     .await;
@@ -1897,6 +1924,7 @@ async fn blocked_exact_run_with_blocker_keeps_the_canned_blocked_response() {
             blocker: Some("Still awaiting maintainer direction.".to_string()),
             reported_fix_commit_sha: None,
             resolution: None,
+            ..Default::default()
         }),
     )
     .await

@@ -63,6 +63,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   recheckAgentConversationWorkspacePrHealthMock: vi.fn(),
   retryAgentConversationWorkspacePrAutofixOverrideMock: vi.fn(),
   stopAgentConversationWorkspacePrAutofixForFailureMock: vi.fn(),
+  rerunAgentConversationWorkspaceFailedChecksMock: vi.fn(),
   commitAgentConversationWorkspaceLocallyMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
   setAgentConversationWorkspaceAutoPublishMock: vi.fn(),
@@ -215,6 +216,7 @@ const {
   recheckAgentConversationWorkspacePrHealthMock,
   retryAgentConversationWorkspacePrAutofixOverrideMock,
   stopAgentConversationWorkspacePrAutofixForFailureMock,
+  rerunAgentConversationWorkspaceFailedChecksMock,
   commitAgentConversationWorkspaceLocallyMock,
   updateWorkspaceFromBaseMock,
   setAgentConversationWorkspaceAutoPublishMock,
@@ -828,6 +830,8 @@ vi.mock("@/api/chat", () => ({
       retryAgentConversationWorkspacePrAutofixOverrideMock(...args),
     stopAgentConversationWorkspacePrAutofixForFailure: (...args: unknown[]) =>
       stopAgentConversationWorkspacePrAutofixForFailureMock(...args),
+    rerunAgentConversationWorkspaceFailedChecks: (...args: unknown[]) =>
+      rerunAgentConversationWorkspaceFailedChecksMock(...args),
     commitAgentConversationWorkspaceLocally: (...args: unknown[]) =>
       commitAgentConversationWorkspaceLocallyMock(...args),
     updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>

@@ -28,7 +28,8 @@ use crate::application::agent_workspace_publish_repair_state::{
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::publish_resilience::{
-    reconcile_blocked_agent_workspace_repair_pr_handoff, BlockedRepairPrHandoffReconciliation,
+    reconcile_blocked_agent_workspace_repair_pr_handoff,
+    terminate_orphaned_blocked_repair_pr_handoff_effect, BlockedRepairPrHandoffReconciliation,
 };
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
@@ -521,7 +522,22 @@ async fn reconcile_agent_workspace_repair_attempt(
                 Ok(BlockedRepairPrHandoffReconciliation::Stale) => {
                     return Ok(DurableRepairRecoveryOutcome::Stale);
                 }
-                Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable) => {}
+                Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable) => {
+                    // The handoff was not a no-op, so the reconciler cannot finish it. If its
+                    // durable effect is merely orphaned, clearing that fence here is what lets the
+                    // retry evaluation below re-run the real publish in this same pass.
+                    if let Err(error) =
+                        terminate_orphaned_blocked_repair_pr_handoff_effect(state, &current).await
+                    {
+                        tracing::warn!(
+                            conversation_id = current.conversation_id.as_str(),
+                            attempt_id = current.id.as_str(),
+                            %error,
+                            "Orphaned blocked PR-handoff effect could not be terminated; leaving the attempt unsettled"
+                        );
+                        return Ok(DurableRepairRecoveryOutcome::Noop);
+                    }
+                }
                 Err(error) => {
                     tracing::warn!(
                         conversation_id = current.conversation_id.as_str(),
@@ -1138,12 +1154,16 @@ async fn park_exhausted_pr_autofix_budget(
         ))
         .await?;
 
+    let what_happened = current.what_happened.clone();
+    let what_i_did = current.what_i_did.clone();
     let outcome = block_agent_workspace_repair_needs_human(
         Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.branch_update_repo),
         current,
         &summary,
         workspace.pr_auto_merge_current,
+        what_happened.as_deref(),
+        what_i_did.as_deref(),
     )
     .await?;
 
@@ -1708,6 +1728,8 @@ async fn recover_clean_interrupted_repair(
         .await;
     }
     let conversation_id = reserved.conversation_id.clone();
+    let what_happened = reserved.what_happened.clone();
+    let what_i_did = reserved.what_i_did.clone();
     let validated = match record_agent_workspace_repair_validation(
         Arc::clone(&state.agent_workspace_repair_repo),
         reserved,
@@ -1716,6 +1738,8 @@ async fn recover_clean_interrupted_repair(
         &validation.repair_head_commit,
         "Recovered a clean committed workspace repair after its owning run stopped.",
         validation.auto_merge_current,
+        what_happened.as_deref(),
+        what_i_did.as_deref(),
     )
     .await?
     {
@@ -2140,6 +2164,8 @@ async fn block_recovery_attempt(
         .get_by_conversation_id(&attempt.conversation_id)
         .await?
         .map(|workspace| workspace.pr_auto_merge_current);
+    let what_happened = attempt.what_happened.clone();
+    let what_i_did = attempt.what_i_did.clone();
     match block_agent_workspace_repair_completion(
         Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.branch_update_repo),
@@ -2147,6 +2173,8 @@ async fn block_recovery_attempt(
         "Workspace repair recovery is blocked.",
         blocker,
         auto_merge_current.flatten(),
+        what_happened.as_deref(),
+        what_i_did.as_deref(),
     )
     .await?
     {
