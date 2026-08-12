@@ -276,6 +276,26 @@ fn a_failed_rotation_degrades_to_bounded_suppression() {
     assert!(!rolled.exists(), "no rolled chunk should exist");
     assert_within_cap(&active, &rolled, 400);
 
+    // Prove the suppressed-write no-op contract: writes after suppression must
+    // return Ok, append nothing, and leave the cap invariant intact.
+    let mut post_suppress_event = vec![b'Z'; event_len];
+    post_suppress_event[event_len - 1] = b'\n';
+    assert_eq!(
+        writer
+            .write(&post_suppress_event)
+            .expect("suppressed write must not surface an error"),
+        event_len,
+        "a suppressed writer must still report Ok(len) to the tracing pipeline"
+    );
+    let active_bytes_after = std::fs::read(&active).expect("active log after suppressed write");
+    assert_eq!(
+        active_bytes, active_bytes_after,
+        "a suppressed writer must append nothing to the active file"
+    );
+    assert!(!rolled.exists(), "a suppressed writer must not attempt another rotation");
+    writer.flush().expect("flush while suppressed must return Ok");
+    assert_within_cap(&active, &rolled, 400);
+
     std::fs::set_permissions(dir.path(), original_perms).expect("restore log dir");
 }
 
