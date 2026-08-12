@@ -681,6 +681,14 @@ pub struct AgentWorkspaceReviewMonitorResponse {
     pub status: String,
     pub review_outcome: String,
     pub review_gate_status: String,
+    /// Fixer cycles plus durable publish-repair attempts for this workspace.
+    ///
+    /// One number for "has automation already had a go at this delta", which is what the
+    /// reviewer's Fold-In demotion rule actually needs — the fixer counter alone is blind to
+    /// publish-repair churn. `None` on paths that do not load repair state; the reviewer falls
+    /// back to the individual fields there. Never silently `Some(fixer_cycles)`, which would read
+    /// as "no repair attempts" when the repair read actually failed.
+    pub automation_attempt_count: Option<i64>,
     /// How the current gate was settled: `typed` | `artifact_degraded`.
     ///
     /// Presentation only. A degraded gate authorizes exactly what a typed one does; the UI uses
@@ -742,6 +750,9 @@ impl From<AgentWorkspaceReviewMonitor> for AgentWorkspaceReviewMonitorResponse {
             status: value.status.to_string(),
             review_outcome: value.review_outcome.to_string(),
             review_gate_status: value.review_gate_status.to_string(),
+            // Requires a repair-repo read, so it is populated by the context path rather than
+            // guessed here. See `apply_automation_attempt_count`.
+            automation_attempt_count: None,
             review_settlement_source: value
                 .review_settlement_source
                 .map(|source| source.to_string()),
@@ -4962,6 +4973,26 @@ fn missing_workspace_review_hunk_anchors(
         .filter(|anchor| !covered.contains(&WorkspaceReviewHunkAnnotationKey::from(*anchor)))
         .cloned()
         .collect()
+}
+
+/// Populates `automation_attempt_count` from fixer cycles plus durable repair attempts.
+///
+/// Fail-closed: a repair-repo read error propagates instead of degrading to the fixer count,
+/// which would tell the reviewer "no repair has run" on exactly the evidence it needs most.
+async fn apply_automation_attempt_count(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    monitor: &mut AgentWorkspaceReviewMonitorResponse,
+    review_fixer_cycle_count: i64,
+) -> Result<(), JsonError> {
+    let repair_attempts = state
+        .agent_workspace_repair_repo
+        .list_repair_attempts_for_conversation(conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    monitor.automation_attempt_count =
+        Some(review_fixer_cycle_count.saturating_add(repair_attempts.len() as i64));
+    Ok(())
 }
 
 /// Test seam for the annotator's work-list contract: carried-forward annotations must make their

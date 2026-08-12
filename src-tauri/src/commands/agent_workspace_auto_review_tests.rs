@@ -1092,3 +1092,126 @@ async fn resolve_review_event_workspace_reports_missing_app_state() {
 
     assert_eq!(error, "AppState is not available");
 }
+
+// ── Repair-aware auto-review deferral ────────────────────────────────────
+
+/// Reviewing a head that a publish repair is actively rewriting wastes the run and inflates the
+/// convergence counter, so dispatch defers instead. The existing repair-boundary starter
+/// re-dispatches once the repair settles, which is why deferral is safe.
+#[tokio::test]
+async fn auto_review_defers_while_a_durable_repair_attempt_is_active() {
+    use crate::domain::entities::{
+        AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairSource,
+    };
+    use crate::domain::repositories::StartOrJoinAgentWorkspaceRepairAttempt;
+
+    let (_temp, repo, base_sha) = init_repo();
+    commit_workspace_delta(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(&project, &repo, Some(base_sha));
+    seed_workspace_conversation(&state, &workspace).await;
+    // The repair aggregate keys off a persisted workspace row.
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    // Both directions in one test: reviewable before the repair exists, deferred after.
+    assert_eq!(
+        resolve_auto_review_start_action(&state, &execution_state, &workspace)
+            .await
+            .expect("auto-review action should resolve"),
+        AutoReviewStartAction::Start,
+        "this workspace is otherwise reviewable, so the skip below is attributable to the repair"
+    );
+
+    state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                workspace.conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                Utc::now(),
+            ),
+            reason: "repair in flight".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("repair attempt should start");
+
+    assert_eq!(
+        resolve_auto_review_start_action(&state, &execution_state, &workspace)
+            .await
+            .expect("auto-review action should resolve"),
+        AutoReviewStartAction::Skip(AutoReviewSkipReason::RepairAttemptActive)
+    );
+}
+
+#[tokio::test]
+async fn auto_review_defers_while_the_review_fixer_is_active() {
+    let (_temp, repo, base_sha) = init_repo();
+    commit_workspace_delta(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(&project, &repo, Some(base_sha));
+    seed_workspace_conversation(&state, &workspace).await;
+
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("review context should load");
+    let mut monitor = context.monitor;
+    monitor.review_fixer_status = Some("running".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("fixer-active monitor should persist");
+
+    assert_eq!(
+        resolve_auto_review_start_action(&state, &execution_state, &workspace)
+            .await
+            .expect("auto-review action should resolve"),
+        AutoReviewStartAction::Skip(AutoReviewSkipReason::ReviewFixerActive)
+    );
+}
+
+/// `cycle_capped` means automatic fixing is switched off, not that a fixer is running.
+#[tokio::test]
+async fn auto_review_proceeds_when_the_fixer_is_only_cycle_capped() {
+    let (_temp, repo, base_sha) = init_repo();
+    commit_workspace_delta(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(&project, &repo, Some(base_sha));
+    seed_workspace_conversation(&state, &workspace).await;
+
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("review context should load");
+    let mut monitor = context.monitor;
+    monitor.review_fixer_status = Some("cycle_capped".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("cycle-capped monitor should persist");
+
+    assert_eq!(
+        resolve_auto_review_start_action(&state, &execution_state, &workspace)
+            .await
+            .expect("auto-review action should resolve"),
+        AutoReviewStartAction::Start
+    );
+}

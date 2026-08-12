@@ -980,3 +980,80 @@ async fn context_include_events_false_omits_publication_events_and_default_keeps
         default_context.can_mutate_review_state
     );
 }
+
+// ── Unified automation attempt count ─────────────────────────────────────
+
+/// One number for "has automation already had a go at this delta". The fixer counter alone is
+/// blind to publish-repair churn, which is the case the reviewer's Fold-In demotion rule misses.
+#[tokio::test]
+async fn context_reports_fixer_cycles_plus_repair_attempts_as_one_automation_count() {
+    use ralphx_lib::domain::entities::{
+        AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairSource,
+    };
+    use ralphx_lib::domain::repositories::StartOrJoinAgentWorkspaceRepairAttempt;
+
+    let fixture = setup_active_review("automation-count").await;
+
+    let axum::Json(zero_context) = get_agent_workspace_review_context(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery::default()),
+    )
+    .await
+    .expect("context should load");
+    assert_eq!(
+        zero_context.monitor.automation_attempt_count,
+        Some(0),
+        "a workspace no automation has touched reports zero, not absent"
+    );
+
+    let mut monitor = fixture.monitor().await;
+    monitor.review_fixer_cycle_count = 2;
+    fixture
+        .state
+        .app_state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("fixer cycles should persist");
+    fixture
+        .state
+        .app_state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                fixture.conversation_id,
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "publish repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("repair attempt should start");
+
+    let axum::Json(context) = get_agent_workspace_review_context(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery::default()),
+    )
+    .await
+    .expect("context should load");
+
+    assert_eq!(context.monitor.review_fixer_cycle_count, 2);
+    assert_eq!(
+        context.monitor.automation_attempt_count,
+        Some(3),
+        "the count must include the publish repair the fixer counter cannot see"
+    );
+}

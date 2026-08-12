@@ -95,6 +95,16 @@ pub async fn get_agent_workspace_review_context(
         "Served workspace Review context"
     );
 
+    let review_fixer_cycle_count = context.monitor.review_fixer_cycle_count;
+    let mut monitor = AgentWorkspaceReviewMonitorResponse::from(context.monitor);
+    apply_automation_attempt_count(
+        state.app_state.as_ref(),
+        &conversation_id,
+        &mut monitor,
+        review_fixer_cycle_count,
+    )
+    .await?;
+
     Ok(Json(AgentWorkspaceReviewContextResponse {
         success: true,
         workspace: workspace_response,
@@ -102,7 +112,7 @@ pub async fn get_agent_workspace_review_context(
         target: context.target.map(|target| {
             AgentWorkspaceReviewTargetResponse::from_target(target, include_review_packet)
         }),
-        monitor: AgentWorkspaceReviewMonitorResponse::from(context.monitor),
+        monitor,
         goal_context: context.goal_context,
         is_current: context.is_current,
         is_outdated: context.is_outdated,
