@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use crate::domain::services::github_service::{
     validate_pr_metadata_patch, GithubConnectionStatus, GithubServiceTrait, PrAutoMergeRequest,
     PrBranchMatch, PrDetail, PrDiffAnnotations, PrHealth, PrHealthCheck, PrReviewFeedback,
-    PrReviewSubmissionEvent, PrReviewThread, PrSearchResult, PrStatus, PrSubmittedReview,
-    PrSyncState,
+    PrReviewSubmissionEvent, PrReviewThread, PrSearchResult, PrStatus, PrStatusSnapshot,
+    PrSubmittedReview, PrSyncState, RateLimitSnapshot,
 };
 use crate::error::AppError;
 use crate::AppResult;
@@ -43,6 +43,13 @@ pub struct MockGithubState {
     pub fetch_github_connection_status_result: Option<AppResult<GithubConnectionStatus>>,
     pub fetch_pr_health_result: Option<AppResult<PrHealth>>,
     pub fetch_pr_health_delay_ms: u64,
+    /// `None` keeps the trait default (`Ok(None)` — this runtime cannot report a budget).
+    pub fetch_rate_limit_result: Option<AppResult<Option<RateLimitSnapshot>>>,
+    /// Exact PR sets each batched snapshot read was asked for, in call order.
+    pub fetch_pr_status_snapshots_calls: Vec<Vec<i64>>,
+    /// PR numbers the batched read can report. `None` reports every requested PR; listing a
+    /// subset exercises the caller's per-PR fallback for the rest.
+    pub fetch_pr_status_snapshots_known: Option<Vec<i64>>,
     /// `None` leaves the trait default (unknown base state); `Some` overrides it.
     pub list_branch_check_conclusions_result: Option<AppResult<Option<Vec<PrHealthCheck>>>>,
     pub rerun_failed_workflow_result: Option<AppResult<()>>,
@@ -89,6 +96,7 @@ pub struct MockGithubState {
     pub fetch_github_connection_status_calls: u32,
     pub fetch_pr_auto_merge_state_calls: u32,
     pub fetch_pr_health_calls: u32,
+    pub fetch_rate_limit_calls: u32,
     pub rerun_failed_workflow_calls: u32,
     pub rerun_failed_workflow_ids: Vec<i64>,
     pub enable_pr_auto_merge_calls: u32,
@@ -596,6 +604,41 @@ impl GithubServiceTrait for MockGithubService {
         })
     }
 
+    async fn fetch_pr_status_snapshots(
+        &self,
+        working_dir: &Path,
+        pr_numbers: &[i64],
+    ) -> AppResult<HashMap<i64, PrStatusSnapshot>> {
+        let known = {
+            let mut s = self.state.lock().expect("lock poisoned");
+            s.fetch_pr_status_snapshots_calls.push(pr_numbers.to_vec());
+            s.fetch_pr_status_snapshots_known.clone()
+        };
+        let mut out = HashMap::new();
+        for number in pr_numbers {
+            if known.as_ref().is_some_and(|known| !known.contains(number)) {
+                continue;
+            }
+            // Delegate the status itself so `will_return_status` / `will_return_statuses` keep
+            // driving the batched path exactly as they drove the per-PR path.
+            let status = self.check_pr_status(working_dir, *number).await?;
+            let mut snapshot = batched_pr_status_snapshot(*number);
+            snapshot.sync_state.status = status;
+            out.insert(*number, snapshot);
+        }
+        Ok(out)
+    }
+
+    async fn fetch_rate_limit(&self, _working_dir: &Path) -> AppResult<Option<RateLimitSnapshot>> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.fetch_rate_limit_calls += 1;
+        match s.fetch_rate_limit_result.as_ref() {
+            Some(Ok(snapshot)) => Ok(*snapshot),
+            Some(Err(error)) => Err(AppError::Infrastructure(error.to_string())),
+            None => Ok(None),
+        }
+    }
+
     async fn list_branch_check_conclusions(
         &self,
         _working_dir: &Path,
@@ -843,5 +886,25 @@ impl GithubServiceTrait for MockGithubService {
                 "GitHub review submission is unavailable for this runtime".to_string(),
             ))
         })
+    }
+}
+
+/// Distinguishable per-PR state so a test can prove each caller received its own PR's snapshot
+/// rather than a neighbour's.
+pub fn batched_pr_status_snapshot(pr_number: i64) -> PrStatusSnapshot {
+    PrStatusSnapshot {
+        sync_state: PrSyncState {
+            status: PrStatus::Open,
+            merge_state_status: None,
+            mergeable: None,
+            is_draft: false,
+            head_ref_name: format!("feature-{pr_number}"),
+            base_ref_name: "main".to_string(),
+            head_ref_oid: Some(format!("batched-head-{pr_number}")),
+            base_ref_oid: Some("base-oid".to_string()),
+        },
+        review_decision: None,
+        checks: Vec::new(),
+        auto_merge_request: None,
     }
 }

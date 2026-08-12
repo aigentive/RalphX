@@ -255,8 +255,18 @@ git:
   index_lock_stale_secs: 5 # Env: RALPHX_GIT_INDEX_LOCK_STALE_SECS
   # harness_runtime_registry.rs — TTL for unchanged provider CLI availability probes
   provider_probe_cache_ttl_secs: 300 # Env: RALPHX_GIT_PROVIDER_PROBE_CACHE_TTL_SECS
-  # unified_chat_commands.rs — short backend TTL for repeated workspace freshness checks
+  # unified_chat_commands.rs — short backend TTL for repeated local-scope workspace freshness checks
   workspace_freshness_cache_ttl_ms: 2000 # Env: RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS
+  # unified_chat_commands.rs — longer TTL for full-scope freshness (fetches origin + reads PR status per PR-as-base workspace)
+  workspace_freshness_full_scope_cache_ttl_ms: 30000 # Env: RALPHX_GIT_WORKSPACE_FRESHNESS_FULL_SCOPE_CACHE_TTL_MS
+  # pr_merge_poller.rs — base interval between agent workspace PR poll iterations
+  workspace_pr_poll_base_secs: 60 # Env: RALPHX_GIT_WORKSPACE_PR_POLL_BASE_SECS
+  # pr_merge_poller.rs — ceiling for the adaptive workspace PR poll interval (also bounds terminal-PR detection latency)
+  workspace_pr_poll_max_secs: 300 # Env: RALPHX_GIT_WORKSPACE_PR_POLL_MAX_SECS
+  # pr_merge_poller.rs — minimum seconds between shared `gh api rate_limit` probes (endpoint is quota-free)
+  github_rate_limit_probe_interval_secs: 300 # Env: RALPHX_GIT_GITHUB_RATE_LIMIT_PROBE_INTERVAL_SECS
+  # pr_snapshot_hub.rs — TTL for a repository's batched PR snapshot shared by every workspace poller on that repo
+  pr_snapshot_hub_ttl_secs: 55 # Env: RALPHX_GIT_PR_SNAPSHOT_HUB_TTL_SECS
   # diff_commands.rs — short backend TTL for workspace review context/payload reuse
   workspace_review_cache_ttl_ms: 2000 # Env: RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS
   # agent_workspace_pr_description.rs — short backend TTL for precomputed publish PR descriptions

@@ -1764,8 +1764,20 @@ pub(crate) fn try_acquire_agent_workspace_publish_guard(
     })
 }
 
-fn agent_workspace_freshness_cache_ttl() -> Duration {
-    Duration::from_millis(git_runtime_config().workspace_freshness_cache_ttl_ms)
+/// Cache lifetime for one freshness scope.
+///
+/// The two scopes have very different costs. Quick/local scope is a cheap local read, so it keeps
+/// the short TTL that makes the UI feel live. Full scope runs `GitService::fetch_origin` plus a
+/// `check_pr_status` per PR-as-base workspace (`agent_conversation_workspace_base.rs`), and the UI
+/// polls it roughly once a minute — against the shared 2s TTL that produced a near-total miss rate
+/// in the 2026-08-11 rate-limit incident, so every poll paid full GitHub cost.
+fn agent_workspace_freshness_cache_ttl(freshness_scope: AgentWorkspaceFreshnessScope) -> Duration {
+    let config = git_runtime_config();
+    let millis = match freshness_scope {
+        AgentWorkspaceFreshnessScope::Full => config.workspace_freshness_full_scope_cache_ttl_ms,
+        AgentWorkspaceFreshnessScope::Local => config.workspace_freshness_cache_ttl_ms,
+    };
+    Duration::from_millis(millis)
 }
 
 fn agent_workspace_freshness_cache_key(
@@ -1786,7 +1798,7 @@ fn cached_agent_workspace_freshness(
     conversation_id: &ChatConversationId,
     freshness_scope: AgentWorkspaceFreshnessScope,
 ) -> Option<AgentConversationWorkspaceFreshnessResponse> {
-    let ttl = agent_workspace_freshness_cache_ttl();
+    let ttl = agent_workspace_freshness_cache_ttl(freshness_scope);
     if ttl.is_zero() {
         return None;
     }
@@ -1805,7 +1817,7 @@ fn store_agent_workspace_freshness(
     freshness_scope: AgentWorkspaceFreshnessScope,
     response: &AgentConversationWorkspaceFreshnessResponse,
 ) {
-    if agent_workspace_freshness_cache_ttl().is_zero() {
+    if agent_workspace_freshness_cache_ttl(freshness_scope).is_zero() {
         return;
     }
     let Some(key) = agent_workspace_freshness_cache_key(conversation_id, freshness_scope) else {

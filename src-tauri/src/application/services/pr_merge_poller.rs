@@ -60,6 +60,7 @@ use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
 };
+use crate::application::services::pr_snapshot_hub::PrSnapshotHub;
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::{AppState, GitService, NotificationService, TaskTransitionService};
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
@@ -91,6 +92,7 @@ use crate::error::AppError;
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_WORKSPACE_PR_FIXER, AGENT_WORKSPACE_REPAIR,
 };
+use crate::infrastructure::agents::claude::git_runtime_config;
 
 #[cfg(test)]
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
@@ -200,6 +202,135 @@ impl Default for RateLimitState {
     }
 }
 
+/// How far ahead to assume the window resets when GitHub rejected a call but no probe has yet
+/// supplied a real reset instant. Deliberately short: an over-long guess would stall every poller
+/// for longer than the outage, and the next probe replaces it with the truth anyway.
+const RATE_LIMITED_FALLBACK_RESET: Duration = Duration::from_secs(15 * 60);
+
+/// Refreshes the shared rate-limit state from GitHub's quota-free `rate_limit` endpoint.
+///
+/// Single-flight and interval-gated: whichever poll iteration arrives first past the interval
+/// performs the probe and every other poller reads the result. A failed or unsupported probe
+/// leaves the previous state alone — a read RalphX could not perform is not evidence about the
+/// budget. Runs inside an existing async poll iteration, so no thread is spawned.
+async fn maybe_refresh_rate_limit(
+    github: &Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    rate_limit: &Arc<std::sync::Mutex<RateLimitState>>,
+    last_probe: &Arc<std::sync::Mutex<Option<Instant>>>,
+) {
+    let interval = Duration::from_secs(git_runtime_config().github_rate_limit_probe_interval_secs);
+    {
+        // Claim the probe slot before awaiting so concurrent iterations cannot pile on.
+        let Ok(mut last) = last_probe.lock() else {
+            return;
+        };
+        if last.is_some_and(|at| at.elapsed() < interval) {
+            return;
+        }
+        *last = Some(Instant::now());
+    }
+
+    let snapshot = match github.fetch_rate_limit(working_dir).await {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::debug!(error = %error, "GitHub rate-limit probe failed; keeping prior state");
+            return;
+        }
+    };
+
+    let Some(reset_at) = instant_from_epoch_secs(snapshot.reset_epoch_secs) else {
+        return;
+    };
+    if let Ok(mut state) = rate_limit.lock() {
+        state.remaining = snapshot.remaining;
+        state.reset_at = reset_at;
+    }
+}
+
+/// Converts GitHub's absolute reset epoch into a monotonic `Instant`.
+///
+/// Returns `None` when the system clock cannot produce a Unix timestamp; a reset already in the
+/// past collapses to "now", which correctly reads as "no longer limited".
+fn instant_from_epoch_secs(epoch_secs: u64) -> Option<Instant> {
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some(Instant::now() + Duration::from_secs(epoch_secs.saturating_sub(now_epoch)))
+}
+
+/// Records an observed rate-limit rejection into the shared state.
+///
+/// Zeroes `remaining` so every poll loop and the durable recovery sweep back off together.
+/// `reset_at` is only pushed out when the currently known reset has already passed: a real reset
+/// instant from the `gh api rate_limit` probe must always win over this conservative fallback.
+fn note_rate_limited(rate_limit: &Arc<std::sync::Mutex<RateLimitState>>) {
+    if let Ok(mut state) = rate_limit.lock() {
+        state.remaining = 0;
+        let now = Instant::now();
+        if state.reset_at <= now {
+            state.reset_at = now + RATE_LIMITED_FALLBACK_RESET;
+        }
+    }
+}
+
+/// Keeps one PR registered with the snapshot hub for exactly as long as its poller runs.
+///
+/// The workspace poll loop returns from many places — terminalization, stop requests, routed
+/// repairs, semaphore shutdown — and an aborted `JoinHandle` drops mid-iteration with no return at
+/// all. A `Drop` guard is the only way to withdraw the PR on all of those paths; a manual
+/// `unregister` before each `return` would silently miss the abort case and leave a dead PR
+/// inflating every future batch for that repository.
+struct PrSnapshotRegistration {
+    hub: Arc<PrSnapshotHub>,
+    repo_key: String,
+    pr_number: i64,
+}
+
+impl PrSnapshotRegistration {
+    fn new(hub: Arc<PrSnapshotHub>, repo_key: String, pr_number: i64) -> Self {
+        hub.register(&repo_key, pr_number);
+        Self {
+            hub,
+            repo_key,
+            pr_number,
+        }
+    }
+}
+
+impl Drop for PrSnapshotRegistration {
+    fn drop(&mut self) {
+        self.hub.unregister(&self.repo_key, self.pr_number);
+    }
+}
+
+/// Applies shared rate-limit pressure to a poll interval.
+///
+/// Mirrors the task loop's ladder: below 500 remaining, back off; below 100, stop calling GitHub
+/// entirely until the window resets. Returns the adjusted interval plus how long the caller must
+/// sleep before its next GitHub read.
+fn apply_rate_limit_pressure(
+    rate_limit: &Arc<std::sync::Mutex<RateLimitState>>,
+    interval: Duration,
+    max_interval: Duration,
+) -> (Duration, Duration) {
+    let Ok(state) = rate_limit.lock() else {
+        return (interval, Duration::ZERO);
+    };
+    if state.remaining < 100 {
+        return (
+            max_interval,
+            state.reset_at.saturating_duration_since(Instant::now()),
+        );
+    }
+    if state.remaining < 500 {
+        return ((interval * 2).min(max_interval), Duration::ZERO);
+    }
+    (interval, Duration::ZERO)
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Registry
 // ────────────────────────────────────────────────────────────────────
@@ -235,6 +366,13 @@ pub struct PrPollerRegistry {
 
     /// Shared rate limit state parsed from gh API headers. (AD9)
     rate_limit: Arc<std::sync::Mutex<RateLimitState>>,
+
+    /// When any poller last probed `gh api rate_limit`. Gates the shared probe to one call per
+    /// configured interval across every poll loop in the registry.
+    rate_limit_last_probe: Arc<std::sync::Mutex<Option<Instant>>>,
+
+    /// Batched per-repository PR reads shared by every workspace poller on that repository.
+    pr_snapshot_hub: Arc<PrSnapshotHub>,
 
     /// GitHub service for PR status checks. None when GitHub integration is disabled.
     github_service: Option<Arc<dyn GithubServiceTrait>>,
@@ -328,6 +466,8 @@ impl PrPollerRegistry {
             pr_creation_guard: Arc::new(DashMap::new()),
             semaphore: Arc::new(tokio::sync::Semaphore::new(Self::MAX_CONCURRENT_POLLS)),
             rate_limit: Arc::new(std::sync::Mutex::new(RateLimitState::default())),
+            rate_limit_last_probe: Arc::new(std::sync::Mutex::new(None)),
+            pr_snapshot_hub: Arc::new(PrSnapshotHub::new()),
             github_service,
             plan_branch_repo,
             notification_service: Arc::new(std::sync::RwLock::new(None)),
@@ -338,6 +478,16 @@ impl PrPollerRegistry {
 
     pub(crate) fn branch_status_cache(&self) -> BranchStatusCache {
         self.branch_status_cache.clone()
+    }
+
+    /// Read-only view of the shared GitHub rate-limit state.
+    ///
+    /// Lets recovery paths outside the pollers defer work while GitHub's window is exhausted
+    /// without holding the poller's lock for longer than a read. Returns `None` when the lock is
+    /// poisoned, so a lock failure can never manufacture a "rate limited" verdict.
+    pub fn rate_limit_snapshot(&self) -> Option<(u32, Instant)> {
+        let state = self.rate_limit.lock().ok()?;
+        Some((state.remaining, state.reset_at))
     }
 
     pub fn set_branch_update_repo(&self, repo: Arc<dyn BranchUpdateRepository>) {
@@ -479,6 +629,9 @@ impl PrPollerRegistry {
             .ok()
             .and_then(|repo| repo.clone());
         let branch_status_cache = self.branch_status_cache.clone();
+        let rate_limit = Arc::clone(&self.rate_limit);
+        let rate_limit_last_probe = Arc::clone(&self.rate_limit_last_probe);
+        let pr_snapshot_hub = Arc::clone(&self.pr_snapshot_hub);
         let conversation_id_for_spawn = conversation_id.clone();
 
         let handle = tokio::spawn(async move {
@@ -491,6 +644,9 @@ impl PrPollerRegistry {
                 active,
                 stopping,
                 semaphore,
+                rate_limit,
+                rate_limit_last_probe,
+                pr_snapshot_hub,
                 workspace_repo,
                 agent_run_repo,
                 repair_repo,
@@ -580,6 +736,7 @@ impl PrPollerRegistry {
         let stopping = Arc::clone(&self.stopping);
         let semaphore = Arc::clone(&self.semaphore);
         let rate_limit = Arc::clone(&self.rate_limit);
+        let rate_limit_last_probe = Arc::clone(&self.rate_limit_last_probe);
         let plan_branch_repo = Arc::clone(&self.plan_branch_repo);
 
         // Staggered start jitter (AD9): rand(1..=30s)
@@ -606,6 +763,7 @@ impl PrPollerRegistry {
                 stopping,
                 semaphore,
                 rate_limit,
+                rate_limit_last_probe,
                 plan_branch_repo,
                 transition_service,
             )
@@ -746,6 +904,7 @@ impl PrPollerRegistry {
                 .ok()
                 .and_then(|repo| repo.clone()),
             chat_service,
+            None,
         )
         .await
     }
@@ -789,6 +948,7 @@ async fn poll_loop(
     stopping: Arc<DashMap<TaskId, ()>>,
     semaphore: Arc<tokio::sync::Semaphore>,
     rate_limit: Arc<std::sync::Mutex<RateLimitState>>,
+    rate_limit_last_probe: Arc<std::sync::Mutex<Option<Instant>>>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     transition_service: Arc<TaskTransitionService>,
 ) {
@@ -842,6 +1002,8 @@ async fn poll_loop(
             stopping.remove(&task_id);
             return;
         }
+
+        maybe_refresh_rate_limit(&github, &working_dir, &rate_limit, &rate_limit_last_probe).await;
 
         // Apply rate limit pressure — extract values before any await (no guard across await)
         let (should_sleep_until_reset, sleep_duration, is_low_remaining) = {
@@ -1192,6 +1354,7 @@ async fn poll_loop(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn agent_workspace_poll_loop(
     conversation_id: ChatConversationId,
     pr_number: i64,
@@ -1201,6 +1364,9 @@ async fn agent_workspace_poll_loop(
     active: Arc<DashMap<ChatConversationId, JoinHandle<()>>>,
     stopping: Arc<DashMap<ChatConversationId, ()>>,
     semaphore: Arc<tokio::sync::Semaphore>,
+    rate_limit: Arc<std::sync::Mutex<RateLimitState>>,
+    rate_limit_last_probe: Arc<std::sync::Mutex<Option<Instant>>>,
+    pr_snapshot_hub: Arc<PrSnapshotHub>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
@@ -1211,14 +1377,56 @@ async fn agent_workspace_poll_loop(
     recovery_state: Option<Arc<AppState>>,
     branch_status_cache: BranchStatusCache,
 ) {
-    let interval = Duration::from_secs(60);
+    let config = git_runtime_config();
+    let base_interval = Duration::from_secs(config.workspace_pr_poll_base_secs.max(1));
+    let max_interval = Duration::from_secs(
+        config
+            .workspace_pr_poll_max_secs
+            .max(config.workspace_pr_poll_base_secs.max(1)),
+    );
+    // Adaptive cadence: an idle PR doubles its interval up to the cap, and any observable change
+    // snaps it straight back to base. Terminalization is unaffected beyond detection latency,
+    // which is bounded by `max_interval`.
+    let mut interval = base_interval;
+    let mut previous_health: Option<PrHealth> = None;
     let mut first_poll = true;
+
+    // The hub batches every registered PR for this repository into one GitHub read per TTL
+    // window. `_hub_registration` withdraws this PR on every exit path — including the several
+    // early `return`s below and an aborted task — so a stopped poller never keeps inflating
+    // other pollers' batches.
+    let repo_key = project.working_directory.clone();
+    let _hub_registration =
+        PrSnapshotRegistration::new(Arc::clone(&pr_snapshot_hub), repo_key.clone(), pr_number);
 
     loop {
         if first_poll {
             first_poll = false;
         } else {
             tokio::time::sleep(interval).await;
+        }
+
+        if stopping.contains_key(&conversation_id) {
+            active.remove(&conversation_id);
+            stopping.remove(&conversation_id);
+            return;
+        }
+
+        maybe_refresh_rate_limit(&github, &working_dir, &rate_limit, &rate_limit_last_probe).await;
+
+        // Pressure is applied before the iteration's GitHub reads, mirroring the task loop: when
+        // fewer than 100 calls remain there is no point spending one to discover we are limited.
+        let (pressured_interval, sleep_until_reset) =
+            apply_rate_limit_pressure(&rate_limit, interval, max_interval);
+        interval = pressured_interval;
+        if !sleep_until_reset.is_zero() {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                sleep_secs = sleep_until_reset.as_secs(),
+                "Agent workspace PR poller: GitHub rate limit critically low — sleeping until reset"
+            );
+            tokio::time::sleep(sleep_until_reset).await;
         }
 
         if stopping.contains_key(&conversation_id) {
@@ -1266,7 +1474,16 @@ async fn agent_workspace_poll_loop(
             return;
         }
 
-        match github.check_pr_status(&working_dir, pr_number).await {
+        // One hub read serves the terminal-status check and the health branches below; every
+        // other workspace polling this repository in the same window is served from the same
+        // batched response.
+        let polled_snapshot = pr_snapshot_hub
+            .get_snapshot(&repo_key, pr_number, &github, &working_dir)
+            .await;
+        match polled_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.sync_state.status.clone())
+        {
             Ok(PrStatus::Merged { .. }) => {
                 drop(permit);
                 terminalize_polled_agent_workspace_with_notifications(
@@ -1281,7 +1498,9 @@ async fn agent_workspace_poll_loop(
                     TerminalAgentWorkspaceCause::MergedPr,
                     "merged",
                     "Pull request merged",
-                    interval,
+                    // Local retry backoff for cleanup/persistence failures — deliberately the
+                    // fixed base, not the adaptive GitHub cadence.
+                    base_interval,
                     notification_service.as_ref(),
                 )
                 .await;
@@ -1303,7 +1522,7 @@ async fn agent_workspace_poll_loop(
                     TerminalAgentWorkspaceCause::ClosedPr,
                     "closed",
                     "Pull request closed without merging",
-                    interval,
+                    base_interval,
                     notification_service.as_ref(),
                 )
                 .await;
@@ -1336,7 +1555,20 @@ async fn agent_workspace_poll_loop(
                     }
                 }
 
-                match github.fetch_pr_health(&working_dir, pr_number).await {
+                // One health value serves every branch below in this iteration. Its view half
+                // comes from the shared batch; only the comments are read per PR, on the
+                // response-cached REST path.
+                let mut polled_health: Option<PrHealth> = None;
+                let health_result = match polled_snapshot.as_ref() {
+                    Ok(snapshot) => github
+                        .fetch_pr_issue_comments(&working_dir, pr_number)
+                        .await
+                        .map(|comments| {
+                            PrHealth::from_snapshot_and_comments(snapshot.clone(), comments)
+                        }),
+                    Err(error) => Err(AppError::Infrastructure(error.to_string())),
+                };
+                match health_result {
                     Ok(health) => {
                         branch_status_cache.observe_pr_sync(
                             &working_dir,
@@ -1470,8 +1702,13 @@ async fn agent_workspace_poll_loop(
                                 );
                             }
                         }
+
+                        polled_health = Some(health);
                     }
                     Err(error) => {
+                        if matches!(error, AppError::GithubRateLimited { .. }) {
+                            note_rate_limited(&rate_limit);
+                        }
                         tracing::warn!(
                             conversation_id = conversation_id.as_str(),
                             pr_number,
@@ -1480,6 +1717,13 @@ async fn agent_workspace_poll_loop(
                         );
                     }
                 }
+
+                // Any observable change resets the cadence; a fully idle iteration lets it grow.
+                // `PrHealth` is `PartialEq`, so this covers head SHA, checks, comments, review
+                // decision, and auto-merge state without a hand-rolled fingerprint that could
+                // silently miss a field.
+                let mut observed_activity = polled_health != previous_health;
+                previous_health = polled_health.clone();
 
                 match route_agent_workspace_pr_autofix_if_needed_with_notifications(
                     Arc::clone(&github),
@@ -1493,6 +1737,7 @@ async fn agent_workspace_poll_loop(
                     Arc::clone(&chat_service),
                     notification_service.as_ref().map(Arc::clone),
                     Some(&project),
+                    polled_health.as_ref(),
                 )
                 .await
                 {
@@ -1526,6 +1771,7 @@ async fn agent_workspace_poll_loop(
                     Arc::clone(&agent_run_repo),
                     Arc::clone(&chat_service),
                     notification_service.clone(),
+                    polled_health.as_ref(),
                 )
                 .await
                 {
@@ -1535,9 +1781,13 @@ async fn agent_workspace_poll_loop(
                             pr_number,
                             "Agent workspace PR poller: Review PR monitor routed new head to review agent"
                         );
+                        observed_activity = true;
                     }
                     Ok(false) => {}
                     Err(error) => {
+                        // A branch that could not complete is a reason to look again soon, not a
+                        // reason to slow down.
+                        observed_activity = true;
                         tracing::warn!(
                             conversation_id = conversation_id.as_str(),
                             pr_number,
@@ -1557,6 +1807,7 @@ async fn agent_workspace_poll_loop(
                     repair_repo.as_ref().map(Arc::clone),
                     branch_update_repo.as_ref().map(Arc::clone),
                     Arc::clone(&chat_service),
+                    polled_health.as_ref(),
                 )
                 .await
                 {
@@ -1572,6 +1823,7 @@ async fn agent_workspace_poll_loop(
                     }
                     Ok(false) => {}
                     Err(error) => {
+                        observed_activity = true;
                         tracing::warn!(
                             conversation_id = conversation_id.as_str(),
                             pr_number,
@@ -1580,9 +1832,22 @@ async fn agent_workspace_poll_loop(
                         );
                     }
                 }
+
+                interval = if observed_activity {
+                    base_interval
+                } else {
+                    (interval * 2).clamp(base_interval, max_interval)
+                };
             }
             Err(error) => {
                 drop(permit);
+                if matches!(error, AppError::GithubRateLimited { .. }) {
+                    note_rate_limited(&rate_limit);
+                }
+                // An unreadable PR status leaves this iteration with no evidence either way, so
+                // the cadence is reset rather than escalated.
+                interval = base_interval;
+                previous_health = None;
                 tracing::warn!(
                     conversation_id = conversation_id.as_str(),
                     pr_number,
@@ -3225,6 +3490,25 @@ async fn authorize_agent_workspace_pr_autofix(
     Ok(target.authorizes(&workspace).then_some(workspace))
 }
 
+/// Resolves the PR health a supervision branch should reason about.
+///
+/// The workspace poll loop already reads health once per iteration, so every branch in that
+/// iteration receives the same snapshot instead of paying its own GitHub read. Callers outside a
+/// poll iteration pass `None` and fetch their own. Reusing the snapshot is never staler than the
+/// per-branch fetch it replaces: all consumers run inside the same iteration, and the pre-change
+/// behavior already tolerated that much intra-iteration drift.
+async fn resolve_polled_pr_health(
+    github: &Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    pr_number: i64,
+    polled_health: Option<&PrHealth>,
+) -> crate::AppResult<PrHealth> {
+    match polled_health {
+        Some(health) => Ok(health.clone()),
+        None => github.fetch_pr_health(working_dir, pr_number).await,
+    }
+}
+
 #[cfg(test)]
 async fn route_agent_workspace_pr_autofix_if_needed(
     github: Arc<dyn GithubServiceTrait>,
@@ -3245,6 +3529,7 @@ async fn route_agent_workspace_pr_autofix_if_needed(
         None,
         None,
         chat_service,
+        None,
     )
     .await
 }
@@ -3263,6 +3548,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     chat_service: Arc<dyn ChatService>,
+    polled_health: Option<&PrHealth>,
 ) -> crate::AppResult<bool> {
     route_agent_workspace_pr_autofix_if_needed_with_notifications(
         github,
@@ -3276,6 +3562,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
         chat_service,
         None,
         None,
+        polled_health,
     )
     .await
 }
@@ -3293,6 +3580,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_notifications(
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
     project: Option<&Project>,
+    polled_health: Option<&PrHealth>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo
         .get_by_conversation_id(conversation_id)
@@ -3319,6 +3607,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_notifications(
         notification_service,
         project,
         None,
+        polled_health,
     )
     .await
 }
@@ -3424,6 +3713,7 @@ async fn recheck_agent_workspace_pr_health_once(
         Some(state.notification_service()),
         Some(&project),
         Some(authority),
+        None,
     )
     .await
 }
@@ -3788,6 +4078,7 @@ pub(crate) async fn route_ideation_plan_pr_autofix_if_needed(
         None,
         None,
         None,
+        None,
     )
     .await
 }
@@ -3807,6 +4098,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
     notification_service: Option<Arc<NotificationService>>,
     project: Option<&Project>,
     expected_held_attempt: Option<HeldPrHealthRecheckAuthority>,
+    polled_health: Option<&PrHealth>,
 ) -> crate::AppResult<bool> {
     let target_matches_workspace_mode = matches!(
         (workspace.mode, &target.kind),
@@ -3842,9 +4134,8 @@ async fn route_agent_workspace_pr_autofix_for_target(
         return Ok(false);
     }
 
-    let health = github
-        .fetch_pr_health(working_dir, target.pr_number)
-        .await?;
+    let health =
+        resolve_polled_pr_health(&github, working_dir, target.pr_number, polled_health).await?;
     let mut current_issue = classify_agent_workspace_pr_autofix_issue(target.pr_number, &health);
     let mut superseding_base_commit = None;
     // A durable completion may have already reserved a rerun or classified this exact state as
@@ -5238,10 +5529,12 @@ async fn route_agent_workspace_pr_review_monitor_if_needed(
         agent_run_repo,
         chat_service,
         None,
+        None,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn route_agent_workspace_pr_review_monitor_if_needed_with_notifications(
     github: Arc<dyn GithubServiceTrait>,
     working_dir: &Path,
@@ -5251,6 +5544,7 @@ async fn route_agent_workspace_pr_review_monitor_if_needed_with_notifications(
     agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
+    polled_health: Option<&PrHealth>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo
         .get_by_conversation_id(conversation_id)
@@ -5290,7 +5584,7 @@ async fn route_agent_workspace_pr_review_monitor_if_needed_with_notifications(
         return Ok(false);
     }
 
-    let health = github.fetch_pr_health(working_dir, pr_number).await?;
+    let health = resolve_polled_pr_health(&github, working_dir, pr_number, polled_health).await?;
     import_agent_workspace_pr_comment_evidence(
         Arc::clone(&workspace_repo),
         conversation_id,
@@ -6000,10 +6294,12 @@ async fn route_agent_workspace_review_feedback_if_present(
         None,
         None,
         chat_service,
+        None,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
     github: Arc<dyn GithubServiceTrait>,
     working_dir: &Path,
@@ -6014,6 +6310,7 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     chat_service: Arc<dyn ChatService>,
+    polled_health: Option<&PrHealth>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo
         .get_by_conversation_id(conversation_id)
@@ -6057,7 +6354,7 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
         return Ok(false);
     }
 
-    let health = github.fetch_pr_health(working_dir, pr_number).await?;
+    let health = resolve_polled_pr_health(&github, working_dir, pr_number, polled_health).await?;
     let issue = agent_workspace_pr_review_issue(pr_number, &health);
     if !agent_workspace_pr_health_has_head(&health) {
         update_agent_workspace_pr_supervision_state(

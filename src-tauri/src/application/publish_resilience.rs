@@ -944,6 +944,23 @@ pub(crate) async fn reconcile_blocked_agent_workspace_repair_pr_handoff(
     }
 }
 
+/// User-facing blocker text for a failed pull-request continuation.
+///
+/// A rate limit gets its own wording because the default copy ("Retry the blocked operation")
+/// tells the user to do the one thing that cannot work while GitHub's window is exhausted.
+///
+/// This is copy only. Retry *eligibility* stays structural: the automatic ladder in
+/// `durable_attempt_recovery` defers on the shared `RateLimitState`, never on this text. The
+/// module deliberately treats blocker prose as unusable as evidence, and that stays true.
+pub(crate) fn agent_workspace_repair_pr_handoff_blocker(error: &str) -> String {
+    if crate::infrastructure::services::gh_cli_github_service::is_github_rate_limit_message(error) {
+        return format!(
+            "GitHub API rate limit reached: {error}. RalphX will retry automatically after the limit resets; you can also retry manually."
+        );
+    }
+    format!("Pull-request continuation could not complete: {error}. Retry the blocked operation.")
+}
+
 async fn block_agent_workspace_repair_pr_handoff(
     state: &AppState,
     attempt: AgentWorkspaceRepairAttempt,
@@ -956,9 +973,7 @@ async fn block_agent_workspace_repair_pr_handoff(
         .get_by_conversation_id(&attempt.conversation_id)
         .await?
         .and_then(|workspace| workspace.pr_auto_merge_current);
-    let blocker = format!(
-        "Pull-request continuation could not complete: {error}. Retry the blocked operation."
-    );
+    let blocker = agent_workspace_repair_pr_handoff_blocker(error);
     let _ = crate::application::agent_workspace_publish_repair_state::block_agent_workspace_repair_completion_with_projection(
         Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.branch_update_repo),

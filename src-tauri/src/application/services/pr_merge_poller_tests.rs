@@ -730,6 +730,7 @@ async fn held_manual_unpublished_redrive_noop_falls_through_and_retains_the_hold
         Some(Arc::clone(&state.agent_workspace_repair_repo)),
         Some(branch_update_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("same-tick autofix routing should retain identical evidence");
@@ -792,6 +793,7 @@ async fn held_unpublished_redrive_noop_falls_through_to_base_advanced_supersessi
         Some(Arc::clone(&state.agent_workspace_repair_repo)),
         Some(branch_update_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("base-advanced routing should supersede the held attempt");
@@ -4284,6 +4286,7 @@ async fn review_pr_monitor_routes_new_head_after_awaiting_user_decision() {
         Arc::new(MemoryAgentRunRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
         Some(notification_service),
+        None,
     )
     .await
     .expect("awaiting-user route should dispatch a new-head re-review");
@@ -4305,6 +4308,106 @@ async fn review_pr_monitor_routes_new_head_after_awaiting_user_decision() {
         .expect("notification lookup should succeed")
         .notifications;
     assert!(notifications[0].read_at.is_some());
+}
+
+/// Phase 1 of the rate-limit hardening: the workspace poll loop reads PR health once per
+/// iteration and hands that snapshot to every branch, so a branch given a snapshot must not
+/// spend a second GitHub read on the same PR.
+#[tokio::test]
+async fn review_pr_monitor_reuses_polled_health_without_a_second_github_read() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let workspace = review_pr_workspace(
+        "review-monitor-reuse-health-conversation",
+        "project-review-monitor-reuse-health",
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let mut monitor = watching_review_monitor(&workspace, "old-head");
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
+    workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    // Deliberately left unconfigured: a fetch would fall back to `check_pr_sync_state` and
+    // silently succeed, so only the call counter proves reuse.
+    let github = Arc::new(MockGithubService::new());
+    let chat = Arc::new(MockChatService::new());
+    let polled_health = open_pr_health("new-head");
+
+    let routed = super::route_agent_workspace_pr_review_monitor_if_needed_with_notifications(
+        github.clone() as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+        Some(&polled_health),
+    )
+    .await
+    .expect("supplied health should route the new head");
+
+    assert!(routed, "the injected snapshot must drive the same routing");
+    assert_eq!(
+        github.state().fetch_pr_health_calls,
+        0,
+        "a branch handed the iteration's health snapshot must not re-fetch it"
+    );
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+}
+
+/// Guards the `None` half of the same seam: callers outside a poll iteration have no snapshot
+/// and must keep fetching their own health.
+#[tokio::test]
+async fn review_pr_monitor_fetches_health_when_no_polled_snapshot_is_supplied() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let workspace = review_pr_workspace(
+        "review-monitor-no-snapshot-conversation",
+        "project-review-monitor-no-snapshot",
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let mut monitor = watching_review_monitor(&workspace, "old-head");
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
+    workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(open_pr_health("new-head")));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_review_monitor_if_needed_with_notifications(
+        github.clone() as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+        None,
+    )
+    .await
+    .expect("absent snapshot should fall back to a live health read");
+
+    assert!(routed);
+    assert_eq!(github.state().fetch_pr_health_calls, 1);
 }
 
 #[tokio::test]
@@ -6615,6 +6718,7 @@ async fn live_pr_autofix_suppresses_same_fingerprint_while_ci_rerun_is_pending()
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("same pending CI fingerprint should be handled without an error");
@@ -6683,6 +6787,7 @@ async fn legacy_ci_rerun_fingerprint_settles_instead_of_hanging() {
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("changed CI fingerprint should dispatch a new autofix generation");
@@ -6756,6 +6861,7 @@ async fn ci_rerun_hold_settles_once_reran_runs_are_terminal() {
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("terminal rerun should settle and allow a fresh dispatch");
@@ -6828,6 +6934,7 @@ async fn ci_await_hold_suppresses_dispatch_and_survives_unchanged_classification
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("awaiting CI should suppress duplicate dispatch");
@@ -6893,6 +7000,7 @@ async fn ci_hold_settles_when_head_moves() {
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("a moved head should end the old CI hold");
@@ -6970,6 +7078,7 @@ async fn unrelated_conversation_dispatch_does_not_settle_a_ci_hold() {
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
         chat as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("the routed conversation should process independently");
@@ -7045,6 +7154,7 @@ async fn route_with_base_conclusions(
         Some(repair_repo),
         Some(branch_update_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("routing should complete");
@@ -7223,6 +7333,7 @@ async fn exhausted_streak_fingerprint_suppresses_a_fresh_streak_until_health_cha
         Some(Arc::clone(&repair_repo)),
         Some(Arc::clone(&branch_update_repo)),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("an exhausted fingerprint should suppress a fresh streak");
@@ -7260,6 +7371,7 @@ async fn exhausted_streak_fingerprint_suppresses_a_fresh_streak_until_health_cha
         Some(Arc::clone(&repair_repo)),
         Some(Arc::clone(&branch_update_repo)),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("repeat polls stay suppressed");
@@ -7296,6 +7408,7 @@ async fn exhausted_streak_fingerprint_suppresses_a_fresh_streak_until_health_cha
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("changed health should clear the memory and dispatch");
@@ -7372,6 +7485,7 @@ async fn live_pr_autofix_unchanged_health_hold_suppresses_same_fingerprint_then_
         Some(Arc::clone(&repair_repo)),
         Some(Arc::clone(&branch_update_repo)),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("unchanged health should be suppressed");
@@ -7409,6 +7523,7 @@ async fn live_pr_autofix_unchanged_health_hold_suppresses_same_fingerprint_then_
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("changed health should dispatch a new generation");
@@ -7500,6 +7615,7 @@ async fn live_pr_autofix_new_base_evidence_supersedes_same_fingerprint_health_ho
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("new base evidence should supersede the hold");
@@ -7603,6 +7719,7 @@ async fn live_pr_autofix_behind_at_already_updated_tip_enters_base_stale_hold() 
         Some(Arc::clone(&repair_repo)),
         Some(Arc::clone(&branch_update_repo)),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("repeated behind observation should hold");
@@ -7632,6 +7749,7 @@ async fn live_pr_autofix_behind_at_already_updated_tip_enters_base_stale_hold() 
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
         chat as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("re-entry should retain the same base-stale hold");
@@ -7723,6 +7841,7 @@ async fn live_pr_autofix_ci_hold_base_stale_marker_clears_once_when_no_longer_be
         Some(Arc::clone(&repair_repo)),
         Some(Arc::clone(&branch_update_repo)),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("CI-only repeated base tip should enter base-stale hold");
@@ -7755,6 +7874,7 @@ async fn live_pr_autofix_ci_hold_base_stale_marker_clears_once_when_no_longer_be
         Some(Arc::clone(&repair_repo)),
         Some(Arc::clone(&branch_update_repo)),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("unknown merge state must retain base_stale");
@@ -7790,6 +7910,7 @@ async fn live_pr_autofix_ci_hold_base_stale_marker_clears_once_when_no_longer_be
         Some(Arc::clone(&repair_repo)),
         Some(Arc::clone(&branch_update_repo)),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("other merge state must retain base_stale");
@@ -7815,6 +7936,7 @@ async fn live_pr_autofix_ci_hold_base_stale_marker_clears_once_when_no_longer_be
         Some(Arc::clone(&repair_repo)),
         Some(Arc::clone(&branch_update_repo)),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("missing base OID must retain base_stale");
@@ -7851,6 +7973,7 @@ async fn live_pr_autofix_ci_hold_base_stale_marker_clears_once_when_no_longer_be
         Some(Arc::clone(&repair_repo)),
         Some(Arc::clone(&branch_update_repo)),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("known cleared behind state should release base_stale and handle terminal CI");
@@ -7879,6 +8002,7 @@ async fn live_pr_autofix_ci_hold_base_stale_marker_clears_once_when_no_longer_be
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("re-entry should not duplicate the successor repair");
@@ -8026,6 +8150,7 @@ async fn live_pr_autofix_ci_rerun_hold_behind_base_dirty_worktree_defers_without
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
         None,
         Some(&project),
+        None,
     )
     .await
     .expect("dirty worktree should defer to the fixer");
@@ -8201,6 +8326,7 @@ async fn live_pr_autofix_advanced_base_and_behind_updates_advanced_tip_first() {
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
         None,
         Some(&project),
+        None,
     )
     .await
     .expect("settled worktree should update directly");
@@ -8379,6 +8505,7 @@ async fn live_pr_autofix_ci_rerun_hold_behind_base_updates_before_waiting() {
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
         None,
         Some(&project),
+        None,
     )
     .await
     .expect("settled CI-rerun hold should update directly before waiting");
@@ -8545,6 +8672,7 @@ async fn live_pr_autofix_behind_base_post_push_marker_rejection_recovers_from_ne
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
         None,
         Some(&project),
+        None,
     )
     .await
     .expect("post-push marker rejection should be harmless");
@@ -8593,6 +8721,7 @@ async fn live_pr_autofix_behind_base_post_push_marker_rejection_recovers_from_ne
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
         None,
         Some(&project),
+        None,
     )
     .await
     .expect("fresh remote head should recover without retrying the old update");
@@ -8719,6 +8848,7 @@ async fn live_pr_autofix_behind_base_with_foreign_target_lease_has_no_effects() 
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
         None,
         Some(&project),
+        None,
     )
     .await
     .expect("foreign target lease must stop direct base update harmlessly");
@@ -8805,6 +8935,7 @@ async fn live_pr_autofix_pre_existing_on_base_suppresses_same_fingerprint_then_r
         Some(Arc::clone(&repair_repo)),
         Some(Arc::clone(&branch_update_repo)),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("unchanged pre-existing failure should be suppressed");
@@ -8838,6 +8969,7 @@ async fn live_pr_autofix_pre_existing_on_base_suppresses_same_fingerprint_then_r
         Some(Arc::clone(&repair_repo)),
         Some(branch_update_repo),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
     )
     .await
     .expect("changed pre-existing failure should dispatch a new generation");
@@ -8906,6 +9038,7 @@ async fn live_pr_autofix_repair_repo_route_deduplicates_concurrent_dispatches() 
             Some(Arc::clone(&repair_repo)),
             Some(Arc::clone(&branch_update_repo)),
             chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+            None,
         ),
         super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
             Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
@@ -8917,6 +9050,7 @@ async fn live_pr_autofix_repair_repo_route_deduplicates_concurrent_dispatches() 
             Some(Arc::clone(&repair_repo)),
             Some(Arc::clone(&branch_update_repo)),
             chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+            None,
         )
     );
     let successful_dispatches = [
@@ -9049,6 +9183,7 @@ async fn live_pr_autofix_repair_routed_signal_records_once_for_existing_attempt(
             Some(Arc::clone(&repair_repo)),
             Some(Arc::clone(&branch_update_repo)),
             chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+            None,
         )
         .await
         .expect("first live autofix route should dispatch")
@@ -9086,6 +9221,7 @@ async fn live_pr_autofix_repair_routed_signal_records_once_for_existing_attempt(
             Some(Arc::clone(&repair_repo)),
             Some(Arc::clone(&branch_update_repo)),
             chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+            None,
         )
         .await
         .expect("joined poll cycles must settle harmlessly");
@@ -9264,6 +9400,7 @@ async fn live_review_feedback_repair_repo_route_keeps_existing_continuation_auth
             Some(Arc::clone(&repair_repo)),
             Some(Arc::clone(&branch_update_repo)),
             chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+            None,
         )
         .await
         .expect("live review-feedback repair route should dispatch")
@@ -9306,6 +9443,7 @@ async fn live_review_feedback_repair_repo_route_keeps_existing_continuation_auth
             Some(Arc::clone(&repair_repo)),
             Some(Arc::clone(&branch_update_repo)),
             chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+            None,
         )
         .await
         .expect("duplicate review-feedback route should be harmless")
@@ -9370,6 +9508,105 @@ fn rate_limit_default_has_high_remaining() {
         rl.reset_at > Instant::now(),
         "default reset_at should be in the future"
     );
+}
+
+fn rate_limit_state(remaining: u32, reset_in: Duration) -> Arc<std::sync::Mutex<RateLimitState>> {
+    Arc::new(std::sync::Mutex::new(RateLimitState {
+        remaining,
+        reset_at: Instant::now() + reset_in,
+    }))
+}
+
+#[test]
+fn healthy_budget_leaves_the_poll_interval_untouched() {
+    let state = rate_limit_state(4_000, Duration::from_secs(600));
+
+    let (interval, sleep) =
+        super::apply_rate_limit_pressure(&state, Duration::from_secs(60), Duration::from_secs(300));
+
+    assert_eq!(interval, Duration::from_secs(60));
+    assert!(sleep.is_zero());
+}
+
+#[test]
+fn low_budget_doubles_the_poll_interval_up_to_the_cap() {
+    let state = rate_limit_state(499, Duration::from_secs(600));
+
+    let (doubled, sleep) =
+        super::apply_rate_limit_pressure(&state, Duration::from_secs(60), Duration::from_secs(300));
+    assert_eq!(doubled, Duration::from_secs(120));
+    assert!(sleep.is_zero());
+
+    let (capped, _) = super::apply_rate_limit_pressure(
+        &state,
+        Duration::from_secs(240),
+        Duration::from_secs(300),
+    );
+    assert_eq!(
+        capped,
+        Duration::from_secs(300),
+        "doubling must respect the cap"
+    );
+}
+
+#[test]
+fn critical_budget_sleeps_until_the_window_resets() {
+    let state = rate_limit_state(99, Duration::from_secs(420));
+
+    let (interval, sleep) =
+        super::apply_rate_limit_pressure(&state, Duration::from_secs(60), Duration::from_secs(300));
+
+    assert_eq!(interval, Duration::from_secs(300));
+    assert!(
+        sleep > Duration::from_secs(400) && sleep <= Duration::from_secs(420),
+        "below 100 remaining the poller must wait for the reset, got {sleep:?}"
+    );
+}
+
+/// An observed rate-limit rejection must zero the shared budget so every poller and the durable
+/// recovery sweep back off together.
+#[test]
+fn observing_a_rate_limit_zeroes_the_shared_budget() {
+    let state = rate_limit_state(3_000, Duration::from_secs(600));
+
+    super::note_rate_limited(&state);
+
+    let guard = state.lock().expect("rate limit state");
+    assert_eq!(guard.remaining, 0);
+    assert!(
+        guard.reset_at > Instant::now(),
+        "a future reset from a real probe must not be overwritten"
+    );
+}
+
+/// The fallback only fills in a reset when none is known; a probe-supplied future reset wins.
+#[test]
+fn observing_a_rate_limit_only_invents_a_reset_when_the_known_one_has_passed() {
+    let expired = Arc::new(std::sync::Mutex::new(RateLimitState {
+        remaining: 10,
+        reset_at: Instant::now(),
+    }));
+
+    super::note_rate_limited(&expired);
+
+    let guard = expired.lock().expect("rate limit state");
+    assert_eq!(guard.remaining, 0);
+    assert!(
+        guard.reset_at > Instant::now() + Duration::from_secs(60),
+        "an already-elapsed reset must be pushed out so pollers actually back off"
+    );
+}
+
+#[test]
+fn rate_limit_snapshot_exposes_the_shared_state_to_recovery() {
+    let registry = make_registry_no_github();
+
+    let (remaining, reset_at) = registry
+        .rate_limit_snapshot()
+        .expect("an unpoisoned registry must report its budget");
+
+    assert!(remaining >= 5_000);
+    assert!(reset_at > Instant::now());
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -9954,6 +10191,65 @@ async fn terminal_agent_workspace_pr_cleanup_logs_nonfatal_cleanup_error() {
 
     cleanup_terminal_agent_workspace_after_pr(workspace_repo, None, &conversation_id, &project)
         .await;
+}
+
+/// The whole point of Phase 1: one workspace poll iteration costs exactly one `fetch_pr_health`
+/// no matter how many supervision branches run inside it. Before this change the autofix,
+/// review-monitor, and review-feedback branches each paid their own GitHub read.
+#[tokio::test]
+async fn agent_workspace_open_pr_poll_iteration_fetches_health_once() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let branch = expected_workspace_branch(&project, "poller-single-health-conversation");
+    let mut workspace =
+        cleanup_workspace_with_conversation(&project, &branch, "poller-single-health-conversation");
+    workspace.publication_pr_status = Some("open".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_status(crate::domain::services::github_service::PrStatus::Open);
+    let registry = PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::new(MemoryPlanBranchRepository::new()),
+    );
+
+    registry.start_agent_workspace_polling(
+        conversation_id.clone(),
+        101,
+        project,
+        repo.path().to_path_buf(),
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MockChatService::new()),
+    );
+
+    // The review-feedback branch is the last GitHub read of an iteration, so observing it means
+    // every branch above it has already had its chance to fetch health. The next iteration is a
+    // full poll interval away, so the counter is stable once this fires.
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if github.state().check_pr_review_feedback_calls >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("one open-PR poll iteration should reach the review-feedback branch");
+
+    registry.stop_agent_workspace_polling(&conversation_id);
+    assert_eq!(
+        github.state().fetch_pr_health_calls,
+        1,
+        "every branch in one workspace poll iteration must share a single PR health read"
+    );
 }
 
 #[tokio::test]
