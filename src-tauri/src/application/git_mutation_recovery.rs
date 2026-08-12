@@ -433,13 +433,15 @@ async fn recover_repair_owned_git_mutation_claim(
     }
 
     let reason = "repair push remote OID does not match either the recorded pre-push or intended post-push OID";
-    let failed = crate::application::publish_resilience::fail_agent_workspace_repair_push_effect(
-        state.agent_workspace_repair_repo.as_ref(),
-        &current,
-        effect,
-        reason,
-    )
-    .await?;
+    let failed =
+        crate::application::publish_resilience::fail_agent_workspace_repair_effect_for_phase(
+            state.agent_workspace_repair_repo.as_ref(),
+            &current,
+            effect,
+            AgentWorkspaceRepairPhase::Continuing,
+            reason,
+        )
+        .await?;
     let cleared =
         complete_repair_claim(state.branch_update_repo.as_ref(), claim, failed.id.as_str()).await?;
     let GitMutationRecoveryOutcome::Cleared { claim_id } = cleared else {
