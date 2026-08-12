@@ -2014,6 +2014,58 @@ async fn repair_completion_validation_rejects_unpublishable_workspace_shapes() {
 }
 
 #[tokio::test]
+async fn repair_completion_validation_rejects_unintegrated_target_base_commit() {
+    let temp = tempfile::tempdir().expect("repair validation tempdir");
+    let state = AppState::new_test();
+    workspace_review_boundary_context(&state, temp.path(), false).await;
+    let conversation_id = ChatConversationId::from_string("repair-review-boundary");
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load validation workspace")
+        .expect("validation workspace exists");
+    let integrated_base = workspace.base_commit.clone();
+
+    // Advance the base past the workspace branch, then hand validation the freshly observed tip as
+    // its target base — exactly what conflict routing records for an attempt that has not merged.
+    let repo = temp.path().join("workspace-review-boundary");
+    std::fs::write(repo.join("base-moved.md"), "base moved\n")
+        .expect("base file should be written");
+    review_boundary_git(&repo, &["add", "base-moved.md"]);
+    review_boundary_git(&repo, &["commit", "-m", "base moved"]);
+    let observed_tip = review_boundary_git(&repo, &["rev-parse", "HEAD"]);
+
+    let error = inspect_agent_workspace_repair_completion(
+        &state,
+        &workspace,
+        "main",
+        Some(observed_tip.as_str()),
+    )
+    .await
+    .expect_err("an unintegrated target base must reject repair completion");
+    assert!(
+        matches!(error, crate::error::AppError::Conflict(_)),
+        "unexpected error variant: {error:?}"
+    );
+    assert!(
+        error.to_string().contains("does not contain base"),
+        "unexpected error: {error}"
+    );
+
+    let reloaded = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("reload validation workspace")
+        .expect("validation workspace exists");
+    assert_eq!(
+        reloaded.base_commit, integrated_base,
+        "a rejected completion must not record the unintegrated tip as the workspace base"
+    );
+}
+
+#[tokio::test]
 async fn publish_resume_phase_guards_preserve_current_durable_authority() {
     async fn state_in_phase(
         suffix: &str,

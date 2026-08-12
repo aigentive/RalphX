@@ -6774,6 +6774,7 @@ fn freshness_response_includes_effective_and_blocked_base_state() {
         captured_base_commit: Some("old-base-sha".to_string()),
         target_base_commit: "main-sha".to_string(),
         is_base_ahead: true,
+        source_contains_target_base: false,
     };
     let retargeted = retargeted_base_resolution();
     let response = AgentConversationWorkspaceFreshnessResponse::from_target_status(
@@ -6898,6 +6899,7 @@ fn workspace_freshness_cache_hits_and_invalidates_recent_response() {
             captured_base_commit: Some("old-base-sha".to_string()),
             target_base_commit: "main-sha".to_string(),
             is_base_ahead: true,
+            source_contains_target_base: false,
         },
         false,
         Some(1),
@@ -6947,6 +6949,7 @@ fn workspace_freshness_cache_keeps_local_and_full_scopes_separate() {
             captured_base_commit: Some("base-sha".to_string()),
             target_base_commit: "new-main-sha".to_string(),
             is_base_ahead: true,
+            source_contains_target_base: false,
         },
         false,
         Some(3),
@@ -6989,6 +6992,7 @@ fn workspace_freshness_cache_expires_stale_entries() {
             captured_base_commit: Some("old-base-sha".to_string()),
             target_base_commit: "main-sha".to_string(),
             is_base_ahead: false,
+            source_contains_target_base: true,
         },
         false,
         Some(0),
@@ -7029,6 +7033,7 @@ fn workspace_freshness_invalidation_guard_clears_cache_on_create_and_drop() {
             captured_base_commit: Some("old-base-sha".to_string()),
             target_base_commit: "main-sha".to_string(),
             is_base_ahead: false,
+            source_contains_target_base: true,
         },
         false,
         Some(0),
@@ -7091,6 +7096,7 @@ fn workspace_freshness_cache_skips_nil_conversation_ids() {
             captured_base_commit: None,
             target_base_commit: "main-sha".to_string(),
             is_base_ahead: false,
+            source_contains_target_base: true,
         },
         false,
         Some(0),
