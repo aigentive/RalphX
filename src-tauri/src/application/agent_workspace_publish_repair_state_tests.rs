@@ -5442,3 +5442,124 @@ async fn reserve_ci_await_is_idempotent_for_the_await_reason_and_budget() {
         "a replay must not duplicate the durable await marker"
     );
 }
+
+#[tokio::test]
+async fn terminated_update_effect_restores_retry_repair_without_an_escalation_reason() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("repair-action-terminated-effect");
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .expect("seed terminated-effect workspace");
+    let requested = start_or_join_agent_workspace_repair(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        repair_start_request(
+            conversation_id,
+            AgentWorkspaceRepairSource::Publish,
+            AgentWorkspaceRepairContinuation::Publish,
+            "terminated effect recovery action",
+        ),
+    )
+    .await
+    .expect("start terminated-effect repair")
+    .into_attempt();
+    let mut blocked = requested.clone();
+    blocked.phase = AgentWorkspaceRepairPhase::Blocked;
+    blocked.updated_at = requested.updated_at + chrono::Duration::milliseconds(1);
+    let blocked = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: blocked,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at: requested.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("block terminated-effect repair")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("blocking terminated-effect repair should apply: {outcome:?}"),
+    };
+
+    let effect = AgentWorkspaceRepairEffect::new(
+        blocked.id.clone(),
+        AgentWorkspaceRepairEffectKind::UpdatePr,
+        "recovery-action-terminated-effect",
+        chrono::Utc::now(),
+    );
+    let open = match state
+        .agent_workspace_repair_repo
+        .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+            attempt_id: blocked.id.clone(),
+            generation: blocked.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_attempt_updated_at: blocked.updated_at,
+            effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("checkpoint the orphaned PR effect")
+    {
+        CreateAgentWorkspaceRepairEffectOutcome::Created(effect) => effect,
+        outcome => panic!("orphaned PR effect should be created: {outcome:?}"),
+    };
+    assert_eq!(
+        load_agent_workspace_repair_operation_recovery_action(
+            state.agent_workspace_repair_repo.as_ref(),
+            &blocked,
+        )
+        .await
+        .expect("classify fenced recovery action"),
+        AgentWorkspaceRepairOperationRecoveryAction::None,
+        "an open effect still fences the retry"
+    );
+
+    crate::application::publish_resilience::fail_agent_workspace_repair_effect_for_phase(
+        state.agent_workspace_repair_repo.as_ref(),
+        &blocked,
+        open,
+        AgentWorkspaceRepairPhase::Blocked,
+        "terminated an orphaned in-flight PR-update handoff",
+    )
+    .await
+    .expect("terminate the orphaned PR effect");
+
+    assert!(!blocked
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON));
+    assert_eq!(
+        load_agent_workspace_repair_operation_recovery_action(
+            state.agent_workspace_repair_repo.as_ref(),
+            &blocked,
+        )
+        .await
+        .expect("classify unfenced recovery action"),
+        AgentWorkspaceRepairOperationRecoveryAction::RetryRepair,
+        "terminating the effect must restore the explicit retry without an escalation reason"
+    );
+    assert!(explicit_agent_workspace_repair_retry_allowed(
+        state.agent_workspace_repair_repo.as_ref(),
+        &blocked,
+    )
+    .await
+    .expect("terminated effect permits explicit retry"));
+
+    let mut scheduled = blocked.clone();
+    scheduled.next_dispatch_at = Some(chrono::Utc::now() + chrono::Duration::minutes(5));
+    assert_eq!(
+        load_agent_workspace_repair_operation_recovery_action(
+            state.agent_workspace_repair_repo.as_ref(),
+            &scheduled,
+        )
+        .await
+        .expect("classify scheduled recovery action"),
+        AgentWorkspaceRepairOperationRecoveryAction::None,
+        "a scheduled automatic retry owns the attempt, so the button stays hidden"
+    );
+}
