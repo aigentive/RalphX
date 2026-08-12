@@ -6,7 +6,7 @@
 
 use super::helpers::*;
 
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{GitMode, ProjectId};
 use crate::domain::state_machine::events::TaskEvent;
 use crate::domain::state_machine::machine::{Response, State};

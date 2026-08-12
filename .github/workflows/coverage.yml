@@ -323,7 +323,7 @@ jobs:
           }
           EXCLUDED_RECORDS = {
               "src/application/app_state.rs",
-              "src/application/app_setup.rs",
+              "src/shell/app_setup.rs",
               "src/application/chat_resumption.rs",
               "src/application/chat_service/chat_service_merge.rs",
               "src/application/chat_service/chat_service_queue.rs",
@@ -333,7 +333,7 @@ jobs:
               "src/application/reconciliation.rs",
               "src/application/reconciliation/handlers/merge.rs",
               "src/application/runtime_factory.rs",
-              "src/application/runtime_wiring.rs",
+              "src/shell/runtime_wiring.rs",
               "src/application/services/pr_merge_poller.rs",
               "src/application/chat_service/mod.rs",
               "src/application/plan_complexity_assessment.rs",
@@ -362,7 +362,7 @@ jobs:
               "src/domain/state_machine/transition_handler/on_enter_states/merge.rs",
               "src/infrastructure/agents/claude/mod.rs",
               "src/infrastructure/agents/codex/codex_cli_client.rs",
-              "src/infrastructure/agents/spawner.rs",
+              "src/application/agents/spawner.rs",
           }
 
           # Keep patch coverage focused on behavior instead of repeated
@@ -642,7 +642,7 @@ jobs:
               "src/application/ready_task_scheduler.rs",
               "src/application/reconciliation.rs",
               "src/application/runtime_factory.rs",
-              "src/application/runtime_wiring.rs",
+              "src/shell/runtime_wiring.rs",
               "src/application/services/pr_merge_poller.rs",
               "src/application/startup_jobs.rs",
               "src/commands/agent_composer_commands/plan_references.rs",
@@ -665,7 +665,7 @@ jobs:
               "src/http_server/types.rs",
               "src/infrastructure/agents/claude/mod.rs",
               "src/infrastructure/agents/codex/codex_cli_client.rs",
-              "src/infrastructure/agents/spawner.rs",
+              "src/application/agents/spawner.rs",
           }
 
           # Keep patch coverage focused on behavior instead of repeated

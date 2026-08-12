@@ -103,7 +103,7 @@ jobs:
                   - 'frontend/**'
                   - 'src-tauri/Cargo.lock'
                   - 'src-tauri/Cargo.toml'
-                  - 'src-tauri/src/application/runtime_wiring.rs'
+                  - 'src-tauri/src/shell/runtime_wiring.rs'
                   - 'src-tauri/tauri.conf.json'
               - '!**/CLAUDE.md'
             tauri_alignment:
@@ -304,7 +304,8 @@ jobs:
             --features test-utils \
             --test suite_ipc_commands \
             --test suite_commands \
-            -E 'test(ipc_contract) or test(agent_completion_event_runtime)'
+            --test tauri_events \
+            -E 'test(ipc_contract) or test(agent_completion_event_runtime) or test(tauri_events)'
 
   rust-lib-nextest-archive:
     name: Rust Lib Tests Archive

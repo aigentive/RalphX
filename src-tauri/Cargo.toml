@@ -1,6 +1,6 @@
 [package]
 name = "ralphx"
-version = "0.97.0"
+version = "0.98.0"
 description = "RalphX - Autonomous AI-driven development GUI"
 authors = ["RalphX Team"]
 edition = "2021"
@@ -109,6 +109,11 @@ security-framework = "3.7"
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.4", features = ["util"] }
+
+[[test]]
+name = "tauri_events"
+path = "tests/tauri_events/main.rs"
+required-features = ["test-utils"]
 
 [[test]]
 name = "suite_agent_workspace"

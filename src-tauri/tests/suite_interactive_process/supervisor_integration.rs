@@ -8,7 +8,7 @@ use ralphx_lib::domain::state_machine::AgentSpawner;
 use ralphx_lib::domain::supervisor::{
     ProgressInfo, SupervisorAction, SupervisorEvent, ToolCallInfo,
 };
-use ralphx_lib::infrastructure::agents::AgenticClientSpawner;
+use ralphx_lib::application::agents::AgenticClientSpawner;
 use ralphx_lib::infrastructure::supervisor::EventBus;
 use ralphx_lib::infrastructure::MockAgenticClient;
 

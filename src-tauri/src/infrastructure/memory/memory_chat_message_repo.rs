@@ -383,9 +383,9 @@ impl ChatMessageRepository for MemoryChatMessageRepository {
         let exists = messages.values().any(|m| {
             m.conversation_id.as_ref() == Some(conversation_id)
                 && (m.content.contains(
-                    crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_MARKER,
+                    crate::domain::verification_markers::VERIFICATION_RESULT_MARKER,
                 ) || m.metadata.as_deref().is_some_and(|metadata| {
-                    metadata.contains(crate::application::reconciliation::verification_handoff::VERIFICATION_RESULT_METADATA_KEY)
+                    metadata.contains(crate::domain::verification_markers::VERIFICATION_RESULT_METADATA_KEY)
                 }))
         });
         Ok(exists)

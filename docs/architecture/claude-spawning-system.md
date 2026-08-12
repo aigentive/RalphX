@@ -77,7 +77,7 @@ Also supports PATH lookup plus hardcoded fallback paths (`/opt/homebrew/bin/clau
 
 #### 2b. AgenticClientSpawner — State Machine Bridge
 
-**File:** `src-tauri/src/infrastructure/agents/spawner.rs`
+**File:** `src-tauri/src/application/agents/spawner.rs`
 
 Bridges the state machine's `AgentSpawner` trait to `AgenticClient`:
 
@@ -486,7 +486,7 @@ src-tauri/src/
 │   ├── capabilities.rs          # ClientCapabilities, ModelInfo
 │   └── error.rs                 # AgentError types
 ├── infrastructure/agents/
-│   ├── spawner.rs               # AgenticClientSpawner (state machine bridge)
+│   ├── (moved to application/agents/spawner.rs)               # AgenticClientSpawner (state machine bridge)
 │   ├── spawner_tests.rs         # Spawn dedup, execution state gating tests
 │   └── claude/
 │       ├── mod.rs               # Common spawn env, MCP config, name utils, sanitization

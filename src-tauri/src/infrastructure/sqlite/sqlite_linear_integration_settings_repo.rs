@@ -6,7 +6,7 @@ use rusqlite::{params, Connection};
 use tokio::sync::Mutex;
 
 use super::DbConnection;
-use crate::application::{LinearIntegrationSettings, LinearIntegrationSettingsRepository};
+use crate::domain::integrations::{LinearIntegrationSettings, LinearIntegrationSettingsRepository};
 use crate::domain::integrations::IntegrationValidationStatus;
 use crate::error::{AppError, AppResult};
 

@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -550,5 +550,25 @@ impl StartupCoordinator {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// Handle used to (re)launch a startup attempt.
+///
+/// The shell composition root builds the closure during `run_app_setup` and
+/// registers this as Tauri managed state; `commands::startup_commands` invokes
+/// it for user-triggered retries. It lives in `application` so that neither
+/// side needs an upward import of the shell layer.
+pub struct StartupAttemptLauncher {
+    launch: Arc<dyn Fn(u64) + Send + Sync>,
+}
+
+impl StartupAttemptLauncher {
+    pub fn new(launch: Arc<dyn Fn(u64) + Send + Sync>) -> Self {
+        Self { launch }
+    }
+
+    pub fn launch(&self, attempt_id: u64) {
+        (self.launch)(attempt_id);
     }
 }

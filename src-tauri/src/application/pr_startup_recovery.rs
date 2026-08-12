@@ -2470,7 +2470,7 @@ mod tests {
     };
     use crate::application::git_service::GitService;
     use crate::application::AppState;
-    use crate::commands::ExecutionState;
+    use crate::application::execution_state::ExecutionState;
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as DbPrStatus};
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,

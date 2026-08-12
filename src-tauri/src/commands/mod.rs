@@ -93,7 +93,6 @@ pub mod qa_commands;
 pub mod question_commands;
 #[cfg(test)]
 mod question_commands_tests;
-pub mod registry;
 pub mod release_notes_commands;
 pub mod repository_settings_commands;
 #[cfg(test)]
@@ -124,12 +123,6 @@ pub mod validation_commands;
 pub mod workflow_commands;
 pub mod workspace_open_commands;
 pub mod workspace_review_settings_commands;
-
-#[doc(hidden)]
-pub use agent_workspace_completion_dispatch::{
-    install_agent_workspace_completion_dispatch_for_test,
-    AgentWorkspaceCompletionDispatchTestHandle,
-};
 
 // Re-export commands for registration
 pub use crate::application::automation::api::{

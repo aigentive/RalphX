@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use crate::application::permission_state::{PendingPermissionInfo, PermissionDecision};
+use crate::domain::entities::permission_request::{PendingPermissionInfo, PermissionDecision};
 use crate::domain::repositories::PermissionRepository;
 use crate::error::AppResult;
 

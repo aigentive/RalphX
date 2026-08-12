@@ -9,5 +9,6 @@ pub mod supervisor;
 pub mod tools;
 
 pub mod entities;
+pub mod verification_markers;
 
 pub use ralphx_domain::{agents, execution, ideation, qa, review};

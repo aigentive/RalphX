@@ -12,17 +12,17 @@ use crate::application::agent_workspace_publish_recovery::{
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::runtime_factory::{ChatRuntimeFactoryDeps, RuntimeFactoryDeps};
 use crate::application::startup_git_auth_preflight::StartupGitAuthRecoveryState;
-use crate::application::startup_runtime_builders::{
+use crate::shell::startup_runtime_builders::{
     build_startup_chat_resumption_runner, build_startup_reconciliation_runner,
     build_startup_recovery_chat_service, build_startup_task_scheduler, StartupChatResumptionDeps,
     StartupReconciliationDeps, StartupSchedulerDeps,
 };
-use crate::application::startup_transition_factory::StartupTransitionFactory;
+use crate::shell::startup_transition_factory::StartupTransitionFactory;
 use crate::application::{
     startup_background, startup_jobs, AgentClientBundle, AppState, InteractiveProcessRegistry,
     StartupJobRunner,
 };
-use crate::commands::{ActiveProjectState, ExecutionState};
+use crate::application::execution_state::{ActiveProjectState, ExecutionState};
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
     AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
@@ -771,7 +771,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     }
 
     let phase_started_at = startup_phase_started("agent_workflow_recovery_launch");
-    match crate::application::server_boot::recover_agent_workflow_runs_for_startup(
+    match crate::shell::server_boot::recover_agent_workflow_runs_for_startup(
         Arc::new(app_state.clone()),
         Arc::clone(&execution_state),
     )
