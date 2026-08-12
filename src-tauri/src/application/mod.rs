@@ -136,6 +136,16 @@ mod data_retention_service_tests;
 pub mod dependency_service;
 #[cfg(target_os = "macos")]
 pub(crate) mod desktop_notification;
+#[cfg(target_os = "macos")]
+pub(crate) mod desktop_notification_budget;
+#[cfg(all(test, target_os = "macos"))]
+mod desktop_notification_budget_tests;
+#[cfg(target_os = "macos")]
+pub(crate) mod desktop_notification_reaper;
+#[cfg(all(test, target_os = "macos"))]
+mod desktop_notification_reaper_tests;
+#[cfg(all(test, target_os = "macos"))]
+mod desktop_notification_tests;
 pub mod diff_service;
 pub mod event_cleanup_service;
 pub mod execution_settings_bootstrap;
