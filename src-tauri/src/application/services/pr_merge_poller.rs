@@ -20,7 +20,9 @@ use crate::application::agent_runtime_context::branch_status::BranchStatusCache;
 use crate::application::agent_workspace_base_staleness::{
     classify_health_hold_disposition, BaseStalenessObservation, HealthHoldDisposition,
 };
-use crate::application::agent_workspace_ci_rerun::ci_rerun_hold_still_pending;
+use crate::application::agent_workspace_ci_rerun::{
+    ci_rerun_hold_still_pending, classify_check_conclusion, CiFailureKind,
+};
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
 };
@@ -34,12 +36,13 @@ use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_is_health_held, classify_agent_workspace_repair_delivery,
     held_repair_has_unpublished_head, mark_agent_workspace_base_update_target,
     release_agent_workspace_base_stale_hold, release_and_clear_agent_workspace_repair_target_lease,
-    reserve_agent_workspace_base_stale_hold, reserve_agent_workspace_base_update,
-    reserve_agent_workspace_repair_dispatch, settle_agent_workspace_repair_dispatch_outcome,
-    start_or_join_agent_workspace_repair, start_or_join_agent_workspace_repair_without_projection,
+    reserve_agent_workspace_base_parity_transient, reserve_agent_workspace_base_stale_hold,
+    reserve_agent_workspace_base_update, reserve_agent_workspace_repair_dispatch,
+    settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
+    start_or_join_agent_workspace_repair_without_projection,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PrAutofixCarryover,
 };
 #[cfg(test)]
 use crate::application::agent_workspace_publish_repair_state::{
@@ -4262,19 +4265,35 @@ async fn route_agent_workspace_pr_autofix_for_target(
     }
     // Checking the base costs one API call; sending an agent to "fix" a failure the PR did not
     // cause costs a full generation and cannot succeed.
-    if issue.kind == AgentWorkspacePrAutofixIssueKind::Checks
-        && pr_failures_already_fail_on_base(github.as_ref(), working_dir, &health).await
-    {
-        record_pre_existing_on_base_detection(
-            workspace_repo.as_ref(),
-            conversation_id,
-            &workspace,
-            &issue.classification,
-            &health,
-            notification_service.as_ref(),
-        )
-        .await?;
-        return Ok(false);
+    if issue.kind == AgentWorkspacePrAutofixIssueKind::Checks {
+        match pr_failures_already_fail_on_base(github.as_ref(), working_dir, &health).await {
+            BaseParityVerdict::Deterministic => {
+                record_pre_existing_on_base_detection(
+                    workspace_repo.as_ref(),
+                    conversation_id,
+                    &workspace,
+                    &issue.classification,
+                    &health,
+                    notification_service.as_ref(),
+                )
+                .await?;
+                return Ok(false);
+            }
+            BaseParityVerdict::TransientShape => {
+                record_base_parity_transient_detection(
+                    Arc::clone(&workspace_repo),
+                    repair_repo.clone(),
+                    conversation_id,
+                    &workspace,
+                    &issue.classification,
+                    &health,
+                    notification_service.as_ref(),
+                )
+                .await?;
+                return Ok(false);
+            }
+            BaseParityVerdict::None => {}
+        }
     }
     if authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
         .await?
@@ -4374,6 +4393,15 @@ async fn route_agent_workspace_pr_autofix_for_target(
 pub(crate) const CROSS_STREAK_FINGERPRINT_HOLD_STEP: &str = "repair_fingerprint_cross_streak_hold";
 /// The step recorded when RalphX proves a PR's failing check already fails on the base branch.
 pub(crate) const PRE_EXISTING_ON_BASE_DETECTED_STEP: &str = "repair_pre_existing_on_base_detected";
+/// The step recorded when RalphX proves a PR's failing checks share a transient/timeout shape
+/// with the identical checks on the base branch.
+pub(crate) const BASE_PARITY_TRANSIENT_DETECTED_STEP: &str =
+    "repair_base_parity_transient_detected";
+/// The step recorded when a transient/timeout base-parity shape is observed but the current
+/// generation is not idle (`Repairing`/`Blocked`, or targets a different base ref), so no hold is
+/// written yet. Kept distinct from `BASE_PARITY_TRANSIENT_DETECTED_STEP` so the detection dedupe
+/// only suppresses a repeat hold, never the first hold once the generation settles to `Ready`.
+pub(crate) const BASE_PARITY_TRANSIENT_YIELDED_STEP: &str = "repair_base_parity_transient_yielded";
 
 /// Records a base-caused failure as a hand-off rather than a repair.
 ///
@@ -4456,64 +4484,289 @@ async fn record_pre_existing_on_base_detection(
     Ok(true)
 }
 
-/// True only when GitHub proves the PR's failing checks already fail on the base branch tip.
+/// Holds the current PR autofix generation at a transient/timeout base-parity shape without
+/// dispatching a fixer. Unlike `record_pre_existing_on_base_detection`, this never marks
+/// `last_blocked_pr_health_fingerprint` — a rerun might clear the shape, so the workspace must be
+/// free to re-enter normal supervision the moment GitHub reports different health.
+///
+/// The hold is durable (a repair-attempt CAS, not a plain workspace flag) so the poller's existing
+/// health-suppressed reconciliation — the same gate `record_pre_existing_on_base_detection` relies
+/// on — short-circuits repeat polls before they ever call GitHub again. No separate poll-cost gate
+/// belongs here.
+///
+/// The `BASE_PARITY_TRANSIENT_DETECTED_STEP` publication event and its notification are recorded
+/// **at most once per classification**, but the hold itself is not: unlike
+/// `record_pre_existing_on_base_detection`'s proven-deterministic hold, this hold is meant to be
+/// consumed (a user rerun clears the pending reason once its runs settle) and re-established later
+/// at the identical classification if the parity shape persists. Early-returning on the
+/// already-recorded event would leave the workspace with neither a hold nor a dispatch forever
+/// after the first consumption — gate only the once-per-classification side effects, never the
+/// reservation itself.
+async fn record_base_parity_transient_detection(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    classification: &str,
+    health: &PrHealth,
+    notification_service: Option<&Arc<NotificationService>>,
+) -> crate::error::AppResult<bool> {
+    let Some(repair_repo) = repair_repo else {
+        // Durable holds require repair-attempt authority. This only happens on the legacy
+        // test-only compatibility dispatch path, which does not exercise this feature.
+        return Ok(false);
+    };
+    let base_ref = health.sync_state.base_ref_name.trim();
+    let summary = format!(
+        "The failing checks on this PR share a transient/timeout shape with the identical checks \
+         on {base_ref}. RalphX is withholding a fixer generation because a rerun might clear this \
+         without any PR-side work."
+    );
+
+    let publication_events = workspace_repo.list_publication_events(conversation_id).await?;
+    // Once-per-classification gate for the event/notification only — never for the reservation.
+    // The hold this records is meant to be consumed (a user rerun clears the pending reason) and
+    // re-established later at the same classification if the parity shape persists; the workspace
+    // must not lose its only path back to a hold just because it already told the user once.
+    let already_recorded = publication_events.iter().any(|event| {
+        event.step == BASE_PARITY_TRANSIENT_DETECTED_STEP
+            && event.classification.as_deref() == Some(classification)
+    });
+
+    let start = start_or_join_agent_workspace_repair_without_projection(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo),
+        AgentWorkspaceRepairStartRequest {
+            conversation_id: conversation_id.clone(),
+            source: AgentWorkspaceRepairSource::PrAutofix,
+            continuation: AgentWorkspaceRepairContinuation::ResumePrSupervision,
+            target_base_ref: health.sync_state.base_ref_name.clone(),
+            target_base_commit: workspace.base_commit.clone(),
+            verified_newer_base: false,
+            // Contribute no pending reason here. `reason` is appended to `pending_reasons` on
+            // BOTH the started and joined paths, before this call knows whether the generation
+            // is even convertible into a hold. The prose would be read back as human-authored
+            // repair intent (it matches no machine marker) and the hold marker would paint a
+            // live `Repairing`/`Blocked` generation as health-held. The marker is written only
+            // once the hold actually applies, by `reserve_agent_workspace_base_parity_transient`
+            // below; the prose stays in `summary`, which is where the card reads it.
+            reason: String::new(),
+            summary: summary.clone(),
+            auto_merge_current: workspace.pr_auto_merge_current,
+            explicit_publish_requested: false,
+            retry_blocked: false,
+            carryover_pr_autofix_evidence: Some(PrAutofixCarryover {
+                health_fingerprint: Some(classification.to_string()),
+                dispatch_head_commit: None,
+            }),
+        },
+    )
+    .await?;
+
+    // Only a generation that is genuinely idle may be converted into this passive hold. A fresh
+    // `Started` attempt is idle by construction (this call created it). A `Joined` attempt is idle
+    // only when it is already sitting in `Ready`; joining it mid-repair, blocked, or anywhere else
+    // would silently steal an in-flight generation and lose track of what it was actually doing.
+    let attempt = match start {
+        AgentWorkspaceRepairStartOutcome::Started(attempt) => attempt,
+        AgentWorkspaceRepairStartOutcome::Joined(attempt)
+            if attempt.phase == AgentWorkspaceRepairPhase::Ready =>
+        {
+            attempt
+        }
+        AgentWorkspaceRepairStartOutcome::Joined(_)
+        | AgentWorkspaceRepairStartOutcome::BlockedByCurrent(_) => {
+            // Record a yield, never the detection step: the owning generation may still settle to
+            // `Ready` and re-enter this function on a later poll at the same classification, and
+            // the detection-step dedupe above must not have already suppressed that first hold.
+            let already_yielded = publication_events.iter().any(|event| {
+                event.step == BASE_PARITY_TRANSIENT_YIELDED_STEP
+                    && event.classification.as_deref() == Some(classification)
+            });
+            if !already_yielded {
+                workspace_repo
+                    .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                        conversation_id.clone(),
+                        BASE_PARITY_TRANSIENT_YIELDED_STEP,
+                        "blocked",
+                        &summary,
+                        Some(classification.to_string()),
+                    ))
+                    .await?;
+            }
+            return Ok(false);
+        }
+        AgentWorkspaceRepairStartOutcome::SuccessorStarted(_) => {
+            unreachable!(
+                "retry_blocked is false; start_or_join_agent_workspace_repair_without_projection \
+                 cannot settle and start a successor generation here"
+            )
+        }
+    };
+
+    let reserved = reserve_agent_workspace_base_parity_transient(
+        Arc::clone(&repair_repo),
+        attempt,
+        &summary,
+        workspace.pr_auto_merge_current,
+    )
+    .await?;
+    let AgentWorkspaceRepairTransitionOutcome::Applied(_) = reserved else {
+        return Ok(false);
+    };
+
+    if !already_recorded {
+        workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                BASE_PARITY_TRANSIENT_DETECTED_STEP,
+                "blocked",
+                &summary,
+                Some(classification.to_string()),
+            ))
+            .await?;
+
+        if let Some(notification_service) = notification_service {
+            notification_service
+                .record(NewNotification {
+                    project_id: Some(workspace.project_id.to_string()),
+                    category: NotificationCategory::TaskBlocked,
+                    severity: NotificationSeverity::ActionRequired,
+                    title: match workspace.publication_pr_number {
+                        Some(pr_number) => format!("PR #{pr_number} may clear on its own"),
+                        None => format!("Workspace is waiting on {base_ref}"),
+                    },
+                    body: Some(summary.clone()),
+                    target: NotificationTarget {
+                        kind: NotificationTargetKind::AgentConversation,
+                        project_id: Some(workspace.project_id.to_string()),
+                        task_id: None,
+                        conversation_id: Some(conversation_id.to_string()),
+                        setup_conversation_id: None,
+                        automation_id: None,
+                        run_id: None,
+                    },
+                    dedupe_key: Some(format!(
+                        "repair_base_parity_transient:{}:{classification}",
+                        conversation_id.as_str()
+                    )),
+                })
+                .await;
+        }
+    }
+
+    tracing::info!(
+        conversation_id = conversation_id.as_str(),
+        base_ref,
+        classification,
+        "PR failure matches a transient/timeout shape on base; holding a fixer generation without \
+         dispatching one"
+    );
+    Ok(true)
+}
+
+/// Base-parity classification for a PR's currently failing checks.
+///
+/// Reuses the CI-rerun deterministic/transient taxonomy (`classify_check_conclusion`) instead of
+/// a third ad-hoc conclusion string set, so "does this check conclusion count as failing" has
+/// exactly one answer across the codebase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BaseParityVerdict {
+    /// At least one failing PR check has no proven-matching base failure; the PR owns real work.
+    None,
+    /// Every matched PR/base pair is Deterministic/Deterministic — a real product failure that a
+    /// rerun cannot clear, so it authorizes handing the PR off rather than dispatching a fixer.
+    Deterministic,
+    /// Parity holds for every failing PR check, but at least one side of a matched pair is
+    /// `Transient` (e.g. a timeout). A rerun might clear this shape, so it must not be treated the
+    /// same as a proven deterministic base failure.
+    TransientShape,
+}
+
+/// Classifies whether GitHub proves the PR's failing checks already fail on the base branch tip.
 ///
 /// This authorizes skipping an agent entirely, so it is deliberately conservative in one
-/// direction: every ambiguity answers "no". An unreadable base, an unimplemented backend, a check
-/// absent from the base (the scope-gated-CI case), and an in-progress base run all fall through to
-/// the normal dispatch. Being wrong here means a wasted agent generation; being wrong the other
-/// way means silently ignoring a real PR failure.
+/// direction: every ambiguity answers `None`. An unreadable base, an unimplemented backend, a
+/// check absent from the base (the scope-gated-CI case), and an in-progress base run all fall
+/// through to the normal dispatch. Being wrong here means a wasted agent generation; being wrong
+/// the other way means silently ignoring a real PR failure. `Deterministic` and `TransientShape`
+/// both mean "the PR did not cause this failure"; they differ only in whether the failure shape
+/// could plausibly clear on its own via a rerun.
 async fn pr_failures_already_fail_on_base(
     github: &dyn GithubServiceTrait,
     working_dir: &Path,
     health: &PrHealth,
-) -> bool {
+) -> BaseParityVerdict {
     let failing_pr_checks = health
         .checks
         .iter()
         .filter(|check| {
-            check.conclusion.as_deref().is_some_and(|value| {
-                matches!(value.to_ascii_uppercase().as_str(), "FAILURE" | "TIMED_OUT")
-            })
+            check
+                .conclusion
+                .as_deref()
+                .is_some_and(|value| classify_check_conclusion(value).is_some())
         })
         .collect::<Vec<_>>();
     if failing_pr_checks.is_empty() {
-        return false;
+        return BaseParityVerdict::None;
     }
 
     let base_ref = health.sync_state.base_ref_name.trim();
     if base_ref.is_empty() {
-        return false;
+        return BaseParityVerdict::None;
     }
     let base_checks = match github
         .list_branch_check_conclusions(working_dir, base_ref)
         .await
     {
         Ok(Some(checks)) => checks,
-        Ok(None) => return false,
+        Ok(None) => return BaseParityVerdict::None,
         Err(error) => {
             tracing::warn!(
                 base_ref,
                 %error,
                 "Could not read base branch check conclusions; dispatching PR autofix as usual"
             );
-            return false;
+            return BaseParityVerdict::None;
         }
     };
     if base_checks.is_empty() {
-        return false;
+        return BaseParityVerdict::None;
     }
 
     // Every failing check must be proven failing on base. One PR-caused failure means the PR does
     // own work, even if another check is broken upstream.
-    failing_pr_checks.iter().all(|pr_check| {
-        base_checks.iter().any(|base_check| {
-            base_check.name.eq_ignore_ascii_case(pr_check.name.trim())
-                && base_check.conclusion.as_deref().is_some_and(|value| {
-                    matches!(value.to_ascii_uppercase().as_str(), "FAILURE" | "TIMED_OUT")
-                })
-        })
-    })
+    let mut any_transient = false;
+    for pr_check in &failing_pr_checks {
+        let Some(base_check) = base_checks
+            .iter()
+            .find(|base_check| base_check.name.eq_ignore_ascii_case(pr_check.name.trim()))
+        else {
+            return BaseParityVerdict::None;
+        };
+        let base_kind = base_check
+            .conclusion
+            .as_deref()
+            .and_then(classify_check_conclusion);
+        let Some(base_kind) = base_kind else {
+            return BaseParityVerdict::None;
+        };
+        // `failing_pr_checks` was already filtered by `classify_check_conclusion(...).is_some()`.
+        let pr_kind = pr_check
+            .conclusion
+            .as_deref()
+            .and_then(classify_check_conclusion)
+            .expect("failing_pr_checks entries always classify");
+        if pr_kind == CiFailureKind::Transient || base_kind == CiFailureKind::Transient {
+            any_transient = true;
+        }
+    }
+
+    if any_transient {
+        BaseParityVerdict::TransientShape
+    } else {
+        BaseParityVerdict::Deterministic
+    }
 }
 
 /// A repair attempt's fingerprint hold dies with its streak. Once a streak exhausts its retries,

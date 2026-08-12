@@ -3,6 +3,7 @@
  * Tests agent team coordination features
  */
 
+import { readFileSync } from 'node:fs';
 import { Ajv as AjvValidator } from 'ajv/dist/ajv.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
@@ -1213,6 +1214,21 @@ describe('agent workspace repair tool', () => {
     expect(tool?.inputSchema.additionalProperties).toBe(false);
   });
 
+  it('accepts optional plain-language what_happened/what_i_did with the style contract in their descriptions', () => {
+    const properties = tool?.inputSchema.properties as
+      | Record<string, { description?: string }>
+      | undefined;
+
+    expect(properties).toHaveProperty('what_happened');
+    expect(properties).toHaveProperty('what_i_did');
+    expect(tool?.inputSchema.required).not.toContain('what_happened');
+    expect(tool?.inputSchema.required).not.toContain('what_i_did');
+    for (const field of ['what_happened', 'what_i_did']) {
+      expect(properties?.[field]?.description).toContain('plain-language');
+      expect(properties?.[field]?.description).toContain("doesn't know what a CI runner is");
+    }
+  });
+
   it('matches the PR fix resolution enum and validates the reported fix commit SHA', () => {
     const prFixTool = allTools.find((t) => t.name === 'complete_agent_workspace_pr_fix');
     const repairProperties = tool?.inputSchema.properties as
@@ -1236,6 +1252,8 @@ describe('agent workspace repair tool', () => {
       blocker: 'Needs input',
       resolution: 'fixed',
       fix_commit_sha: 'a'.repeat(40),
+      what_happened: 'A test kept failing after the base branch changed.',
+      what_i_did: 'Updated the branch and reran the checks.',
     })).toBe(true);
     expect(validate({ summary: 'Resolved conflicts', fix_commit_sha: 'not-a-sha' })).toBe(false);
     for (const [property, value] of Object.entries({
@@ -1346,6 +1364,22 @@ describe('agent workspace PR fix tools', () => {
     );
   });
 
+  it('accepts optional plain-language what_happened/what_i_did with the style contract in their descriptions', () => {
+    const tool = allTools.find((t) => t.name === 'complete_agent_workspace_pr_fix');
+    const properties = tool?.inputSchema.properties as
+      | Record<string, { description?: string }>
+      | undefined;
+
+    expect(properties).toHaveProperty('what_happened');
+    expect(properties).toHaveProperty('what_i_did');
+    expect(tool?.inputSchema.required).not.toContain('what_happened');
+    expect(tool?.inputSchema.required).not.toContain('what_i_did');
+    for (const field of ['what_happened', 'what_i_did']) {
+      expect(properties?.[field]?.description).toContain('plain-language');
+      expect(properties?.[field]?.description).toContain("doesn't know what a CI runner is");
+    }
+  });
+
   it('exposes PR fix tools only through the PR fixer canonical metadata', () => {
     setAgentType(AGENT_WORKSPACE_PR_FIXER);
 
@@ -1353,6 +1387,41 @@ describe('agent workspace PR fix tools', () => {
     expect(new Set(toolNames)).toEqual(new Set(loadCanonicalMcpTools(AGENT_WORKSPACE_PR_FIXER)));
     for (const toolName of prFixTools) {
       expect(toolNames).toContain(toolName);
+    }
+  });
+});
+
+describe('PR fixer completion-contract prompt schema alignment', () => {
+  function readPrFixerPrompt(): string {
+    return readFileSync(
+      new URL('../../../../../agents/ralphx-agent-workspace-pr-fixer/shared/prompt.md', import.meta.url),
+      'utf8'
+    );
+  }
+
+  it('names both optional completion fields and keeps summary required/engineer-facing', () => {
+    const prompt = readPrFixerPrompt();
+
+    expect(prompt).toContain('`what_happened`');
+    expect(prompt).toContain('`what_i_did`');
+    expect(prompt).toContain('`summary` stays required and engineer-facing');
+  });
+
+  it('documents the plain-language style contract for someone who does not know what a CI runner is', () => {
+    const prompt = readPrFixerPrompt();
+
+    expect(prompt).toContain('plain language');
+    expect(prompt).toContain("doesn't know what a CI runner is");
+  });
+
+  it('only names completion fields that the live complete_agent_workspace_pr_fix schema actually declares', () => {
+    const prompt = readPrFixerPrompt();
+    const tool = getAllTools().find((t) => t.name === 'complete_agent_workspace_pr_fix');
+    const properties = tool?.inputSchema.properties as Record<string, unknown> | undefined;
+
+    for (const field of ['what_happened', 'what_i_did', 'summary']) {
+      expect(properties).toHaveProperty(field);
+      expect(prompt).toContain(`\`${field}\``);
     }
   });
 });
@@ -2264,6 +2333,41 @@ describe('agent workspace publish tool transport', () => {
     });
   });
 
+  it('forwards what_happened/what_i_did for PR fix completion when provided', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await callCompleteAgentWorkspacePrFixTool(callTauri, {
+      conversation_id: 'conversation-1',
+      summary: 'Fixed failing tests',
+      fix_commit_sha: 'c'.repeat(40),
+      what_happened: 'A check kept failing after a dependency update.',
+      what_i_did: 'Updated the dependency and reran the checks.',
+    });
+
+    expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-pr-fix', {
+      summary: 'Fixed failing tests',
+      blocker: undefined,
+      fix_commit_sha: 'c'.repeat(40),
+      created_by_run_id: undefined,
+      what_happened: 'A check kept failing after a dependency update.',
+      what_i_did: 'Updated the dependency and reran the checks.',
+    });
+  });
+
+  it('keeps what_happened/what_i_did absent (not null) for PR fix completion when omitted', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await callCompleteAgentWorkspacePrFixTool(callTauri, {
+      conversation_id: 'conversation-1',
+      summary: 'Fixed failing tests',
+      fix_commit_sha: 'c'.repeat(40),
+    });
+
+    const [, body] = callTauri.mock.calls[0];
+    expect(body).not.toHaveProperty('what_happened');
+    expect(body).not.toHaveProperty('what_i_did');
+  });
+
   it.each([
     [
       'get_agent_workspace_publish_status',
@@ -2502,6 +2606,48 @@ describe('agent workspace repair tool transport', () => {
       callCompleteAgentWorkspaceRepairTool(callTauri, { summary: 'Resolved conflicts' }, {})
     ).rejects.toThrow('requires the current agent workspace conversation from runtime context');
     expect(callTauri).not.toHaveBeenCalled();
+  });
+
+  it('forwards what_happened/what_i_did for repair completion when provided', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callCompleteAgentWorkspaceRepairTool(callTauri, {
+        summary: 'Resolved conflicts',
+        what_happened: 'The branch fell behind and could not merge cleanly.',
+        what_i_did: 'Brought the branch up to date and resolved the conflicts.',
+      }, {
+        agentRunId: 'run-1',
+        parentConversationId: 'conversation-1',
+        conversationId: 'conversation-1',
+      })
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-repair', {
+      summary: 'Resolved conflicts',
+      blocker: undefined,
+      what_happened: 'The branch fell behind and could not merge cleanly.',
+      what_i_did: 'Brought the branch up to date and resolved the conflicts.',
+    }, {
+      headers: {
+        'x-ralphx-agent-run-id': 'run-1',
+        'x-ralphx-conversation-id': 'conversation-1',
+      },
+    });
+  });
+
+  it('keeps what_happened/what_i_did absent (not null) for repair completion when omitted', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await callCompleteAgentWorkspaceRepairTool(callTauri, { summary: 'Resolved conflicts' }, {
+      agentRunId: 'run-1',
+      parentConversationId: 'conversation-1',
+      conversationId: 'conversation-1',
+    });
+
+    const [, body] = callTauri.mock.calls[0];
+    expect(body).not.toHaveProperty('what_happened');
+    expect(body).not.toHaveProperty('what_i_did');
   });
 
   it('preserves legacy null blocker transport compatibility', async () => {
