@@ -366,6 +366,12 @@ fn build_codex_internal_mcp_overrides(
         }
     };
 
+    // Append runtime-injected role-tiered grants so both the MCP-side
+    // `--allowed-tools` gate and Codex's `enabled_tools` carry them. Extras
+    // extend the canonical list; they never replace it.
+    let enabled_tools =
+        append_runtime_codex_mcp_tool_grants(enabled_tools, runtime_context, is_external_mcp);
+
     if let Some(arg_value) = format_allowed_tools_arg_value(enabled_tools.as_deref()) {
         mcp_args.push(format!("--allowed-tools={arg_value}"));
     }
@@ -392,6 +398,31 @@ fn build_codex_internal_mcp_overrides(
     }
 
     Ok(overrides)
+}
+
+/// Append the runtime context's additive MCP grants to the canonical Codex tool
+/// list, preserving order and dropping duplicates.
+///
+/// `None` in means "no allowlist"; that is preserved only when there are no
+/// extras to inject.
+fn append_runtime_codex_mcp_tool_grants(
+    enabled_tools: Option<Vec<String>>,
+    runtime_context: Option<&CodexMcpRuntimeContext>,
+    is_external_mcp: bool,
+) -> Option<Vec<String>> {
+    let extras = runtime_context
+        .map(|context| context.extra_allowed_mcp_tools.as_slice())
+        .unwrap_or_default();
+    if extras.is_empty() {
+        return enabled_tools;
+    }
+    let mut tools = enabled_tools.unwrap_or_default();
+    for tool in valid_codex_mcp_tools(extras, is_external_mcp) {
+        if !tools.contains(&tool) {
+            tools.push(tool);
+        }
+    }
+    Some(tools)
 }
 
 fn valid_codex_mcp_tools(tools: &[String], is_external_mcp: bool) -> Vec<String> {

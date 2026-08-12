@@ -10,6 +10,10 @@ import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useManualRoleDefaults } from "@/hooks/useManualRoleDefaults";
 import { useIdeationSettings } from "@/hooks/useIdeationSettings";
+import {
+  useAtlassianIntegration,
+  isAtlassianConnected,
+} from "@/hooks/useAtlassianIntegration";
 import { fetchPersonas, personaKeys } from "@/hooks/usePersonas";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import {
@@ -73,6 +77,12 @@ export function AgentsSettingsSection() {
   const agentsUi = useAgentsSettingsUiState(activeProject?.id ?? null);
   const { scope, projectId, disclosure } = agentsUi;
   const defaults = useManualRoleDefaults(projectId);
+  const atlassian = useAtlassianIntegration();
+  // The Atlassian tier control only has meaning once the integration can serve
+  // calls; the backend enforces the same gate independently.
+  const atlassianAvailable =
+    isAtlassianConnected(atlassian.settings) &&
+    atlassian.settings?.validationStatus === "valid";
   const ideationSettings = useIdeationSettings();
   const tasksEnabled =
     !ideationSettings.isLoading &&
@@ -371,6 +381,7 @@ export function AgentsSettingsSection() {
                       entry={entry}
                       expanded={disclosure.roles[entry.role] === true}
                       disabled={defaults.isSaving}
+                      atlassianAvailable={atlassianAvailable}
                       providers={providerIds}
                       modelsForProvider={(provider) =>
                         provider === "codex" || provider === "claude"

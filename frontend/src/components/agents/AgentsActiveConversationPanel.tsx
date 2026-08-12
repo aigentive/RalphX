@@ -1323,7 +1323,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const activeRoleSelection = activeRoleOverride ?? activeRoleDefault;
   const activeRoleRuntime = activeRoleSelection
     ? runtimeFromManualRoleDefault(
-        { ...activeRoleSelection, approvalPolicy: null, sandboxMode: null },
+        {
+          ...activeRoleSelection,
+          approvalPolicy: null,
+          sandboxMode: null,
+          atlassianAccess: null,
+        },
         modelRegistry,
       )
     : null;

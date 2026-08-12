@@ -4,6 +4,7 @@
 
 pub mod agent_profile;
 pub mod agentic_client;
+pub mod atlassian_mcp_access;
 pub mod capabilities;
 pub mod error;
 pub mod harness;
@@ -20,6 +21,9 @@ pub use agent_profile::{
     Model, PermissionMode, ProfileRole,
 };
 pub use agentic_client::AgenticClient;
+pub use atlassian_mcp_access::{
+    default_atlassian_access, AtlassianMcpAccess, ATLASSIAN_READ_TOOLS, ATLASSIAN_WRITE_TOOLS,
+};
 pub use capabilities::{ClientCapabilities, ModelInfo};
 pub use error::{AgentError, AgentResult};
 pub use harness::{
@@ -66,3 +70,7 @@ mod routing_role_tests;
 #[cfg(test)]
 #[path = "mcp_policy_tests.rs"]
 mod mcp_policy_tests;
+
+#[cfg(test)]
+#[path = "atlassian_mcp_access_tests.rs"]
+mod atlassian_mcp_access_tests;

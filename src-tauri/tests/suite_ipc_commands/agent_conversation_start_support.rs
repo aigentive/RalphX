@@ -191,6 +191,7 @@ pub(super) fn manual_role_default(harness: AgentHarnessKind) -> ManualRoleDefaul
         persona_id: None,
         approval_policy: None,
         sandbox_mode: None,
+        atlassian_access: None,
     }
 }
 

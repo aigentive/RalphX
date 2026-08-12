@@ -592,6 +592,7 @@ mod v20260806071104_agent_workspace_repair_effect_failed_completed_at;
 mod v20260806154753_add_agent_workspace_stale_base_detected_at;
 mod v20260810142632_agent_workspace_repair_narrative_fields;
 mod v20260811015146_data_retention_settings;
+mod v20260811023943_agent_runs_routing_role_and_project;
 #[cfg(test)]
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
 #[cfg(test)]
@@ -629,6 +630,8 @@ mod v20260806154753_add_agent_workspace_stale_base_detected_at_tests;
 mod v20260810142632_agent_workspace_repair_narrative_fields_tests;
 #[cfg(test)]
 mod v20260811015146_data_retention_settings_tests;
+#[cfg(test)]
+mod v20260811023943_agent_runs_routing_role_and_project_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -723,7 +726,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260811015146;
+pub const SCHEMA_VERSION: i64 = 20260811023943;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1983,6 +1986,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260811015146,
         name: "data_retention_settings",
         migrate: v20260811015146_data_retention_settings::migrate,
+    },
+    Migration {
+        version: 20260811023943,
+        name: "agent_runs_routing_role_and_project",
+        migrate: v20260811023943_agent_runs_routing_role_and_project::migrate,
     },
 ];
 
