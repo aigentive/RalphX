@@ -75,7 +75,9 @@ fn apply_compatibility_projection(
     if let Some(pr_auto_merge_desired) = projection.pr_auto_merge_desired {
         workspace.pr_auto_merge_desired = pr_auto_merge_desired;
     }
-    workspace.base_commit = projection.base_commit.clone();
+    if let Some(base_commit) = projection.base_commit.as_ref() {
+        workspace.base_commit = Some(base_commit.clone());
+    }
     workspace.updated_at = updated_at;
 }
 

@@ -24,7 +24,8 @@ use crate::application::agent_workspace_publish_repair_state::{
     explicit_agent_workspace_repair_retry_allowed, inspect_agent_workspace_repair_completion,
     is_machine_repair_reason_marker, last_human_repair_reason,
     load_agent_workspace_repair_operation_recovery_action, mark_agent_workspace_base_update_target,
-    reconcile_active_agent_workspace_repair, release_agent_workspace_base_stale_hold,
+    reconcile_active_agent_workspace_repair, record_agent_workspace_repair_validation,
+    release_agent_workspace_base_stale_hold,
     reopen_agent_workspace_repair_after_validation_failure, repair_attempt_projection,
     repair_event_authorizes_active_run, rerun_agent_workspace_ci_for_hold,
     reserve_agent_workspace_base_parity_transient, reserve_agent_workspace_base_stale_hold,
@@ -1562,9 +1563,9 @@ async fn blocked_retry_successor_with_a_different_target_base_commit_leaves_work
     .await
     .unwrap();
 
-    // The dispatch checkpoint above already mirrors the first attempt's own `target_base_commit`
-    // onto the workspace row (a separate, pre-existing behavior outside this guard's scope); what
-    // this test proves is that the *successor* does not additionally leak its own, differently
+    // The dispatch checkpoint above must not mirror the first attempt's `target_base_commit`
+    // onto the workspace row either (see `dispatch_checkpoint_never_advances_workspace_base_commit`
+    // below); this test proves the *successor* does not separately leak its own, differently
     // observed tip on top of that.
     let base_commit_before_retry = workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -1610,6 +1611,130 @@ async fn blocked_retry_successor_with_a_different_target_base_commit_leaves_work
         reloaded.base_commit.as_deref(),
         Some("newly-observed-tip"),
         "the successor's newly observed tip must never appear as the workspace's integrated base"
+    );
+}
+
+/// The dispatch checkpoint (`reserve_agent_workspace_repair_dispatch`) is a third seam that must
+/// not implicitly advance the workspace's integrated `base_commit` from a conflict-routed
+/// attempt's differently targeted (and unverified) base tip.
+#[tokio::test]
+async fn dispatch_checkpoint_never_advances_workspace_base_commit() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let target_identity = GitTargetIdentity::new(
+        PathBuf::from("/tmp/ralphx-repair-state-dispatch-base-commit-guard"),
+        "refs/heads/ralphx/repair-state-dispatch-base-commit-guard",
+    )
+    .expect("valid canonical repair target identity");
+    let conversation_id =
+        ChatConversationId::from_string("repair-attempt-dispatch-base-commit-guard");
+    let workspace = repair_workspace(conversation_id.clone());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .unwrap();
+    assert_eq!(workspace.base_commit.as_deref(), Some("base"));
+
+    let request = repair_start_request(
+        conversation_id.clone(),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "observed a new base tip during conflict routing",
+    );
+    assert_eq!(request.target_base_commit.as_deref(), Some("base-a"));
+
+    let started = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        request,
+    )
+    .await
+    .unwrap()
+    .into_attempt();
+    assert_eq!(started.target_base_commit.as_deref(), Some("base-a"));
+
+    let AgentWorkspaceRepairDispatchOutcome::Reserved(_dispatch) =
+        reserve_agent_workspace_repair_dispatch(
+            Arc::clone(&repair_repo),
+            Arc::clone(&branch_update_repo),
+            target_identity,
+            started,
+            AgentRunId::from_string("repair-attempt-dispatch-base-commit-guard-run"),
+            "dispatching repair",
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("repair generation should reserve a run");
+    };
+
+    let reloaded = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(
+        reloaded.base_commit.as_deref(),
+        Some("base"),
+        "the dispatch checkpoint must not advance the workspace's integrated base_commit from \
+         the attempt's differently targeted tip"
+    );
+}
+
+/// A validated repair completion is the one seam allowed to advance the workspace's integrated
+/// `base_commit` — proving the `None`-defaults-to-preserve change does not silently freeze it.
+#[tokio::test]
+async fn validated_completion_advances_workspace_base_commit() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("repair-validation-advances-base");
+    let workspace = repair_workspace(conversation_id.clone());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .unwrap();
+    assert_eq!(workspace.base_commit.as_deref(), Some("base"));
+
+    let started = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::BaseUpdate,
+            AgentWorkspaceRepairContinuation::UpdateOnly,
+            "base update",
+        ),
+    )
+    .await
+    .unwrap()
+    .into_attempt();
+
+    record_agent_workspace_repair_validation(
+        Arc::clone(&repair_repo),
+        started,
+        "main",
+        "verified-head",
+        "repair-head",
+        "repair validated",
+        Some(true),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let reloaded = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(
+        reloaded.base_commit.as_deref(),
+        Some("verified-head"),
+        "a Git-verified validated completion must advance the workspace's integrated base_commit"
     );
 }
 

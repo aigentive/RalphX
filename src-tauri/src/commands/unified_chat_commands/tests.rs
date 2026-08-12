@@ -4661,6 +4661,23 @@ async fn new_base_conflict_supersedes_a_continuation_stage_blocked_repair_on_bot
             1,
             "{post_repair_action:?}: exactly one live generation may exist"
         );
+        let reloaded_workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .expect("workspace should reload")
+            .expect("workspace should still exist");
+        assert_eq!(
+            reloaded_workspace.base_commit, workspace.base_commit,
+            "{post_repair_action:?}: conflict routing must never advance the workspace's \
+             integrated base_commit from an unmerged observed tip"
+        );
+        assert_ne!(
+            reloaded_workspace.base_commit.as_deref(),
+            Some(SUPERSEDE_OBSERVED_BASE),
+            "{post_repair_action:?}: the observed conflict tip must never leak into the \
+             workspace's integrated base_commit"
+        );
     }
 }
 

@@ -314,6 +314,19 @@ pub(crate) fn repair_attempt_projection(
     summary: &str,
     auto_merge_current: Option<bool>,
 ) -> AgentWorkspaceRepairCompatibilityProjection {
+    repair_attempt_projection_with_base_commit(attempt, summary, auto_merge_current, None)
+}
+
+/// Same projection, plus an explicit integrated-base advance. `base_commit: None` means "leave
+/// the workspace's integrated base as it is" — the attempt records the base tip it *targets*,
+/// the workspace row records the base tip it has *integrated*, and only a verified
+/// update/publish (the only legitimate callers of this seam) may advance the latter.
+pub(crate) fn repair_attempt_projection_with_base_commit(
+    attempt: &AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+    base_commit: Option<String>,
+) -> AgentWorkspaceRepairCompatibilityProjection {
     let (publication_push_status, pr_supervision_status) = match attempt.phase {
         AgentWorkspaceRepairPhase::Requested
         | AgentWorkspaceRepairPhase::Dispatching
@@ -349,10 +362,7 @@ pub(crate) fn repair_attempt_projection(
         pr_auto_merge_current: auto_merge_current,
         pr_autofix_enabled: None,
         pr_auto_merge_desired: None,
-        // Compatibility projection must retain the Git-verified repair base. Clearing it while
-        // a continuation is still active makes the shared PR publisher fail closed before its
-        // create/update handoff can run.
-        base_commit: attempt.target_base_commit.clone(),
+        base_commit,
     }
 }
 
@@ -510,18 +520,13 @@ async fn start_or_join_agent_workspace_repair_with_projection(
         })?;
     let attempt = start_attempt_from_workspace(&workspace, &request);
     let projection = project_compatibility_state.then(|| {
-        let mut projection = repair_attempt_projection(
+        repair_attempt_projection(
             &attempt,
             &request.summary,
             request
                 .auto_merge_current
                 .or(workspace.pr_auto_merge_current),
-        );
-        // The attempt records the base tip it targets; the workspace row records the base tip
-        // it has integrated. Only a successful update/publish may advance the latter, so the
-        // compatibility projection must republish the workspace's own base, not the attempt's.
-        projection.base_commit = workspace.base_commit.clone();
-        projection
+        )
     });
     let outcome = repair_repo
         .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
@@ -576,17 +581,13 @@ async fn retry_blocked_agent_workspace_repair(
             ))
         })?;
     let successor = start_attempt_from_workspace(&workspace, &request);
-    let mut successor_projection = repair_attempt_projection(
+    let successor_projection = repair_attempt_projection(
         &successor,
         &request.summary,
         request
             .auto_merge_current
             .or(workspace.pr_auto_merge_current),
     );
-    // See the matching comment in start_or_join_agent_workspace_repair_with_projection: the
-    // workspace row must keep reporting the base tip it has integrated, not the tip this
-    // successor targets.
-    successor_projection.base_commit = workspace.base_commit.clone();
     let now = next_transition_at(Some(blocked.updated_at));
     let result = repair_repo
         .settle_and_start_repair_successor(
@@ -1236,7 +1237,9 @@ pub(crate) async fn stop_agent_workspace_pr_autofix_for_hold(
         pr_auto_merge_current: Some(false),
         pr_autofix_enabled: Some(false),
         pr_auto_merge_desired: Some(false),
-        base_commit: current.target_base_commit.clone(),
+        // This settles without a verified base update: preserve the workspace's own integrated
+        // base rather than republishing the attempt's targeted (possibly unmerged) base tip.
+        base_commit: None,
     };
     match repair_repo
         .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
@@ -1559,7 +1562,14 @@ pub(crate) async fn record_agent_workspace_repair_validation(
     // blocked generation state (for example a resurrected exact-run completion).
     attempt.blocker = None;
     attempt.updated_at = next_transition_at(Some(attempt.updated_at));
-    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    // The Git-verified completion base is trusted evidence of an integrated base: this is one of
+    // the two seams allowed to advance the workspace's compatibility base_commit.
+    let projection = repair_attempt_projection_with_base_commit(
+        &attempt,
+        summary,
+        auto_merge_current,
+        Some(base_commit.to_string()),
+    );
     repair_repo
         .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
             attempt,
