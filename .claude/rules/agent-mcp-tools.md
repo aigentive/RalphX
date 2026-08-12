@@ -73,6 +73,10 @@ Only `tools` and `disallowedTools` are valid Claude agent frontmatter fields; `a
 - Agent: grant it only to canonical agents/profiles whose prompt contract gives them a reason to use it.
 - Validation: assert both allowed and denied agents, unknown-tool behavior, backend payload shape, and any side-effect guard.
 
+## Runtime-Injected Role-Tiered Grants
+
+Atlassian (Jira/Confluence) tools are granted per `RoutingRole` tier (`none|read|read_write`) and injected per spawn through the MCP runtime context, additively on top of canonical `capabilities.mcp_tools` — never through `agents/<agent>/agent.yaml` or generated frontmatter, which have no run/project/role context. Backend handlers re-derive the tier per request from the run's persisted `routing_role`/`project_id`. See `docs/features/atlassian-mcp-access.md`.
+
 ## Ticket Attachment Tools (NON-NEGOTIABLE)
 
 `list_ticket_attachments` and `fetch_ticket_attachment` are read-only, pointer-based tools granted only to execution worker and coder surfaces; never expose credentials, provider transport handles, direct download URLs, cache paths, raw bytes, or trusted-content semantics.

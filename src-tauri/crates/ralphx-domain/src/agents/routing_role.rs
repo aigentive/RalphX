@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::entities::{CoordinationMode, PersonaId};
 
-use super::{AgentHarnessKind, AgentLane, LogicalEffort};
+use super::{AgentHarnessKind, AgentLane, AtlassianMcpAccess, LogicalEffort};
 
 pub const ROUTING_ROLE_COUNT: usize = 29;
 
@@ -372,6 +372,12 @@ pub struct ManualRoleDefault {
     pub approval_policy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
+    /// Atlassian MCP tool tier override. `None` means "use the built-in
+    /// `default_atlassian_access` tier for this role" — resolution is row-wins,
+    /// so a matching row that omits this field does not inherit a lower layer's
+    /// value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atlassian_access: Option<AtlassianMcpAccess>,
 }
 
 /// Complete caller-selectable runtime fields for one backend-derived routing role.
@@ -404,6 +410,7 @@ impl ManualRoleDefault {
             persona_id: None,
             approval_policy: settings.approval_policy.clone(),
             sandbox_mode: settings.sandbox_mode.clone(),
+            atlassian_access: None,
         }
     }
 }

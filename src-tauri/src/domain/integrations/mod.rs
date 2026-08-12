@@ -34,6 +34,19 @@ pub use atlassian_resources::{
     AtlassianResourceUrlResolution, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
 };
 
+pub mod atlassian_api_error;
+pub use atlassian_api_error::AtlassianApiError;
+#[cfg(test)]
+mod atlassian_api_error_tests;
+
+pub mod atlassian_mcp_ops;
+pub use atlassian_mcp_ops::{
+    validate_atlassian_raw_path, AtlassianRawMethod, AtlassianRawResponse, ConfluencePageContent,
+    ConfluencePageCreateRequest, ConfluencePageUpdateRequest, JiraIssueCreateRequest,
+    JiraIssueCreated, JiraIssueUpdateRequest, ATLASSIAN_RAW_PATH_PREFIXES,
+    ATLASSIAN_RAW_RESPONSE_MAX_BYTES,
+};
+
 pub mod clickup_tasks;
 pub use clickup_tasks::{
     ClickUpApiClient, ClickUpAttachment, ClickUpAuthContext, ClickUpComment, ClickUpFolder,

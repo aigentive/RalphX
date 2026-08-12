@@ -132,6 +132,7 @@ fn manual_default_preserves_exact_optional_controls() {
         persona_id: Some(PersonaId::from("persona-1")),
         approval_policy: Some("never".to_string()),
         sandbox_mode: Some("danger-full-access".to_string()),
+        atlassian_access: None,
     };
 
     let json = serde_json::to_value(&value).unwrap();
