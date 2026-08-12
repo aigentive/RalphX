@@ -4828,6 +4828,87 @@ async fn repair_stage_and_human_held_blocks_are_never_superseded_by_a_new_base_c
     }
 }
 
+/// A Blocked attempt that is merely still auto-retryable (unspent dispatch budget, queued
+/// `next_dispatch_at`) is not continuation-stage proof by itself: `background_supersede_allowed`
+/// must require an authoritative observed push receipt, not just the absence of the
+/// `blocked_repair_fences_new_base_work` fence. Otherwise a repair-stage (pre-push) block would be
+/// superseded and its reset successor would re-arm the automatic blocked-repair budget.
+#[tokio::test]
+async fn not_yet_exhausted_blocked_repairs_are_never_superseded_by_a_new_base_conflict() {
+    for needs_human in [false, true] {
+        let state = AppState::new_test();
+        let (_temp, workspace, target) = command_test_workspace_with_git_target();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+        let ready = seed_ready_command_repair_attempt(
+            &state,
+            &workspace,
+            AgentWorkspaceRepairContinuation::Publish,
+        )
+        .await;
+
+        let mut blocked = ready.clone();
+        blocked.phase = AgentWorkspaceRepairPhase::Blocked;
+        blocked.repair_head_commit = Some(SUPERSEDE_REPAIR_HEAD.to_string());
+        blocked.target_base_commit = Some(SUPERSEDE_TARGETED_BASE.to_string());
+        blocked.blocker = Some("PR description failed".to_string());
+        blocked.dispatch_count = 0;
+        blocked.next_dispatch_at = Some(chrono::Utc::now() + chrono::Duration::seconds(60));
+        if needs_human {
+            blocked.pending_reasons.push(
+                crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+                    .to_string(),
+            );
+        }
+        blocked.updated_at += chrono::Duration::microseconds(1);
+        let blocked = match state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: blocked,
+                expected_phase: ready.phase,
+                expected_updated_at: ready.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Blocked,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("block the not-yet-exhausted supersede fixture attempt")
+        {
+            AgentWorkspaceRepairAttemptTransitionOutcome::Applied(blocked) => blocked,
+            outcome => panic!("expected a blocked repair attempt, got {outcome:?}"),
+        };
+        let service = MockChatService::new();
+
+        mark_agent_workspace_base_conflict_failure_with_routing(
+            &state,
+            &workspace,
+            "merge conflict while updating from base",
+            &service,
+            true,
+            &target,
+            AgentWorkspacePostRepairAction::Publish,
+            false,
+            SUPERSEDE_OBSERVED_BASE,
+        )
+        .await;
+
+        let current = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&workspace.conversation_id)
+            .await
+            .expect("current attempt should load")
+            .expect("the blocked attempt should remain current");
+        assert_eq!(
+            current.id, blocked.id,
+            "needs_human={needs_human}: an unexhausted blocked attempt with no push receipt must never be superseded"
+        );
+        assert_eq!(live_repair_attempts(&state, &workspace).await.len(), 1);
+    }
+}
+
 #[test]
 fn blocked_workspace_repair_retry_context_carries_blocker_commit_and_base_retarget() {
     let mut attempt = AgentWorkspaceRepairAttempt::new(

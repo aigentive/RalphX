@@ -104,8 +104,7 @@ use crate::application::agent_workspace_publish_lease::{
     stop_publish_operation_lease_heartbeat, PublishOperationScopeGuard,
 };
 use crate::application::agent_workspace_publish_recovery::{
-    agent_workspace_repair_owns_unpublished_publish_continuation,
-    blocked_repair_fences_new_base_work, pr_autofix_fingerprint_spend,
+    agent_workspace_repair_owns_unpublished_publish_continuation, pr_autofix_fingerprint_spend,
     recover_stale_publish_repair_for_workspace_in_state,
 };
 use crate::application::agent_workspace_publish_repair_state::{
@@ -145,6 +144,7 @@ use crate::application::publish_resilience::{
     count_publish_reviewable_commits, count_publishable_commits_with_base_fallback,
     count_unpublished_publish_commits, ensure_plan_publish_branch_fresh,
     ensure_publish_base_pushed, ensure_publish_branch_fresh,
+    has_authoritative_observed_agent_workspace_repair_push,
     inspect_publish_branch_freshness_for_source,
     inspect_publish_branch_freshness_for_source_after_fetch, push_publish_branch,
     remote_tracking_ref_for_publish, review_base_for_publish,
@@ -10565,10 +10565,14 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
 
 /// Background failure routing may supersede a blocked repair generation only when a base-freshness
 /// conflict observed a base tip that the blocked attempt never targeted, and only when that block
-/// happened after its repair already reached the remote. Every other failure carries no observed
-/// tip and therefore can never supersede; the successor records the tip it was authorized by
-/// (see the start request below), so one base tip authorizes at most one supersede even though the
-/// successor resets the automatic retry budget.
+/// happened after its repair already reached the remote. This requires positive proof, not just
+/// the absence of a fence: no `NEEDS_HUMAN_REPAIR_REASON` hold, and an authoritative observed push
+/// receipt for the attempt's own repair head — a Blocked attempt that is merely still
+/// auto-retryable (unspent dispatch budget, queued `next_dispatch_at`) with no push receipt is
+/// refused, so repair-stage (pre-push) blocks never regain a reset retry budget through this path.
+/// Every other failure carries no observed tip and therefore can never supersede; the successor
+/// records the tip it was authorized by (see the start request below), so one base tip authorizes
+/// at most one supersede even though the successor resets the automatic retry budget.
 async fn background_supersede_allowed(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -10599,8 +10603,24 @@ async fn background_supersede_allowed(
     if attempt.phase != AgentWorkspaceRepairPhase::Blocked {
         return false;
     }
-    if blocked_repair_fences_new_base_work(state, &attempt).await {
+    if attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON)
+    {
         return false;
+    }
+    match has_authoritative_observed_agent_workspace_repair_push(state, &attempt).await {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Could not confirm an authoritative observed repair push before background supersede; keeping the blocked generation"
+            );
+            return false;
+        }
     }
     matches!(
         classify_health_hold_disposition(BaseStalenessObservation {

@@ -510,13 +510,18 @@ async fn start_or_join_agent_workspace_repair_with_projection(
         })?;
     let attempt = start_attempt_from_workspace(&workspace, &request);
     let projection = project_compatibility_state.then(|| {
-        repair_attempt_projection(
+        let mut projection = repair_attempt_projection(
             &attempt,
             &request.summary,
             request
                 .auto_merge_current
                 .or(workspace.pr_auto_merge_current),
-        )
+        );
+        // The attempt records the base tip it targets; the workspace row records the base tip
+        // it has integrated. Only a successful update/publish may advance the latter, so the
+        // compatibility projection must republish the workspace's own base, not the attempt's.
+        projection.base_commit = workspace.base_commit.clone();
+        projection
     });
     let outcome = repair_repo
         .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
@@ -571,13 +576,17 @@ async fn retry_blocked_agent_workspace_repair(
             ))
         })?;
     let successor = start_attempt_from_workspace(&workspace, &request);
-    let successor_projection = repair_attempt_projection(
+    let mut successor_projection = repair_attempt_projection(
         &successor,
         &request.summary,
         request
             .auto_merge_current
             .or(workspace.pr_auto_merge_current),
     );
+    // See the matching comment in start_or_join_agent_workspace_repair_with_projection: the
+    // workspace row must keep reporting the base tip it has integrated, not the tip this
+    // successor targets.
+    successor_projection.base_commit = workspace.base_commit.clone();
     let now = next_transition_at(Some(blocked.updated_at));
     let result = repair_repo
         .settle_and_start_repair_successor(
