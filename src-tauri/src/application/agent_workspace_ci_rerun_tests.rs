@@ -128,6 +128,99 @@ fn plan_rejects_deterministic_failure_listed_after_cancellation() {
 }
 
 #[test]
+fn plan_reruns_when_deterministic_failure_shares_a_run_with_a_transient_sibling() {
+    let health = health(
+        Some("head-1"),
+        vec![
+            check("Rust tests", Some("completed"), Some("failure"), Some(42)),
+            check(
+                "Hosted runner",
+                Some("completed"),
+                Some("cancelled"),
+                Some(42),
+            ),
+        ],
+    );
+    let hold = CiHoldIdentity::new("head-1", [42]);
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::Rerun {
+            run_ids: vec![42],
+            hold,
+        }
+    );
+}
+
+#[test]
+fn plan_rejects_deterministic_failure_in_a_run_with_no_transient_sibling() {
+    let health = health(
+        Some("head-1"),
+        vec![
+            check("Rust tests", Some("completed"), Some("failure"), Some(7)),
+            check(
+                "Hosted runner",
+                Some("completed"),
+                Some("cancelled"),
+                Some(8),
+            ),
+        ],
+    );
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::DeterministicFailures(vec!["Rust tests (failure)".to_string()])
+    );
+}
+
+#[test]
+fn plan_rejects_deterministic_failure_with_unparseable_run_url() {
+    let mut deterministic = check("Rust tests", Some("completed"), Some("failure"), None);
+    deterministic.details_url =
+        Some("https://github.com/acme/ralphx/actions/jobs/99".to_string());
+    let health = health(
+        Some("head-1"),
+        vec![
+            deterministic,
+            check(
+                "Hosted runner",
+                Some("completed"),
+                Some("cancelled"),
+                Some(8),
+            ),
+        ],
+    );
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::DeterministicFailures(vec!["Rust tests (failure)".to_string()])
+    );
+}
+
+#[test]
+fn plan_awaits_when_a_run_scoped_deterministic_failure_has_an_in_flight_transient_sibling() {
+    let health = health(
+        Some("head-1"),
+        vec![
+            check("Rust tests", Some("completed"), Some("failure"), Some(64)),
+            check(
+                "Hosted runner",
+                Some("completed"),
+                Some("cancelled"),
+                Some(64),
+            ),
+            check("Hosted runner / job", Some("in_progress"), None, Some(64)),
+        ],
+    );
+    let hold = CiHoldIdentity::new("head-1", [64]);
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::AwaitRuns(hold)
+    );
+}
+
+#[test]
 fn plan_awaits_when_the_transient_run_has_in_flight_jobs() {
     let health = health(
         Some("head-1"),

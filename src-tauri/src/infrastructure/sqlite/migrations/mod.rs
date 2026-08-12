@@ -590,6 +590,7 @@ mod v20260804073002_jira_link_acceptance_criteria_backfill;
 mod v20260804125852_delegated_session_job_identity;
 mod v20260806071104_agent_workspace_repair_effect_failed_completed_at;
 mod v20260806154753_add_agent_workspace_stale_base_detected_at;
+mod v20260810142632_agent_workspace_repair_narrative_fields;
 mod v20260811015146_data_retention_settings;
 mod v20260811023943_agent_runs_routing_role_and_project;
 #[cfg(test)]
@@ -625,6 +626,8 @@ mod v20260804125852_delegated_session_job_identity_tests;
 mod v20260806071104_agent_workspace_repair_effect_failed_completed_at_tests;
 #[cfg(test)]
 mod v20260806154753_add_agent_workspace_stale_base_detected_at_tests;
+#[cfg(test)]
+mod v20260810142632_agent_workspace_repair_narrative_fields_tests;
 #[cfg(test)]
 mod v20260811015146_data_retention_settings_tests;
 #[cfg(test)]
@@ -1973,6 +1976,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260806154753,
         name: "add_agent_workspace_stale_base_detected_at",
         migrate: v20260806154753_add_agent_workspace_stale_base_detected_at::migrate,
+    },
+    Migration {
+        version: 20260810142632,
+        name: "agent_workspace_repair_narrative_fields",
+        migrate: v20260810142632_agent_workspace_repair_narrative_fields::migrate,
     },
     Migration {
         version: 20260811015146,
