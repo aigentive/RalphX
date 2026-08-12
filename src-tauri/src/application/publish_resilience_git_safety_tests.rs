@@ -4950,3 +4950,153 @@ async fn ordinal_push_receipt_with_mismatched_remote_oid_declines_pr_update_term
         "a declined termination must not mutate the update_pr effect"
     );
 }
+
+#[tokio::test]
+async fn reconciler_resolves_ordinal_update_pr_after_base_key_termination() {
+    let fixture = setup_blocked_existing_pr_preserve_handoff().await;
+    let base_key = repair_effect_base_idempotency_key(
+        &fixture.blocked,
+        AgentWorkspaceRepairEffectKind::UpdatePr,
+    );
+    let repair_head = fixture
+        .blocked
+        .repair_head_commit
+        .clone()
+        .expect("blocked handoff retains repair head");
+
+    // Terminate the base-key handoff; the attempt stays Blocked with cleared fence.
+    assert!(
+        terminate_orphaned_blocked_repair_pr_handoff_effect(&fixture.state, &fixture.blocked)
+            .await
+            .expect("terminate orphaned update_pr"),
+        "an in-flight update_pr with a durable push receipt must be terminated"
+    );
+    let terminated = fixture
+        .state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&base_key)
+        .await
+        .expect("read terminated effect")
+        .expect("terminated effect retained as history");
+    assert_eq!(terminated.status, AgentWorkspaceRepairEffectStatus::Failed);
+    assert!(terminated.completed_at.is_some());
+
+    // Advance the attempt to Continuing so prepare_agent_workspace_repair_pr_handoff_effect
+    // can insert #2 (that function gates on expected_phase=Continuing, mirroring the redrive path).
+    let blocked_updated_at = fixture.blocked.updated_at;
+    let continuing_updated_at = next_effect_checkpoint_at(blocked_updated_at);
+    let mut continuing_snapshot = fixture.blocked.clone();
+    continuing_snapshot.phase = AgentWorkspaceRepairPhase::Continuing;
+    continuing_snapshot.updated_at = continuing_updated_at;
+    let continuing_attempt = match fixture
+        .state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: continuing_snapshot,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at: blocked_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("transition to Continuing")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(a) => a,
+        outcome => panic!("expected Applied, got {outcome:?}"),
+    };
+
+    // Prepare the #2 update_pr effect — the base key is terminated so a fresh ordinal is minted.
+    let pr2 = prepare_agent_workspace_repair_pr_handoff_effect(
+        fixture.state.agent_workspace_repair_repo.as_ref(),
+        &continuing_attempt,
+        &fixture.workspace,
+        Some(77),
+    )
+    .await
+    .expect("prepare the ordinal #2 update_pr");
+    assert_eq!(
+        pr2.idempotency_key,
+        format!("{base_key}#2"),
+        "a terminated base key must cause the next prepare to mint an ordinal identity"
+    );
+    assert_eq!(pr2.status, AgentWorkspaceRepairEffectStatus::InFlight);
+
+    // Re-block the attempt (simulates a second describer failure while the #2 row is in-flight).
+    let reblocked_updated_at = next_effect_checkpoint_at(continuing_updated_at);
+    let mut reblocked_snapshot = continuing_attempt.clone();
+    reblocked_snapshot.phase = AgentWorkspaceRepairPhase::Blocked;
+    reblocked_snapshot.updated_at = reblocked_updated_at;
+    let current = match fixture
+        .state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: reblocked_snapshot,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_updated_at: continuing_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("re-block the attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(a) => a,
+        outcome => panic!("expected Applied, got {outcome:?}"),
+    };
+
+    // resolve_repair_effect_identity must skip the terminated base row and surface #2 as Live.
+    assert!(matches!(
+        resolve_repair_effect_identity(
+            fixture.state.agent_workspace_repair_repo.as_ref(),
+            &current,
+            AgentWorkspaceRepairEffectKind::UpdatePr,
+        )
+        .await
+        .expect("resolve live update_pr identity"),
+        RepairEffectIdentity::Live(e) if e.idempotency_key == format!("{base_key}#2")
+    ));
+
+    // Configure GitHub to return the matching PR head.
+    fixture.github.will_return_sync_state(PrSyncState {
+        status: PrStatus::Open,
+        merge_state_status: None,
+        mergeable: None,
+        is_draft: true,
+        head_ref_name: fixture.workspace.branch_name.clone(),
+        base_ref_name: fixture.workspace.base_ref.clone(),
+        head_ref_oid: Some(repair_head.clone()),
+        base_ref_oid: None,
+    });
+
+    // The reconciler must resolve #2 as the live effect and settle the attempt successfully.
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_pr_handoff(&fixture.state, &current)
+            .await
+            .expect("reconcile with ordinal update_pr"),
+        BlockedRepairPrHandoffReconciliation::Recovered,
+        "a terminated base row must not force NotRecoverable when the ordinal #2 row is live"
+    );
+    assert!(
+        fixture
+            .state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&fixture.workspace.conversation_id)
+            .await
+            .expect("read current repair after reconciliation")
+            .is_none(),
+        "reconciler must settle the blocked attempt"
+    );
+    let events = fixture
+        .state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&fixture.workspace.conversation_id)
+        .await
+        .expect("read events after reconciliation");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.step == "repair_pr_handoff_reconciled"),
+        "reconciler must append a repair_pr_handoff_reconciled publication event"
+    );
+}
