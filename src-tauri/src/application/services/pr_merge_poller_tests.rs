@@ -12313,6 +12313,221 @@ async fn base_parity_transient_shape_repeat_poll_short_circuits_then_reenters_on
     );
 }
 
+/// A hold consumed by a user rerun (the way production consumes it: reserve a CI rerun, which
+/// strips the base-parity pending reason, then the runs settle) must be re-establishable at the
+/// identical classification, not permanently one-shot. This is the exact strand the requested
+/// change fixes: `record_base_parity_transient_detection`'s once-ever event dedupe used to also
+/// gate the reservation itself.
+#[tokio::test]
+async fn base_parity_transient_shape_reholds_after_ci_rerun_consumes_it() {
+    let (worktree, workspace_repo, conversation_id, health) =
+        seed_timed_out_check_workspace("base-parity-transient-rehold-rerun", "Rust tests").await;
+    let classification = super::classify_agent_workspace_pr_autofix_issue(101, &health)
+        .expect("timed-out check should classify")
+        .classification;
+    let base_check = PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("timed_out".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/1".to_string()),
+    };
+
+    let (routed_first, _chat_first) = route_with_base_conclusions(
+        &worktree,
+        workspace_repo.clone(),
+        &conversation_id,
+        health.clone(),
+        Ok(Some(vec![base_check.clone()])),
+    )
+    .await;
+    assert!(!routed_first, "the first transient-shape poll must hold");
+
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let held = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("current repair attempt should load")
+        .expect("a repair attempt must exist after the first hold");
+    assert!(
+        held.pending_reasons.iter().any(|reason| {
+            reason
+                == crate::application::agent_workspace_publish_repair_state::BASE_PARITY_TRANSIENT_REPAIR_REASON
+        }),
+        "the first hold must carry the base-parity-transient pending reason"
+    );
+
+    // Consume the hold the way production does: `reserve_agent_workspace_ci_rerun` strips the
+    // base-parity pending reason in the same CAS write that reserves the rerun.
+    let fingerprint = crate::application::agent_workspace_ci_rerun::CiHoldIdentity::new(
+        health
+            .sync_state
+            .head_ref_oid
+            .as_deref()
+            .expect("seeded health carries a head oid"),
+        [941],
+    )
+    .to_fingerprint();
+    let rerun_reservation =
+        crate::application::agent_workspace_publish_repair_state::reserve_agent_workspace_ci_rerun(
+            Arc::clone(&repair_repo),
+            held,
+            &fingerprint,
+            "Re-running the transient checks.",
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("ci rerun reservation should apply");
+    assert!(
+        matches!(
+            rerun_reservation,
+            crate::application::agent_workspace_publish_repair_state::AgentWorkspaceRepairTransitionOutcome::Applied(_)
+        ),
+        "the held attempt must accept the ci rerun reservation"
+    );
+
+    // The reserved fingerprint's checks are already terminal (`status: "completed"`), so the next
+    // poll finds `ci_rerun_hold_still_pending == false` and settles the Ready attempt out from
+    // under the hold — reproducing the exact window that used to strand the workspace.
+    let (routed_second, chat_second) = route_with_base_conclusions(
+        &worktree,
+        workspace_repo.clone(),
+        &conversation_id,
+        health.clone(),
+        Ok(Some(vec![base_check.clone()])),
+    )
+    .await;
+
+    assert!(
+        !routed_second,
+        "the re-established hold must not dispatch a fixer"
+    );
+    assert!(chat_second.get_sent_messages().await.is_empty());
+
+    let re_held = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("current repair attempt should reload")
+        .expect("a fresh attempt must hold again at the identical classification");
+    assert!(
+        super::agent_workspace_repair_is_health_held(&re_held),
+        "the workspace must be health-held again after the rerun consumes the first hold"
+    );
+    assert_eq!(
+        re_held.operation_snapshot().hold_reason,
+        Some(AgentWorkspaceRepairOperationHoldReason::BaseParityTransient),
+        "the re-established hold must project as base-parity-transient again"
+    );
+    assert_eq!(
+        re_held.pr_autofix_health_fingerprint.as_deref(),
+        Some(classification.as_str())
+    );
+
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publication events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| {
+                event.step == super::BASE_PARITY_TRANSIENT_DETECTED_STEP
+                    && event.classification.as_deref() == Some(classification.as_str())
+            })
+            .count(),
+        1,
+        "the once-per-classification event gate must stay intact even though the hold itself re-applies"
+    );
+}
+
+/// Settling the held attempt through a non-`Retain` disposition (the base branch advances) must
+/// also re-enter detection at the identical classification, not fall through to a silent no-op.
+#[tokio::test]
+async fn base_parity_transient_shape_reholds_after_base_advances_settles_it() {
+    let (worktree, workspace_repo, conversation_id, health_a) =
+        seed_timed_out_check_workspace("base-parity-transient-rehold-base-advance", "Rust tests")
+            .await;
+    let classification_a = super::classify_agent_workspace_pr_autofix_issue(101, &health_a)
+        .expect("timed-out check should classify")
+        .classification;
+    let base_check = PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("timed_out".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/1".to_string()),
+    };
+
+    let (routed_first, _chat_first) = route_with_base_conclusions(
+        &worktree,
+        workspace_repo.clone(),
+        &conversation_id,
+        health_a.clone(),
+        Ok(Some(vec![base_check.clone()])),
+    )
+    .await;
+    assert!(!routed_first, "the first transient-shape poll must hold");
+
+    // The base branch advances without the PR's own checks changing: same failing check, same
+    // classification, but a different observed base oid. `classify_health_hold_disposition`
+    // answers `SupersedeForNewEvidence`, which settles the held `Ready` attempt.
+    let mut health_b = health_a.clone();
+    health_b.sync_state.base_ref_oid = Some("base-advanced".to_string());
+    let classification_b = super::classify_agent_workspace_pr_autofix_issue(101, &health_b)
+        .expect("timed-out check should still classify")
+        .classification;
+    assert_eq!(
+        classification_a, classification_b,
+        "the PR-side check is unchanged, so the classification must stay identical"
+    );
+
+    let (routed_second, chat_second) = route_with_base_conclusions(
+        &worktree,
+        workspace_repo.clone(),
+        &conversation_id,
+        health_b,
+        Ok(Some(vec![base_check])),
+    )
+    .await;
+
+    assert!(
+        !routed_second,
+        "re-entering detection after the base advances must still withhold a fixer"
+    );
+    assert!(chat_second.get_sent_messages().await.is_empty());
+
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let re_held = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("current repair attempt should reload")
+        .expect("a fresh attempt must hold again after the base-advance settlement");
+    assert!(
+        super::agent_workspace_repair_is_health_held(&re_held),
+        "the workspace must be health-held again after the base-advance settlement"
+    );
+    assert_eq!(
+        re_held.operation_snapshot().hold_reason,
+        Some(AgentWorkspaceRepairOperationHoldReason::BaseParityTransient)
+    );
+
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publication events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| {
+                event.step == super::BASE_PARITY_TRANSIENT_DETECTED_STEP
+                    && event.classification.as_deref() == Some(classification_a.as_str())
+            })
+            .count(),
+        1,
+        "the once-per-classification event gate must stay intact across the re-hold"
+    );
+}
+
 /// Joining an attempt that is actively `Repairing` must never be hijacked into a passive hold: the
 /// live generation's phase, summary, and blocker stay exactly as they were.
 #[tokio::test]

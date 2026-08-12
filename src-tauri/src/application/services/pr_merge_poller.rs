@@ -4493,6 +4493,15 @@ async fn record_pre_existing_on_base_detection(
 /// health-suppressed reconciliation — the same gate `record_pre_existing_on_base_detection` relies
 /// on — short-circuits repeat polls before they ever call GitHub again. No separate poll-cost gate
 /// belongs here.
+///
+/// The `BASE_PARITY_TRANSIENT_DETECTED_STEP` publication event and its notification are recorded
+/// **at most once per classification**, but the hold itself is not: unlike
+/// `record_pre_existing_on_base_detection`'s proven-deterministic hold, this hold is meant to be
+/// consumed (a user rerun clears the pending reason once its runs settle) and re-established later
+/// at the identical classification if the parity shape persists. Early-returning on the
+/// already-recorded event would leave the workspace with neither a hold nor a dispatch forever
+/// after the first consumption — gate only the once-per-classification side effects, never the
+/// reservation itself.
 async fn record_base_parity_transient_detection(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
@@ -4515,13 +4524,14 @@ async fn record_base_parity_transient_detection(
     );
 
     let publication_events = workspace_repo.list_publication_events(conversation_id).await?;
+    // Once-per-classification gate for the event/notification only — never for the reservation.
+    // The hold this records is meant to be consumed (a user rerun clears the pending reason) and
+    // re-established later at the same classification if the parity shape persists; the workspace
+    // must not lose its only path back to a hold just because it already told the user once.
     let already_recorded = publication_events.iter().any(|event| {
         event.step == BASE_PARITY_TRANSIENT_DETECTED_STEP
             && event.classification.as_deref() == Some(classification)
     });
-    if already_recorded {
-        return Ok(false);
-    }
 
     let start = start_or_join_agent_workspace_repair_without_projection(
         Arc::clone(&repair_repo),
@@ -4605,42 +4615,44 @@ async fn record_base_parity_transient_detection(
         return Ok(false);
     };
 
-    workspace_repo
-        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-            conversation_id.clone(),
-            BASE_PARITY_TRANSIENT_DETECTED_STEP,
-            "blocked",
-            &summary,
-            Some(classification.to_string()),
-        ))
-        .await?;
+    if !already_recorded {
+        workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                BASE_PARITY_TRANSIENT_DETECTED_STEP,
+                "blocked",
+                &summary,
+                Some(classification.to_string()),
+            ))
+            .await?;
 
-    if let Some(notification_service) = notification_service {
-        notification_service
-            .record(NewNotification {
-                project_id: Some(workspace.project_id.to_string()),
-                category: NotificationCategory::TaskBlocked,
-                severity: NotificationSeverity::ActionRequired,
-                title: match workspace.publication_pr_number {
-                    Some(pr_number) => format!("PR #{pr_number} may clear on its own"),
-                    None => format!("Workspace is waiting on {base_ref}"),
-                },
-                body: Some(summary.clone()),
-                target: NotificationTarget {
-                    kind: NotificationTargetKind::AgentConversation,
+        if let Some(notification_service) = notification_service {
+            notification_service
+                .record(NewNotification {
                     project_id: Some(workspace.project_id.to_string()),
-                    task_id: None,
-                    conversation_id: Some(conversation_id.to_string()),
-                    setup_conversation_id: None,
-                    automation_id: None,
-                    run_id: None,
-                },
-                dedupe_key: Some(format!(
-                    "repair_base_parity_transient:{}:{classification}",
-                    conversation_id.as_str()
-                )),
-            })
-            .await;
+                    category: NotificationCategory::TaskBlocked,
+                    severity: NotificationSeverity::ActionRequired,
+                    title: match workspace.publication_pr_number {
+                        Some(pr_number) => format!("PR #{pr_number} may clear on its own"),
+                        None => format!("Workspace is waiting on {base_ref}"),
+                    },
+                    body: Some(summary.clone()),
+                    target: NotificationTarget {
+                        kind: NotificationTargetKind::AgentConversation,
+                        project_id: Some(workspace.project_id.to_string()),
+                        task_id: None,
+                        conversation_id: Some(conversation_id.to_string()),
+                        setup_conversation_id: None,
+                        automation_id: None,
+                        run_id: None,
+                    },
+                    dedupe_key: Some(format!(
+                        "repair_base_parity_transient:{}:{classification}",
+                        conversation_id.as_str()
+                    )),
+                })
+                .await;
+        }
     }
 
     tracing::info!(
