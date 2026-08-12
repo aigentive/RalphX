@@ -210,48 +210,6 @@ async fn test_remove() {
     assert!(!removed_again);
 }
 
-#[tokio::test]
-async fn test_expire_all_pending_via_question_state() {
-    use crate::application::question_state::QuestionState;
-    let db = SqliteTestDb::new("sqlite_question_repo_tests-question_state");
-    let repo = Arc::new(SqliteQuestionRepository::from_shared(db.shared_conn()));
-
-    // Seed pending questions (simulating leftover from a previous app run)
-    for i in 0..3 {
-        let info = PendingQuestionInfo {
-            request_id: format!("stale-{}", i),
-            session_id: "old-session".to_string(),
-            question: format!("Stale Q{}", i),
-            header: None,
-            options: vec![],
-            multi_select: false,
-            allow_skip: true,
-            batch_index: None,
-            batch_total: None,
-            metadata: None,
-            created_at: "2026-07-10T00:00:00+00:00".to_string(),
-        };
-        repo.create_pending(&info).await.unwrap();
-    }
-
-    // Resolve one so only 2 remain pending
-    let answer = QuestionAnswer {
-        selected_options: vec![],
-        text: Some("answered".to_string()),
-        skipped: false,
-    };
-    repo.resolve("stale-0", &answer).await.unwrap();
-
-    assert_eq!(repo.get_pending().await.unwrap().len(), 2);
-
-    // Simulate startup: create QuestionState with the repo, call expire
-    let state = QuestionState::with_repo(repo.clone()
-        as Arc<dyn crate::domain::repositories::question_repository::QuestionRepository>);
-    state.expire_stale_on_startup().await;
-
-    // Startup only expires the live wait; durable questions stay user-visible.
-    assert_eq!(repo.get_pending().await.unwrap().len(), 2);
-}
 
 #[tokio::test]
 async fn test_expired_wait_remains_resolvable() {

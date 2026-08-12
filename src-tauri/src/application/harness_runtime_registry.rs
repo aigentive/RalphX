@@ -13,7 +13,7 @@ use crate::infrastructure::agents::claude::{
     agent_harness_defaults_config, automations_config, clear_claude_cli_capability_cache,
     execution_defaults_config, external_mcp_config, find_claude_cli, git_runtime_config,
     node_utils, probe_claude_cli_cached, reconciliation_config, resolve_plugin_dir,
-    scheduler_config, ui_feature_flags_config, validate_external_mcp_config, verification_config,
+    scheduler_config, ui_feature_flags_config, validate_external_mcp_config,
     AgentHarnessDefaultsConfig, ExecutionDefaultsConfig, ExternalMcpConfig, SchedulerConfig,
     UiFeatureFlagsConfig,
 };
@@ -851,10 +851,6 @@ pub(crate) fn default_external_mcp_message_queue_cap() -> usize {
 
 pub(crate) fn default_external_session_similarity_threshold() -> f64 {
     default_external_mcp_config().external_session_similarity_threshold
-}
-
-pub(crate) fn default_verification_max_rounds() -> u32 {
-    verification_config().max_rounds
 }
 
 pub(crate) fn default_ui_feature_flags() -> UiFeatureFlagsConfig {

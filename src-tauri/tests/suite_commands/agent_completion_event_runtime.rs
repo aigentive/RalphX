@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ralphx_events::catalog::AGENT_RUN_COMPLETED;
-use ralphx_lib::commands::install_agent_workspace_completion_dispatch_for_test;
+use ralphx_lib::shell::agent_workspace_completion_testkit::install_agent_workspace_completion_dispatch_for_test;
 use serde_json::{json, Value};
 use tauri::{Emitter, Listener};
 

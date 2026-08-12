@@ -5,7 +5,7 @@ use super::plan_complexity_assessment::{
 };
 use crate::domain::entities::{Artifact, ArtifactId, ArtifactType};
 use crate::error::AppError;
-use crate::http_server::types::SubmitPlanComplexityAssessmentRequest;
+use crate::application::plan_complexity_assessment::SubmitPlanComplexityAssessmentRequest;
 use rusqlite::{params, Connection};
 use serde_json::Value;
 

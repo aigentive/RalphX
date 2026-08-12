@@ -25,9 +25,7 @@ pub mod webhook_http_client;
 pub mod webhook_publisher;
 
 // Re-export commonly used items
-pub use agents::{
-    AgenticClientSpawner, ClaudeCodeClient, MockAgenticClient, MockCall, MockCallType,
-};
+pub use agents::{ClaudeCodeClient, MockAgenticClient, MockCall, MockCallType};
 pub use atlassian_client::HyperAtlassianApiClient;
 pub use clickup_client::HyperClickUpApiClient;
 pub use granola_client::HyperGranolaApiClient;

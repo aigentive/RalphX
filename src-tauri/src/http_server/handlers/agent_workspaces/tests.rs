@@ -16,7 +16,7 @@ use crate::application::agent_workspace_review::{
 };
 use crate::application::agent_workspace_review_publish_handoff::pr_fix_publish_can_resume_after_workspace_review;
 use crate::application::AppState;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::agents::{
     AgentConfig, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgenticClient,
     ClientCapabilities, ResponseChunk,

@@ -23,10 +23,7 @@ use crate::domain::services::{MessageQueue, QueueKey};
 /// `<escalation type="verification">` message via the same parent session.
 pub(crate) const ESCALATED_TO_PARENT: &str = "escalated_to_parent";
 
-/// XML tag marker used to detect an already-injected verification-result message.
-/// Used for legacy content-based dedup and agent-facing queued handoff payloads.
-pub(crate) const VERIFICATION_RESULT_MARKER: &str = "<verification-result>";
-pub(crate) const VERIFICATION_RESULT_METADATA_KEY: &str = "verification_result";
+pub(crate) use crate::domain::verification_markers::VERIFICATION_RESULT_METADATA_KEY;
 
 /// Result returned by `reconcile_verification_on_child_complete`.
 ///

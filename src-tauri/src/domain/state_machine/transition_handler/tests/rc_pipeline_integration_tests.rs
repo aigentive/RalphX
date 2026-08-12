@@ -42,7 +42,7 @@
 //   3c. Audit: Executing and Merging context exits decrement count correctly (no leak pattern)
 
 use super::helpers::*;
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::{InternalStatus, MergeStrategy, ProjectId, Task};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::{State, TransitionHandler};

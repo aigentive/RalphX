@@ -22,6 +22,7 @@ FULL_INTEGRATION_TESTS=(
   suite_sqlite_flows
   suite_sqlite_repos
   suite_transition_git
+  tauri_events
   plan_selector_performance
 )
 

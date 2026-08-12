@@ -192,7 +192,7 @@ async fn test_h2_on_enter_error_records_task_stuck_notification() {
         Arc::clone(&app_state.activity_event_repo),
         Arc::clone(&app_state.message_queue),
         Arc::clone(&app_state.running_agent_registry),
-        Arc::new(crate::commands::ExecutionState::new()),
+        Arc::new(crate::application::execution_state::ExecutionState::new()),
         None,
         Arc::clone(&app_state.memory_event_repo),
     )
