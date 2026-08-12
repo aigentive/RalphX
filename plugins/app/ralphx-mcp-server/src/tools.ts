@@ -9,6 +9,7 @@ import { WORKER_CONTEXT_TOOLS } from "./worker-context-tools.js";
 import { STEP_TOOLS } from "./step-tools.js";
 import { ISSUE_TOOLS } from "./issue-tools.js";
 import { TICKET_ATTACHMENT_TOOLS } from "./ticket-attachment-tools.js";
+import { ATLASSIAN_TOOLS } from "./atlassian-tools.js";
 import { FILESYSTEM_TOOLS } from "./filesystem-tools.js";
 import { IDEATION_TOOLS } from "./ideation-tools.js";
 import { WORKFLOW_TOOLS } from "./workflow-tools.js";
@@ -96,6 +97,11 @@ export const ALL_TOOLS: Tool[] = [
   // TICKET ATTACHMENT TOOLS (worker/coder execution agents)
   // ========================================================================
   ...TICKET_ATTACHMENT_TOOLS,
+
+  // ========================================================================
+  // ATLASSIAN TOOLS (role-tiered; granted at spawn time, enforced per request)
+  // ========================================================================
+  ...ATLASSIAN_TOOLS,
 
   ...SUPPORT_TOOLS,
 ];

@@ -2608,6 +2608,7 @@ async fn start_review_uses_the_workspace_reviewer_role_default() {
                 persona_id: None,
                 approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
                 sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
+                atlassian_access: None,
             },
         )
         .await
@@ -2701,6 +2702,7 @@ async fn start_review_prefers_an_explicit_runtime_override_over_the_reviewer_def
                 persona_id: None,
                 approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
                 sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
+                atlassian_access: None,
             },
         )
         .await
@@ -4827,6 +4829,7 @@ async fn assert_blocking_fixer_uses_enabled_default_over_stale_claude_session(
                 persona_id: None,
                 approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
                 sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
+                atlassian_access: None,
             },
         )
         .await

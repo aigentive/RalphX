@@ -1008,6 +1008,7 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         lead_session_id: Some("lead-789".to_string()),
         parent_conversation_id: Some("conversation-abc".to_string()),
         agent_run_id: Some("run-123".to_string()),
+        extra_allowed_mcp_tools: Vec::new(),
     };
 
     let overrides = build_codex_mcp_overrides(
@@ -1623,6 +1624,7 @@ harnesses:
         lead_session_id: None,
         parent_conversation_id: Some("conversation 456".to_string()),
         agent_run_id: Some("run 789".to_string()),
+        extra_allowed_mcp_tools: Vec::new(),
     };
 
     let overrides = build_codex_mcp_overrides(
@@ -1657,5 +1659,103 @@ harnesses:
     assert!(
         url_override.contains("agent_run_id=run%20789"),
         "external MCP URL should include encoded agent run id: {url_override}"
+    );
+}
+
+// ─── Role-tiered Atlassian MCP grants (runtime-injected) ───────────────────
+
+fn codex_runtime_context_with_extra_tools(tools: &[&str]) -> CodexMcpRuntimeContext {
+    CodexMcpRuntimeContext {
+        extra_allowed_mcp_tools: tools.iter().map(|tool| (*tool).to_string()).collect(),
+        ..CodexMcpRuntimeContext::default()
+    }
+}
+
+fn enabled_tools_override(overrides: &[String]) -> Option<String> {
+    overrides
+        .iter()
+        .find(|entry| entry.starts_with("mcp_servers.ralphx.enabled_tools="))
+        .cloned()
+}
+
+fn allowed_tools_arg_in_overrides(overrides: &[String]) -> Option<String> {
+    overrides
+        .iter()
+        .find(|entry| entry.starts_with("mcp_servers.ralphx.args="))
+        .and_then(|entry| {
+            entry
+                .split("--allowed-tools=")
+                .nth(1)
+                .map(|rest| rest.trim_end_matches(&['"', ']'][..]).to_string())
+        })
+}
+
+#[test]
+fn codex_runtime_grants_append_to_the_canonical_enabled_tools() {
+    let plugin_dir = project_root().join("plugins").join("app");
+
+    let baseline = build_codex_mcp_overrides(
+        &plugin_dir,
+        "ralphx:ralphx-utility-pr-describer",
+        false,
+        None,
+    )
+    .expect("baseline overrides");
+    let baseline_enabled = enabled_tools_override(&baseline).expect("canonical enabled_tools");
+    assert!(
+        baseline_enabled.contains("submit_agent_workspace_pr_description"),
+        "fixture must have a canonical tool to prove append-not-replace: {baseline_enabled}"
+    );
+
+    let context = codex_runtime_context_with_extra_tools(&["jira_search_issues", "jira_add_comment"]);
+    let injected = build_codex_mcp_overrides(
+        &plugin_dir,
+        "ralphx:ralphx-utility-pr-describer",
+        false,
+        Some(&context),
+    )
+    .expect("injected overrides");
+
+    let enabled = enabled_tools_override(&injected).expect("enabled_tools override");
+    assert!(
+        enabled.contains("submit_agent_workspace_pr_description"),
+        "canonical tool must survive runtime injection: {enabled}"
+    );
+    assert!(enabled.contains("jira_search_issues"), "{enabled}");
+    assert!(enabled.contains("jira_add_comment"), "{enabled}");
+
+    // Both gates must carry the grant: Codex `enabled_tools` and the MCP-side
+    // `--allowed-tools` argv.
+    let allowed = allowed_tools_arg_in_overrides(&injected).expect("--allowed-tools arg");
+    assert!(allowed.contains("submit_agent_workspace_pr_description"), "{allowed}");
+    assert!(allowed.contains("jira_search_issues"), "{allowed}");
+    assert!(allowed.contains("jira_add_comment"), "{allowed}");
+}
+
+#[test]
+fn codex_without_runtime_grants_exposes_no_atlassian_tools() {
+    let plugin_dir = project_root().join("plugins").join("app");
+
+    let overrides = build_codex_mcp_overrides(
+        &plugin_dir,
+        "ralphx:ralphx-utility-pr-describer",
+        false,
+        Some(&codex_runtime_context_with_extra_tools(&[])),
+    )
+    .expect("overrides without grants");
+
+    let enabled = enabled_tools_override(&overrides).expect("enabled_tools override");
+    assert!(
+        !enabled.contains("jira_")
+            && !enabled.contains("confluence_")
+            && !enabled.contains("atlassian_"),
+        "no Atlassian tool may appear without a grant: {enabled}"
+    );
+    let allowed = allowed_tools_arg_in_overrides(&overrides).expect("--allowed-tools arg");
+    assert!(
+        !allowed.contains("jira_")
+            && !allowed.contains("confluence_")
+            && !allowed.contains("atlassian_"),
+        "no Atlassian tool may appear without a grant: {allowed}"
     );
 }
