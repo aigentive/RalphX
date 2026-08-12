@@ -28,7 +28,7 @@ use tokio::sync::Mutex;
 use crate::application::interactive_process_registry::InteractiveProcessRegistry;
 use crate::application::runtime_factory::ChatRuntimeFactoryDeps;
 use crate::application::{NotificationService, TaskTransitionService};
-use crate::commands::execution_commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, BranchUpdateRepository,
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,

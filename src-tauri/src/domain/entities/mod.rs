@@ -2,6 +2,8 @@ pub mod data_retention;
 pub mod memory_archive_job;
 pub mod delegation_park;
 pub mod ui_feature_flag_overrides;
+pub mod permission_request;
+pub mod question_request;
 
 #[cfg(test)]
 mod data_retention_tests;
@@ -29,3 +31,8 @@ pub use delegation_park::{
     DelegationWakeDecision, DelegationWakePolicy, DelegationWakeReason,
 };
 pub use ui_feature_flag_overrides::UiFeatureFlagOverrides;
+pub use permission_request::{
+    is_within_permission_request_ttl, PendingPermissionInfo, PermissionDecision,
+    PERMISSION_REQUEST_TTL,
+};
+pub use question_request::{PendingQuestionInfo, QuestionAnswer, QuestionOption};

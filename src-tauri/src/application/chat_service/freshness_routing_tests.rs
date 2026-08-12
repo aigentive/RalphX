@@ -25,7 +25,7 @@ use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
 use crate::application::{AppState, TaskTransitionService};
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{
     AgentWorkspacePrDescription, ArtifactId, IdeationSessionId, InternalStatus, PlanBranch,

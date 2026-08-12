@@ -842,7 +842,7 @@ fn legacy_validation_cache(
         .ok()
         .flatten()?;
     let current_head_sha = current_head_sha?;
-    let (validation_hint, hint_message) = crate::http_server::helpers::compute_validation_hint(
+    let (validation_hint, hint_message) = crate::domain::entities::compute_validation_hint(
         &cache,
         current_head_sha,
         episode_entered_at,

@@ -10,16 +10,14 @@ use serde_json::Value;
 use tokio::time::Duration;
 use tokio_util::bytes::Bytes;
 
-use crate::application::{
+use crate::domain::integrations::{
     AtlassianApiClient, AtlassianAuthContext as ApplicationAtlassianAuthContext,
     AtlassianConnectivity, AtlassianCredential as ApplicationAtlassianCredential,
     AtlassianJiraAttachment, AtlassianJiraComment, AtlassianJiraTransition, AtlassianOAuthResource,
     AtlassianOAuthTokenResponse, AtlassianResourceContent,
     AtlassianResourceKind as ApplicationAtlassianResourceKind, AtlassianResourceSummary,
-    JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
-};
-use crate::application::{
-    JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary,
+    JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary, JiraIssueDetail,
+    JiraProjectSummary, JiraStatusSummary,
 };
 use crate::domain::services::ComposerIntegrationReference;
 

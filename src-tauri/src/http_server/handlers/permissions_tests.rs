@@ -10,7 +10,7 @@ use super::{expire_permission_and_emit, request_permission, resolve_permission};
 use crate::application::app_state::AppState;
 use crate::application::interactive_notification_producer::permission_notification_key;
 use crate::application::permission_state::{PendingPermissionInfo, PERMISSION_RESOLVED_EVENT};
-use crate::commands::ExecutionState;
+use crate::application::execution_state::ExecutionState;
 use crate::domain::entities::Notification;
 use crate::domain::entities::{
     ChatConversation, NewNotification, NotificationCategory, NotificationSeverity,
