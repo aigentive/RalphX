@@ -34,6 +34,14 @@ use crate::error::{AppError, AppResult};
 use crate::{application::AppState, application::GitService, domain::entities::Project};
 use tauri::Manager;
 
+// Durable effect identity resolution and orphaned-effect termination live in a sibling module.
+// They are re-exported here so existing call sites keep one import path for repair-effect work.
+pub(crate) use crate::application::publish_resilience_repair_effects::{
+    next_agent_workspace_repair_retry_idempotency_key, observed_repair_push_receipt_for_head,
+    repair_effect_base_idempotency_key, resolve_repair_effect_identity,
+    terminate_orphaned_blocked_repair_pr_handoff_effect, RepairEffectIdentity,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishFailureClass {
     AgentFixable,
@@ -559,24 +567,24 @@ pub(crate) async fn prepare_agent_workspace_repair_pr_handoff_effect(
     workspace: &AgentConversationWorkspace,
     existing_pr_number: Option<i64>,
 ) -> AppResult<AgentWorkspaceRepairEffect> {
+    // A handoff effect that can still complete owns this attempt's handoff, whether it lives under
+    // the base key or an ordinal retry key minted after a previous identity was terminated.
+    let mut terminated_kinds = Vec::new();
     for existing_kind in [
         AgentWorkspaceRepairEffectKind::CreatePr,
         AgentWorkspaceRepairEffectKind::UpdatePr,
     ] {
-        let existing_key = format!(
-            "agent_workspace_repair:{}:{}:{}",
-            attempt.id, attempt.generation, existing_kind
-        );
-        if let Some(effect) = repair_repo
-            .get_repair_effect_by_idempotency_key(&existing_key)
-            .await?
-        {
-            if effect.attempt_id != attempt.id || effect.kind != existing_kind {
-                return Err(AppError::Conflict(
-                    "repair PR handoff receipt does not match the current attempt".to_string(),
-                ));
+        match resolve_repair_effect_identity(repair_repo, attempt, existing_kind).await? {
+            RepairEffectIdentity::Live(effect) => {
+                if effect.attempt_id != attempt.id || effect.kind != existing_kind {
+                    return Err(AppError::Conflict(
+                        "repair PR handoff receipt does not match the current attempt".to_string(),
+                    ));
+                }
+                return Ok(*effect);
             }
-            return Ok(effect);
+            RepairEffectIdentity::Terminated => terminated_kinds.push(existing_kind),
+            RepairEffectIdentity::Absent => {}
         }
     }
 
@@ -586,21 +594,16 @@ pub(crate) async fn prepare_agent_workspace_repair_pr_handoff_effect(
     } else {
         AgentWorkspaceRepairEffectKind::CreatePr
     };
-    let idempotency_key = format!(
-        "agent_workspace_repair:{}:{}:{}",
-        attempt.id, attempt.generation, kind
-    );
-    if let Some(effect) = repair_repo
-        .get_repair_effect_by_idempotency_key(&idempotency_key)
-        .await?
-    {
-        if effect.attempt_id != attempt.id || effect.kind != kind {
-            return Err(AppError::Conflict(
-                "repair PR handoff receipt does not match the current attempt".to_string(),
-            ));
-        }
-        return Ok(effect);
-    }
+    // A terminated effect is closed forever: the durable writer only matches rows whose
+    // `completed_at` is still null, so the replay must take a fresh ordinal identity instead of
+    // reusing the terminated row and failing its receipt after the external effect already ran.
+    let base_idempotency_key = repair_effect_base_idempotency_key(attempt, kind);
+    let idempotency_key = if terminated_kinds.contains(&kind) {
+        next_agent_workspace_repair_retry_idempotency_key(repair_repo, &base_idempotency_key)
+            .await?
+    } else {
+        base_idempotency_key
+    };
 
     let mut effect =
         AgentWorkspaceRepairEffect::new(attempt.id.clone(), kind, idempotency_key, Utc::now());
@@ -781,48 +784,30 @@ pub(crate) async fn reconcile_blocked_agent_workspace_repair_pr_handoff(
     else {
         return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
     };
-    let push_key = format!(
-        "agent_workspace_repair:{}:{}:{}",
-        current.id,
-        current.generation,
-        AgentWorkspaceRepairEffectKind::PushBranch
-    );
-    let Some(push_effect) = state
-        .agent_workspace_repair_repo
-        .get_repair_effect_by_idempotency_key(&push_key)
-        .await?
-    else {
-        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
-    };
-    if push_effect.attempt_id != current.id
-        || push_effect.kind != AgentWorkspaceRepairEffectKind::PushBranch
-        || push_effect.status != AgentWorkspaceRepairEffectStatus::Observed
-        || push_effect.intended_head_oid.as_deref() != Some(repair_head)
+    if observed_repair_push_receipt_for_head(
+        state.agent_workspace_repair_repo.as_ref(),
+        &current,
+        repair_head,
+    )
+    .await?
+    .is_none()
     {
         return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
     }
-    let AgentWorkspaceRepairPushOutcome::Observed { remote_oid, .. } =
-        observed_workspace_repair_push_outcome(push_effect)?
-    else {
-        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
-    };
-    if remote_oid != repair_head {
-        return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
-    }
 
-    let update_key = format!(
-        "agent_workspace_repair:{}:{}:{}",
-        current.id,
-        current.generation,
-        AgentWorkspaceRepairEffectKind::UpdatePr
-    );
-    let Some(mut update_effect) = state
-        .agent_workspace_repair_repo
-        .get_repair_effect_by_idempotency_key(&update_key)
-        .await?
+    // Resolve the effect that currently owns the PR update rather than the base key alone: once a
+    // terminated identity exists, the base row is a closed `Failed` row and the live handoff lives
+    // under an ordinal retry key.
+    let RepairEffectIdentity::Live(update_effect) = resolve_repair_effect_identity(
+        state.agent_workspace_repair_repo.as_ref(),
+        &current,
+        AgentWorkspaceRepairEffectKind::UpdatePr,
+    )
+    .await?
     else {
         return Ok(BlockedRepairPrHandoffReconciliation::NotRecoverable);
     };
+    let mut update_effect = *update_effect;
     if update_effect.attempt_id != current.id
         || update_effect.kind != AgentWorkspaceRepairEffectKind::UpdatePr
         || !matches!(
@@ -976,31 +961,20 @@ async fn has_authoritative_observed_agent_workspace_repair_push(
     state: &AppState,
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> AppResult<bool> {
-    let idempotency_key = format!(
-        "agent_workspace_repair:{}:{}:{}",
-        attempt.id,
-        attempt.generation,
-        AgentWorkspaceRepairEffectKind::PushBranch
-    );
-    let Some(effect) = state
-        .agent_workspace_repair_repo
-        .get_repair_effect_by_idempotency_key(&idempotency_key)
-        .await?
+    let Some(repair_head) = attempt
+        .repair_head_commit
+        .as_deref()
+        .filter(|head| !head.trim().is_empty())
     else {
         return Ok(false);
     };
-    if effect.attempt_id != attempt.id
-        || effect.kind != AgentWorkspaceRepairEffectKind::PushBranch
-        || effect.status != AgentWorkspaceRepairEffectStatus::Observed
-    {
-        return Ok(false);
-    }
-    let AgentWorkspaceRepairPushOutcome::Observed { remote_oid, .. } =
-        observed_workspace_repair_push_outcome(effect)?
-    else {
-        return Ok(false);
-    };
-    Ok(attempt.repair_head_commit.as_deref() == Some(remote_oid.as_str()))
+    Ok(observed_repair_push_receipt_for_head(
+        state.agent_workspace_repair_repo.as_ref(),
+        attempt,
+        repair_head,
+    )
+    .await?
+    .is_some())
 }
 
 /// Durably block a drifted-but-exact pre-PR repair receipt so the budgeted blocked-repair
@@ -1250,7 +1224,7 @@ pub(crate) async fn push_agent_workspace_repair_branch(
             if effect.status == AgentWorkspaceRepairEffectStatus::Failed
                 && effect.completed_at.is_some() =>
         {
-            let idempotency_key = next_agent_workspace_repair_push_retry_idempotency_key(
+            let idempotency_key = next_agent_workspace_repair_retry_idempotency_key(
                 repair_repo.as_ref(),
                 &base_idempotency_key,
             )
@@ -1436,30 +1410,6 @@ pub(crate) async fn push_agent_workspace_repair_branch(
         )));
     }
     mutation_result
-}
-
-/// Finds the next never-used ordinal-suffixed idempotency key for a repeat push effect after the
-/// base key's effect terminated as `Failed`. `idempotency_key` is unique table-wide, so a retry
-/// cannot reuse the base key; this is a bounded read (one lookup per ordinal, capped) rather than
-/// an unbounded scan.
-async fn next_agent_workspace_repair_push_retry_idempotency_key(
-    repair_repo: &dyn AgentWorkspaceRepairRepository,
-    base_idempotency_key: &str,
-) -> AppResult<String> {
-    const MAX_RETRY_ORDINAL: u32 = 50;
-    for ordinal in 2..=MAX_RETRY_ORDINAL {
-        let candidate = format!("{base_idempotency_key}#{ordinal}");
-        if repair_repo
-            .get_repair_effect_by_idempotency_key(&candidate)
-            .await?
-            .is_none()
-        {
-            return Ok(candidate);
-        }
-    }
-    Err(AppError::Conflict(
-        "workspace repair push effect retry identity space exhausted".to_string(),
-    ))
 }
 
 pub(crate) async fn prepare_agent_workspace_repair_push_attempt(
@@ -1748,10 +1698,11 @@ pub(crate) async fn reconcile_open_agent_workspace_repair_push_effect(
         return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Observed);
     }
     if effect.remote_matches_recorded_precondition(remote_oid.as_deref()) {
-        fail_agent_workspace_repair_push_effect(
+        fail_agent_workspace_repair_effect_for_phase(
             state.agent_workspace_repair_repo.as_ref(),
             attempt,
             effect,
+            AgentWorkspaceRepairPhase::Continuing,
             "repair push remote OID still matches the recorded pre-push state; the push never reached the remote",
         )
         .await?;
@@ -1804,10 +1755,15 @@ pub(crate) async fn observe_agent_workspace_repair_push_effect(
     }
 }
 
-pub(crate) async fn fail_agent_workspace_repair_push_effect(
+/// Terminates a durable repair effect as `Failed` with `completed_at` set, which closes it and
+/// releases the attempt's one-open-effect slot. `expected_phase` is the phase the caller proved
+/// the attempt is in: push reconciliation owns `Continuing`, while blocked-arm recovery owns
+/// `Blocked`.
+pub(crate) async fn fail_agent_workspace_repair_effect_for_phase(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
     mut effect: AgentWorkspaceRepairEffect,
+    expected_phase: AgentWorkspaceRepairPhase,
     reason: &str,
 ) -> AppResult<AgentWorkspaceRepairEffect> {
     let expected_effect_updated_at = effect.updated_at;
@@ -1820,7 +1776,7 @@ pub(crate) async fn fail_agent_workspace_repair_push_effect(
         .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
             attempt_id: attempt.id.clone(),
             generation: attempt.generation,
-            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_phase,
             expected_attempt_updated_at: attempt.updated_at,
             expected_effect_updated_at,
             expected_effect_status,
@@ -1832,10 +1788,10 @@ pub(crate) async fn fail_agent_workspace_repair_push_effect(
     {
         CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => Ok(*effect),
         CompleteAgentWorkspaceRepairEffectOutcome::Stale(_) => Err(AppError::Conflict(
-            "repair push failure lost current attempt authority during recovery".to_string(),
+            "repair effect failure lost current attempt authority during recovery".to_string(),
         )),
         CompleteAgentWorkspaceRepairEffectOutcome::Missing => Err(AppError::NotFound(
-            "repair push effect disappeared during recovery".to_string(),
+            "repair effect disappeared during recovery".to_string(),
         )),
     }
 }
