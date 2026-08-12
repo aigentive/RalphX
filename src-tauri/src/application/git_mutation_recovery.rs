@@ -600,6 +600,8 @@ async fn block_repair_attempt_after_claim_recovery(
         .get_by_conversation_id(&attempt.conversation_id)
         .await?
         .and_then(|workspace| workspace.pr_auto_merge_current);
+    let what_happened = attempt.what_happened.clone();
+    let what_i_did = attempt.what_i_did.clone();
     match block_agent_workspace_repair_completion(
         Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.branch_update_repo),
@@ -607,6 +609,8 @@ async fn block_repair_attempt_after_claim_recovery(
         "Workspace repair recovery is blocked.",
         reason,
         auto_merge_current,
+        what_happened.as_deref(),
+        what_i_did.as_deref(),
     )
     .await?
     {

@@ -99,7 +99,7 @@ test.describe("Agents terminal publish history", () => {
     await expect(
       publish.holdCard.getByRole("button", { name: "Re-check PR health" }),
     ).toBeVisible();
-    await expect(publish.holdCard).toContainText("Nothing is running");
+    await expect(publish.holdCard).toContainText("Waiting on you");
     await expect(publish.holdCard).toContainText("2 generations · 18 min");
     await expect(publish.inlineDiffs).toHaveCount(0);
 
