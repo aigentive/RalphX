@@ -31,6 +31,7 @@ use axum::{
 
 use super::*;
 use crate::application::agent_conversation_workspace::AgentConversationWorkspaceBaseSelection;
+use crate::application::agent_workspace_review_incremental::AgentWorkspaceReviewPreviousDeltaFile;
 use crate::application::app_state::ApplicationExecutionState;
 use crate::application::agent_workspace_local_commit::{
     commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
@@ -117,7 +118,8 @@ use crate::domain::entities::{
     AgentWorkspacePrMetadataDecision,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewArtifactOutcome,
+    AgentWorkspacePreviousReviewSnapshot, AgentWorkspacePrReviewMonitorStatus,
+    AgentWorkspaceReviewArtifactOutcome,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewTargetScope, Artifact, ArtifactId, ArtifactType, ChatConversationId,
     IdeationAnalysisBaseRefKind, NewNotification, NotificationCategory, NotificationSeverity,
@@ -864,6 +866,47 @@ pub struct AgentWorkspaceReviewContextResponse {
     pub can_mutate_review_state: bool,
     pub review_runtime_state: String,
     pub should_show_tab: bool,
+    /// The last settled review, served from a start-of-run snapshot.
+    ///
+    /// Never derived from the live `reviewed_*` fields: the current run's artifact write
+    /// overwrites those before it completes, so a live read would eventually return the run's own
+    /// review as its "previous" one. Present only on the full-packet (reviewer) path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_review: Option<AgentWorkspacePreviousReviewResponse>,
+    /// Files changed since `previous_review.reviewed_head_sha`, when that head is reachable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_changed_since_previous_review: Option<Vec<AgentWorkspaceReviewPreviousDeltaFile>>,
+    /// `false` when the previous head is unreachable (rebase, base update) and the delta above is
+    /// therefore not trustworthy. The reviewer must fall back to a full review.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_review_delta_complete: Option<bool>,
+}
+
+/// The last settled review, for incremental triage.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentWorkspacePreviousReviewResponse {
+    pub overview_artifact_id: String,
+    pub requested_changes_artifact_id: Option<String>,
+    pub artifact_version: Option<u32>,
+    pub reviewed_diff_fingerprint: Option<String>,
+    pub reviewed_head_sha: Option<String>,
+    pub outcome: String,
+}
+
+impl From<&AgentWorkspacePreviousReviewSnapshot> for AgentWorkspacePreviousReviewResponse {
+    fn from(value: &AgentWorkspacePreviousReviewSnapshot) -> Self {
+        Self {
+            overview_artifact_id: value.overview_artifact_id.as_str().to_string(),
+            requested_changes_artifact_id: value
+                .requested_changes_artifact_id
+                .as_ref()
+                .map(|artifact_id| artifact_id.as_str().to_string()),
+            artifact_version: value.artifact_version,
+            reviewed_diff_fingerprint: value.reviewed_diff_fingerprint.clone(),
+            reviewed_head_sha: value.reviewed_head_sha.clone(),
+            outcome: value.outcome.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize, Default)]

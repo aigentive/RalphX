@@ -7418,3 +7418,255 @@ diff --git a/src/handler.rs b/src/handler.rs
     assert!(packet.patch_excerpt.contains("+fn substantive() {}"));
     assert!(!packet.notes.iter().any(|note| note.contains("low_signal")));
 }
+
+// ── Previous-review snapshot (incremental re-review) ─────────────────────
+
+/// The self-reference guard. The snapshot must be taken at review start, because the run's own
+/// artifact write overwrites `reviewed_*`/`review_artifact_*` before it completes — so a live read
+/// would eventually hand the reviewer its own review as the "previous" one.
+#[tokio::test]
+async fn previous_review_snapshot_survives_the_current_runs_artifact_write() {
+    let (_temp, state, workspace, target) = degraded_settlement_fixture().await;
+
+    // Cycle 1 settles.
+    let mut monitor = load_or_create_monitor(&state, &workspace)
+        .await
+        .expect("monitor should load");
+    apply_current_target_to_monitor(&mut monitor, Some(&target));
+    apply_review_artifact_pair_to_monitor(
+        &mut monitor,
+        target.scope,
+        Some("head-sha-cycle-1".to_string()),
+        target.diff_fingerprint.clone(),
+        Some("run-1".to_string()),
+        ArtifactId::from_string("overview-v1"),
+        1,
+        Utc::now(),
+        None,
+        ArtifactId::from_string("requested-changes-v1"),
+        1,
+        Utc::now(),
+        None,
+    );
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+
+    // Cycle 2 starts: freeze cycle 1 before this run touches anything.
+    assert!(monitor.capture_previous_review_snapshot());
+    let snapshot = monitor
+        .previous_review
+        .clone()
+        .expect("previous review should be captured");
+    assert_eq!(snapshot.overview_artifact_id.as_str(), "overview-v1");
+    assert_eq!(snapshot.reviewed_head_sha.as_deref(), Some("head-sha-cycle-1"));
+    assert_eq!(snapshot.outcome, AgentWorkspaceReviewOutcome::Blocking);
+
+    // Cycle 2 writes its own artifact pair, overwriting every live reviewed_* field.
+    apply_review_artifact_pair_to_monitor(
+        &mut monitor,
+        target.scope,
+        Some("head-sha-cycle-2".to_string()),
+        target.diff_fingerprint.clone(),
+        Some("run-2".to_string()),
+        ArtifactId::from_string("overview-v2"),
+        2,
+        Utc::now(),
+        Some(ArtifactId::from_string("overview-v1")),
+        ArtifactId::from_string("requested-changes-v2"),
+        2,
+        Utc::now(),
+        Some(ArtifactId::from_string("requested-changes-v1")),
+    );
+    let persisted = state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    let previous = persisted
+        .previous_review
+        .expect("previous review should survive the current run's write");
+    assert_eq!(
+        previous.overview_artifact_id.as_str(),
+        "overview-v1",
+        "previous_review must not become self-referential"
+    );
+    assert_eq!(previous.reviewed_head_sha.as_deref(), Some("head-sha-cycle-1"));
+    assert_eq!(previous.artifact_version, Some(1));
+    // Meanwhile the live fields did move on, which is exactly why the snapshot is needed.
+    assert_eq!(
+        persisted.review_artifact_id.as_ref().map(|id| id.as_str()),
+        Some("overview-v2")
+    );
+}
+
+#[tokio::test]
+async fn first_review_captures_no_previous_snapshot() {
+    let (_temp, state, workspace, _target) = degraded_settlement_fixture().await;
+    let mut monitor = load_or_create_monitor(&state, &workspace)
+        .await
+        .expect("monitor should load");
+
+    assert!(
+        !monitor.capture_previous_review_snapshot(),
+        "there is no settled review to capture on the first cycle"
+    );
+    assert!(monitor.previous_review.is_none());
+}
+
+/// A reachable previous head yields the exact commit delta, merged with uncommitted work.
+#[tokio::test]
+async fn previous_review_delta_reports_only_files_changed_since_the_reviewed_head() {
+    use crate::application::agent_workspace_review_incremental::previous_review_delta;
+    use crate::domain::entities::AgentWorkspacePreviousReviewSnapshot;
+
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+    let reviewed_head = git(&repo, &["rev-parse", "HEAD"]);
+    // A second commit lands after the previous review settled.
+    std::fs::write(repo.join("followup.rs"), "pub fn followup() {}\n")
+        .expect("followup file should be written");
+    git(&repo, &["add", "followup.rs"]);
+    git(&repo, &["commit", "-m", "followup change"]);
+
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    let target = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load")
+        .target
+        .expect("target should exist");
+
+    let previous = AgentWorkspacePreviousReviewSnapshot {
+        overview_artifact_id: ArtifactId::from_string("overview-v1"),
+        requested_changes_artifact_id: None,
+        artifact_version: Some(1),
+        reviewed_diff_fingerprint: None,
+        reviewed_head_sha: Some(reviewed_head),
+        outcome: AgentWorkspaceReviewOutcome::Passed,
+    };
+    let delta = previous_review_delta(&target, &previous, &BTreeMap::new())
+        .expect("a reviewed head should yield a delta");
+
+    assert!(delta.complete);
+    let paths = delta
+        .files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, vec!["followup.rs"]);
+    assert!(
+        !paths.contains(&"committed.rs"),
+        "a file the previous review already covered must not reappear in the delta"
+    );
+}
+
+/// Fail open: after a rebase the previous head is gone, and a small delta would be a lie.
+#[tokio::test]
+async fn unreachable_previous_head_marks_the_delta_incomplete() {
+    use crate::application::agent_workspace_review_incremental::previous_review_delta;
+    use crate::domain::entities::AgentWorkspacePreviousReviewSnapshot;
+
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    let target = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load")
+        .target
+        .expect("target should exist");
+
+    let previous = AgentWorkspacePreviousReviewSnapshot {
+        overview_artifact_id: ArtifactId::from_string("overview-v1"),
+        requested_changes_artifact_id: None,
+        artifact_version: Some(1),
+        reviewed_diff_fingerprint: None,
+        reviewed_head_sha: Some("0000000000000000000000000000000000000000".to_string()),
+        outcome: AgentWorkspaceReviewOutcome::Passed,
+    };
+    let mut current = BTreeMap::new();
+    current.insert("committed.rs".to_string(), "added".to_string());
+
+    let delta = previous_review_delta(&target, &previous, &current)
+        .expect("an unreachable head should still return a delta record");
+
+    assert!(
+        !delta.complete,
+        "an unreachable previous head must not be reported as a trustworthy delta"
+    );
+    assert_eq!(
+        delta
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["committed.rs"],
+        "the fallback list is the full current inventory, not a false-small delta"
+    );
+}
+
+/// Uncommitted work is unreviewed even though it is absent from `prev_head..head`.
+#[tokio::test]
+async fn previous_review_delta_includes_uncommitted_work() {
+    use crate::application::agent_workspace_review_incremental::previous_review_delta;
+    use crate::domain::entities::AgentWorkspacePreviousReviewSnapshot;
+
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+    let reviewed_head = git(&repo, &["rev-parse", "HEAD"]);
+
+    let state = AppState::new_test();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    let target = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load")
+        .target
+        .expect("target should exist");
+
+    let previous = AgentWorkspacePreviousReviewSnapshot {
+        overview_artifact_id: ArtifactId::from_string("overview-v1"),
+        requested_changes_artifact_id: None,
+        artifact_version: Some(1),
+        reviewed_diff_fingerprint: None,
+        reviewed_head_sha: Some(reviewed_head),
+        outcome: AgentWorkspaceReviewOutcome::Passed,
+    };
+    let mut current = BTreeMap::new();
+    current.insert("staged-but-uncommitted.rs".to_string(), "added".to_string());
+
+    let delta = previous_review_delta(&target, &previous, &current)
+        .expect("a reviewed head should yield a delta");
+
+    assert!(delta.complete);
+    assert!(
+        delta
+            .files
+            .iter()
+            .any(|file| file.path == "staged-but-uncommitted.rs"),
+        "uncommitted work is unreviewed even though prev_head..head cannot see it"
+    );
+}

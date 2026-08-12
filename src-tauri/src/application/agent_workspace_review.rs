@@ -985,6 +985,10 @@ async fn start_agent_workspace_review_with_revalidated_target_and_chat_service<
         phase_started,
         request_started,
     );
+    // Freeze the settled review before this run touches anything. This is the only correct capture
+    // point: the target-refresh path runs on every context read, and the completion/blocked paths
+    // run after the run's own artifact write has already overwritten `reviewed_*`.
+    monitor.capture_previous_review_snapshot();
     apply_current_target_to_monitor(&mut monitor, target.as_ref());
     carry_forward_existing_merged_pr_review_if_current(workspace, &mut monitor, target.as_ref());
     let phase_started = Instant::now();

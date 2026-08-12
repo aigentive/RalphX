@@ -128,6 +128,7 @@ pub use agent_conversation_workspace::{
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspacePublicationMetadataPhase,
     AgentWorkspacePublicationMetadataReceipt, AgentWorkspacePublicationMetadataState,
+    AgentWorkspacePreviousReviewSnapshot,
     AgentWorkspaceReviewArtifactOutcome, AgentWorkspaceReviewAutoMergeGuard,
     AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewFixerSnapshot,

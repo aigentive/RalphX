@@ -15,7 +15,8 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
     AgentWorkspacePublicationMetadataPhase, AgentWorkspacePublicationMetadataReceipt,
-    AgentWorkspacePublicationMetadataState, AgentWorkspaceReviewApprovalSnapshot,
+    AgentWorkspacePreviousReviewSnapshot, AgentWorkspacePublicationMetadataState,
+    AgentWorkspaceReviewApprovalSnapshot,
     AgentWorkspaceReviewArtifactOutcome, AgentWorkspaceReviewAutoMergeGuard,
     AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewFixerSnapshot,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation,
@@ -625,6 +626,32 @@ fn row_to_workspace_review_monitor(
             .get::<_, Option<String>>("review_settlement_source")?
             .and_then(|value| AgentWorkspaceReviewSettlementSource::from_str(&value).ok()),
         annotation_run_id: row.get("annotation_run_id")?,
+        previous_review: row
+            .get::<_, Option<String>>("previous_review_artifact_id")?
+            .map(|overview_artifact_id| AgentWorkspacePreviousReviewSnapshot {
+                overview_artifact_id: ArtifactId::from_string(overview_artifact_id),
+                requested_changes_artifact_id: row
+                    .get::<_, Option<String>>("previous_review_requested_changes_artifact_id")
+                    .ok()
+                    .flatten()
+                    .map(ArtifactId::from_string),
+                artifact_version: row
+                    .get::<_, Option<i64>>("previous_review_artifact_version")
+                    .ok()
+                    .flatten()
+                    .and_then(|value| u32::try_from(value).ok()),
+                reviewed_diff_fingerprint: row
+                    .get("previous_review_diff_fingerprint")
+                    .ok()
+                    .flatten(),
+                reviewed_head_sha: row.get("previous_review_head_sha").ok().flatten(),
+                outcome: row
+                    .get::<_, Option<String>>("previous_review_outcome")
+                    .ok()
+                    .flatten()
+                    .and_then(|value| AgentWorkspaceReviewOutcome::from_str(&value).ok())
+                    .unwrap_or(AgentWorkspaceReviewOutcome::None),
+            }),
         last_run_id: row.get("last_run_id")?,
         last_error: row.get("last_error")?,
         auto_merge_guard,
@@ -4202,6 +4229,27 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .review_settlement_source
             .map(|source| source.to_string());
         let annotation_run_id = monitor.annotation_run_id;
+        let previous_review = monitor.previous_review;
+        let previous_review_artifact_id = previous_review
+            .as_ref()
+            .map(|snapshot| snapshot.overview_artifact_id.as_str().to_string());
+        let previous_review_requested_changes_artifact_id = previous_review
+            .as_ref()
+            .and_then(|snapshot| snapshot.requested_changes_artifact_id.as_ref())
+            .map(|artifact_id| artifact_id.as_str().to_string());
+        let previous_review_artifact_version = previous_review
+            .as_ref()
+            .and_then(|snapshot| snapshot.artifact_version)
+            .map(i64::from);
+        let previous_review_diff_fingerprint = previous_review
+            .as_ref()
+            .and_then(|snapshot| snapshot.reviewed_diff_fingerprint.clone());
+        let previous_review_head_sha = previous_review
+            .as_ref()
+            .and_then(|snapshot| snapshot.reviewed_head_sha.clone());
+        let previous_review_outcome = previous_review
+            .as_ref()
+            .map(|snapshot| snapshot.outcome.to_string());
         let last_run_id = monitor.last_run_id;
         let last_error = monitor.last_error;
         let auto_merge_guard_status = monitor
@@ -4272,13 +4320,19 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_artifact_recorded_outcome_run_id,
                         review_artifact_recorded_blocking_summary,
                         review_settlement_source, annotation_run_id,
+                        previous_review_artifact_id,
+                        previous_review_requested_changes_artifact_id,
+                        previous_review_artifact_version,
+                        previous_review_diff_fingerprint,
+                        previous_review_head_sha, previous_review_outcome,
                         created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
                         ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37,
                         ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48,
-                        ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58
+                        ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58,
+                        ?59, ?60, ?61, ?62, ?63, ?64
                     )
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id = excluded.project_id,
@@ -4327,6 +4381,12 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_artifact_recorded_blocking_summary = excluded.review_artifact_recorded_blocking_summary,
                         review_settlement_source = excluded.review_settlement_source,
                         annotation_run_id = excluded.annotation_run_id,
+                        previous_review_artifact_id = excluded.previous_review_artifact_id,
+                        previous_review_requested_changes_artifact_id = excluded.previous_review_requested_changes_artifact_id,
+                        previous_review_artifact_version = excluded.previous_review_artifact_version,
+                        previous_review_diff_fingerprint = excluded.previous_review_diff_fingerprint,
+                        previous_review_head_sha = excluded.previous_review_head_sha,
+                        previous_review_outcome = excluded.previous_review_outcome,
                         last_run_id = excluded.last_run_id,
                         last_error = excluded.last_error,
                         auto_merge_guard_status = agent_workspace_review_monitors.auto_merge_guard_status,
@@ -4394,6 +4454,12 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_artifact_recorded_blocking_summary,
                         review_settlement_source,
                         annotation_run_id,
+                        previous_review_artifact_id,
+                        previous_review_requested_changes_artifact_id,
+                        previous_review_artifact_version,
+                        previous_review_diff_fingerprint,
+                        previous_review_head_sha,
+                        previous_review_outcome,
                         created_at,
                         updated_at,
                     ],

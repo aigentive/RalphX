@@ -78,6 +78,7 @@ pub(crate) mod agent_workspace_ci_rerun;
 pub(crate) mod agent_workspace_publish_repair_state;
 pub mod agent_workspace_review;
 pub mod agent_workspace_review_annotator;
+pub mod agent_workspace_review_incremental;
 pub mod agent_workspace_review_low_signal;
 pub(crate) mod agent_workspace_review_approval;
 pub mod agent_workspace_review_auto_merge;

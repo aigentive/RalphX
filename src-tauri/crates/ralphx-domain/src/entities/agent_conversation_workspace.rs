@@ -270,6 +270,19 @@ impl FromStr for AgentWorkspaceReviewOutcome {
     }
 }
 
+/// What the last settled review produced, frozen at the start of the next review run.
+///
+/// Lets a re-review triage delta-first instead of re-reading a delta it already cleared.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspacePreviousReviewSnapshot {
+    pub overview_artifact_id: ArtifactId,
+    pub requested_changes_artifact_id: Option<ArtifactId>,
+    pub artifact_version: Option<u32>,
+    pub reviewed_diff_fingerprint: Option<String>,
+    pub reviewed_head_sha: Option<String>,
+    pub outcome: AgentWorkspaceReviewOutcome,
+}
+
 /// Disposition the reviewer recorded on its final Review artifact write.
 ///
 /// Deliberately narrower than [`AgentWorkspaceReviewOutcome`]: `run_failed` and `no_changes`
@@ -701,6 +714,13 @@ pub struct AgentWorkspaceReviewMonitor {
     pub review_settlement_source: Option<AgentWorkspaceReviewSettlementSource>,
     /// Run registered by the backend as the post-settlement hunk annotator for the reviewed target.
     pub annotation_run_id: Option<String>,
+    /// Snapshot of the previously settled review, captured once when a new review run starts.
+    ///
+    /// Must be a snapshot, not a live read of `reviewed_*`/`review_artifact_*`: the current run's
+    /// artifact write overwrites those fields before it completes, so serving `previous_review`
+    /// from them would make a later context fetch return the run's own review as its "previous"
+    /// one. `None` until a review has settled at least once.
+    pub previous_review: Option<AgentWorkspacePreviousReviewSnapshot>,
     pub last_run_id: Option<String>,
     pub last_error: Option<String>,
     pub auto_merge_guard: Option<AgentWorkspaceReviewAutoMergeGuard>,
@@ -759,6 +779,7 @@ impl AgentWorkspaceReviewMonitor {
             review_artifact_recorded_blocking_summary: None,
             review_settlement_source: None,
             annotation_run_id: None,
+            previous_review: None,
             last_run_id: None,
             last_error: None,
             auto_merge_guard: None,
@@ -854,6 +875,25 @@ impl AgentWorkspaceReviewMonitor {
         self.review_artifact_recorded_outcome_run_id = None;
         self.review_artifact_recorded_blocking_summary = None;
         self.annotation_run_id = None;
+    }
+
+    /// Freezes the currently settled review so the next run can triage against it.
+    ///
+    /// Call exactly once, at review start, before the run touches `reviewed_*`. Returns `false`
+    /// and changes nothing when there is no settled prior review to capture.
+    pub fn capture_previous_review_snapshot(&mut self) -> bool {
+        let Some(overview_artifact_id) = self.review_artifact_id.clone() else {
+            return false;
+        };
+        self.previous_review = Some(AgentWorkspacePreviousReviewSnapshot {
+            overview_artifact_id,
+            requested_changes_artifact_id: self.review_requested_changes_artifact_id.clone(),
+            artifact_version: self.review_artifact_version,
+            reviewed_diff_fingerprint: self.reviewed_diff_fingerprint.clone(),
+            reviewed_head_sha: self.reviewed_head_sha.clone(),
+            outcome: self.review_outcome,
+        });
+        true
     }
 
     /// True when `run_id` is the exact run that recorded a typed outcome on the current artifact.

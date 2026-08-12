@@ -95,6 +95,34 @@ pub async fn get_agent_workspace_review_context(
         "Served workspace Review context"
     );
 
+    // Incremental triage is reviewer-facing, so it rides the full-packet path only. Everything
+    // here is served from the start-of-run snapshot, never from the live `reviewed_*` fields.
+    let previous_review_snapshot = include_review_packet
+        .then(|| context.monitor.previous_review.clone())
+        .flatten();
+    let (previous_review, files_changed_since_previous_review, previous_review_delta_complete) =
+        match (previous_review_snapshot.as_ref(), context.target.as_ref()) {
+            (Some(snapshot), Some(target)) => {
+                let delta = crate::application::agent_workspace_review_incremental::
+                    previous_review_delta(
+                        target,
+                        snapshot,
+                        &changed_file_statuses_for_delta(target),
+                    );
+                (
+                    Some(AgentWorkspacePreviousReviewResponse::from(snapshot)),
+                    delta.as_ref().map(|delta| delta.files.clone()),
+                    delta.as_ref().map(|delta| delta.complete),
+                )
+            }
+            (Some(snapshot), None) => (
+                Some(AgentWorkspacePreviousReviewResponse::from(snapshot)),
+                None,
+                None,
+            ),
+            _ => (None, None, None),
+        };
+
     let review_fixer_cycle_count = context.monitor.review_fixer_cycle_count;
     let mut monitor = AgentWorkspaceReviewMonitorResponse::from(context.monitor);
     apply_automation_attempt_count(
@@ -121,7 +149,25 @@ pub async fn get_agent_workspace_review_context(
         can_mutate_review_state: context.can_mutate_review_state,
         review_runtime_state: context.review_runtime_state.to_string(),
         should_show_tab: context.should_show_tab,
+        previous_review,
+        files_changed_since_previous_review,
+        previous_review_delta_complete,
     }))
+}
+
+/// Current changed-file statuses from the already-materialized packet.
+///
+/// Reuses the packet's inventory rather than re-shelling git: it is the same data the reviewer is
+/// about to read, and the delta only needs to know which uncommitted files exist.
+fn changed_file_statuses_for_delta(
+    target: &crate::application::agent_workspace_review::AgentWorkspaceReviewTarget,
+) -> std::collections::BTreeMap<String, String> {
+    target
+        .review_packet
+        .changed_files
+        .iter()
+        .map(|file| (file.path.clone(), file.status.clone()))
+        .collect()
 }
 
 pub(super) fn workspace_review_runtime_header(
