@@ -1207,7 +1207,7 @@ pub(crate) async fn retry_agent_workspace_pr_autofix_hold_override(
 
 /// Outcome of superseding a reserved repair with a generation aimed at a newer base.
 pub(crate) enum AgentWorkspaceRepairRetargetOutcome {
-    Started(AgentWorkspaceRepairAttempt),
+    Started(Box<AgentWorkspaceRepairAttempt>),
     /// Another pass already moved this lineage; the caller must not write anything further.
     Stale,
 }
@@ -1274,7 +1274,7 @@ pub(crate) async fn settle_repair_and_start_retargeted_successor(
         .await?
     {
         SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Started(attempt) => {
-            Ok(AgentWorkspaceRepairRetargetOutcome::Started(attempt))
+            Ok(AgentWorkspaceRepairRetargetOutcome::Started(Box::new(attempt)))
         }
         SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Stale(_)
         | SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Missing => {

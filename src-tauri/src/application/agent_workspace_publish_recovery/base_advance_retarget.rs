@@ -93,7 +93,7 @@ pub(super) async fn retarget_reserved_repair_to_advanced_base(
     )
     .await?
     {
-        AgentWorkspaceRepairRetargetOutcome::Started(successor) => successor,
+        AgentWorkspaceRepairRetargetOutcome::Started(successor) => *successor,
         AgentWorkspaceRepairRetargetOutcome::Stale => {
             return Ok(DurableRepairRecoveryOutcome::Stale);
         }
@@ -138,9 +138,7 @@ async fn append_base_advance_retargeted_event(
             workspace.conversation_id.clone(),
             REPAIR_BASE_ADVANCE_RETARGETED_STEP,
             "repairing",
-            &format!(
-                "The base moved to {new_target_base_commit} while the repair was interrupted; RalphX retargeted the committed repair instead of blocking it."
-            ),
+            format!("The base moved to {new_target_base_commit} while the repair was interrupted; RalphX retargeted the committed repair instead of blocking it."),
             None,
         ))
         .await
