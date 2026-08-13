@@ -16,6 +16,11 @@ pub const OUTCOME_COMPACTED: &str = "compacted";
 pub const OUTCOME_SKIPPED: &str = "skipped";
 pub const OUTCOME_ERROR: &str = "error";
 
+/// Breadcrumb written before the non-atomic rename window of the swap. It survives only if
+/// the process dies inside that window, where the live path holds no database and the
+/// original sits in the backup directory. Any normal exit from the swap overwrites it.
+pub const REASON_SWAP_INTERRUPTED: &str = "swap_interrupted";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactionRecord {
     /// One of [`OUTCOME_COMPACTED`], [`OUTCOME_SKIPPED`], [`OUTCOME_ERROR`].

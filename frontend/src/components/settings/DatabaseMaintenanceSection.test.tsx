@@ -137,6 +137,23 @@ describe("DatabaseMaintenanceSection", () => {
     );
   });
 
+  it("explains an interrupted swap instead of showing the raw breadcrumb reason", async () => {
+    mockMaintenanceInvoke(false, {
+      last_compaction: {
+        outcome: "error",
+        reason: "swap_interrupted",
+        reclaimed_bytes: null,
+        database_bytes_before: 44_530_065_408,
+        at_rfc3339: "2026-08-10T12:00:00+00:00",
+      },
+    });
+    render(<DatabaseMaintenanceSection />);
+
+    const row = await screen.findByTestId("database-last-compaction");
+    expect(row).toHaveTextContent("the original is in the backup folder");
+    expect(row.textContent).not.toMatch(/swap_interrupted/);
+  });
+
   it("describes the swap-based compaction rather than a copied backup", async () => {
     const user = userEvent.setup();
     mockMaintenanceInvoke();
@@ -149,6 +166,32 @@ describe("DatabaseMaintenanceSection", () => {
     const dialogCopy = screen.getByText(/compacts into a new file/i);
     expect(dialogCopy).toBeInTheDocument();
     expect(screen.queryByText(/verify a backup/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps an accessible name on the compact button while scheduling is in flight", async () => {
+    const user = userEvent.setup();
+    let releaseSchedule: (() => void) | null = null;
+    mockMaintenanceInvoke();
+    const settled = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "set_database_compaction_pending") {
+        await new Promise<void>((resolve) => { releaseSchedule = resolve; });
+      }
+      return settled(command, args);
+    });
+    render(<DatabaseMaintenanceSection />);
+
+    await user.click(await screen.findByRole("button", { name: "Compact on next launch" }));
+    await user.click(screen.getByRole("button", { name: "Schedule compaction" }));
+
+    // Dismiss the dialog to expose the section button, which is still pending.
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    const pending = await screen.findByRole("button", { name: "Scheduling compaction" });
+    expect(pending).toHaveAttribute("aria-busy", "true");
+    expect(pending).toBeDisabled();
+
+    releaseSchedule!();
+    await screen.findByRole("button", { name: "Cancel scheduled compaction" });
   });
 
   it("surfaces stats load failures instead of rendering empty data", async () => {
