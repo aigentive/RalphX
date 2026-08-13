@@ -47,6 +47,13 @@ pub enum AppError {
     #[error("Infrastructure error: {0}")]
     Infrastructure(String),
 
+    /// GitHub refused the call because a primary or secondary API rate limit is exhausted.
+    ///
+    /// Distinct from [`AppError::Infrastructure`] so retry ladders and the merge failure
+    /// taxonomy can treat exhaustion as transient-until-reset instead of a permanent block.
+    #[error("GitHub rate limit exceeded: {message}")]
+    GithubRateLimited { message: String },
+
     #[error("Git operation error: {0}")]
     GitOperation(String),
 
