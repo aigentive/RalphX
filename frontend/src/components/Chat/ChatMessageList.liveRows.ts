@@ -101,6 +101,38 @@ export function liveToolGroupKey(
   ].join(":");
 }
 
+function bottomPinnedSortTime(rowIndex: number, rowCount: number): number {
+  return Number.MAX_SAFE_INTEGER - rowCount + rowIndex - 1;
+}
+
+/**
+ * Projects live rows onto the same epoch-ms scale persisted messages sort on, so
+ * a message that persists mid-run lands between the live rows that streamed
+ * before and after it.
+ *
+ * Hydration-recovered rows carry no `receivedAt`: their wall clock is the
+ * recovery, not the original stream. Missing times inherit the nearest known
+ * one — forward for later rows, backward for the recovered prefix — so a
+ * recovered tail keeps its projection order under the caller's stable sort. A
+ * tail with no receipt time at all keeps the legacy bottom-pinned scheme.
+ */
+export function liveTranscriptRowSortTimes(rows: LiveTranscriptRow[]): number[] {
+  const sortTimes: Array<number | undefined> = rows.map((row) => row.receivedAt);
+  const firstKnown = sortTimes.find((sortTime) => sortTime != null);
+  if (firstKnown == null) {
+    return rows.map((_row, rowIndex) => bottomPinnedSortTime(rowIndex, rows.length));
+  }
+
+  let lastKnown = firstKnown;
+  return sortTimes.map((sortTime) => {
+    if (sortTime != null) {
+      lastKnown = sortTime;
+      return sortTime;
+    }
+    return lastKnown;
+  });
+}
+
 export function buildLiveTranscriptRows(
   contentBlocks: StreamingContentBlock[],
   streamingTasks: Map<string, StreamingTask> | undefined,

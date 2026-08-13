@@ -490,6 +490,86 @@ function primeAtBottom(): HTMLElement {
   return scroller;
 }
 
+describe("mid-run timeline ordering", () => {
+  function orderOf(container: HTMLElement, ...needles: string[]): number[] {
+    const text = container.textContent ?? "";
+    return needles.map((needle) => {
+      const index = text.indexOf(needle);
+      expect(index, `expected "${needle}" in the transcript`).toBeGreaterThan(-1);
+      return index;
+    });
+  }
+
+  it("places a mid-run user message between the live rows that streamed around it", () => {
+    const { container } = renderList({
+      messages: [
+        {
+          id: "user-mid-run",
+          role: "user",
+          content: "Mid-run question",
+          createdAt: "2026-07-13T06:00:05.000Z",
+          toolCalls: null,
+          contentBlocks: null,
+        },
+      ],
+      isAgentRunning: true,
+      streamingContentBlocks: [
+        {
+          type: "text",
+          text: "Streamed before the send",
+          receivedAt: Date.parse("2026-07-13T06:00:00.000Z"),
+        },
+        {
+          type: "text",
+          text: "Streamed after the send",
+          receivedAt: Date.parse("2026-07-13T06:00:10.000Z"),
+        },
+      ],
+    });
+
+    const [before, sent, after] = orderOf(
+      container,
+      "Streamed before the send",
+      "Mid-run question",
+      "Streamed after the send",
+    );
+
+    expect(before).toBeLessThan(sent!);
+    expect(sent).toBeLessThan(after!);
+  });
+
+  it("keeps a fully recovered live tail below persisted history", () => {
+    const { container } = renderList({
+      messages: [
+        {
+          id: "user-mid-run",
+          role: "user",
+          content: "Mid-run question",
+          createdAt: "2026-07-13T06:00:05.000Z",
+          toolCalls: null,
+          contentBlocks: null,
+        },
+      ],
+      isAgentRunning: true,
+      // Hydration-recovered blocks carry no receivedAt.
+      streamingContentBlocks: [
+        { type: "text", text: "Recovered first" },
+        { type: "text", text: "Recovered second" },
+      ],
+    });
+
+    const [sent, first, second] = orderOf(
+      container,
+      "Mid-run question",
+      "Recovered first",
+      "Recovered second",
+    );
+
+    expect(sent).toBeLessThan(first!);
+    expect(first).toBeLessThan(second!);
+  });
+});
+
 describe("transcript bottom spacer placement", () => {
   beforeEach(() => {
     vi.stubEnv("VITEST", "");
