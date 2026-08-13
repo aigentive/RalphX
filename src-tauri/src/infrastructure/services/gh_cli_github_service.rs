@@ -1966,8 +1966,7 @@ pub(crate) fn build_pr_status_snapshots_args(pr_numbers: &[i64]) -> Vec<String> 
             r#" pr{index}: pullRequest(number: {number}) {{
       number state mergeStateStatus mergeable isDraft mergedAt
       headRefName baseRefName
-      headRef {{ target {{ oid }} }}
-      baseRef {{ target {{ oid }} }}
+      headRefOid baseRefOid
       mergeCommit {{ oid }}
       reviewDecision
       autoMergeRequest {{ mergeMethod enabledBy {{ login }} }}
@@ -2053,8 +2052,11 @@ fn reshape_graphql_pr_node(node: &Value) -> Value {
         "isDraft": node.get("isDraft"),
         "headRefName": node.get("headRefName"),
         "baseRefName": node.get("baseRefName"),
-        "headRefOid": node.pointer("/headRef/target/oid"),
-        "baseRefOid": node.pointer("/baseRef/target/oid"),
+        // `headRefOid` / `baseRefOid` are non-null scalars on `PullRequest` itself, so they survive
+        // the head or base ref object being absent — which is why `gh pr view --json headRefOid`
+        // still returns a SHA in that state and a `headRef { target { oid } }` selection would not.
+        "headRefOid": node.get("headRefOid"),
+        "baseRefOid": node.get("baseRefOid"),
         "mergedAt": node.get("mergedAt"),
         "mergeCommit": node.get("mergeCommit"),
         "reviewDecision": node.get("reviewDecision"),
@@ -2081,9 +2083,15 @@ pub(crate) fn parse_pr_status_snapshots_output(
     })?;
     if let Some(errors) = value.get("errors").and_then(Value::as_array) {
         if !errors.is_empty() && value.pointer("/data/repository").is_none() {
-            return Err(AppError::Infrastructure(format!(
-                "gh PR snapshot query failed: {errors:?}"
-            )));
+            // GitHub can report an exhausted rate limit in the response body with a 200 status, so
+            // `gh` exits zero and `gh_process_failure_error` never sees it. Classify through the
+            // same matcher rather than a second pattern list, so the batched query — now the
+            // primary workspace read — still drives `note_rate_limited` and the adaptive backoff.
+            let message = format!("gh PR snapshot query failed: {errors:?}");
+            if is_github_rate_limit_message(&message) {
+                return Err(AppError::GithubRateLimited { message });
+            }
+            return Err(AppError::Infrastructure(message));
         }
     }
     let Some(repository) = value.pointer("/data/repository") else {

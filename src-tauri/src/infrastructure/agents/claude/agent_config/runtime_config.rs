@@ -1447,6 +1447,26 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         "RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS"
     );
     env_u64!(
+        cfg.git.workspace_freshness_full_scope_cache_ttl_ms,
+        "RALPHX_GIT_WORKSPACE_FRESHNESS_FULL_SCOPE_CACHE_TTL_MS"
+    );
+    env_u64!(
+        cfg.git.workspace_pr_poll_base_secs,
+        "RALPHX_GIT_WORKSPACE_PR_POLL_BASE_SECS"
+    );
+    env_u64!(
+        cfg.git.workspace_pr_poll_max_secs,
+        "RALPHX_GIT_WORKSPACE_PR_POLL_MAX_SECS"
+    );
+    env_u64!(
+        cfg.git.github_rate_limit_probe_interval_secs,
+        "RALPHX_GIT_GITHUB_RATE_LIMIT_PROBE_INTERVAL_SECS"
+    );
+    env_u64!(
+        cfg.git.pr_snapshot_hub_ttl_secs,
+        "RALPHX_GIT_PR_SNAPSHOT_HUB_TTL_SECS"
+    );
+    env_u64!(
         cfg.git.workspace_review_cache_ttl_ms,
         "RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS"
     );

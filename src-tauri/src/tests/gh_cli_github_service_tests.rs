@@ -50,6 +50,78 @@ fn batched_snapshot_query_aliases_each_pr_and_uses_gh_repo_placeholders() {
     // pull_request); totalCount lets the parser detect truncation and fall back to per-PR reads.
     assert!(query.contains("contexts(first: 100)"));
     assert!(query.contains("totalCount"));
+    // `headRefOid`/`baseRefOid` are non-null scalars on the PR; the nullable `headRef` object is
+    // not, so selecting through it loses the SHA whenever GitHub reports a null ref.
+    assert!(query.contains("headRefOid baseRefOid"));
+    assert!(!query.contains("headRef {"));
+    assert!(!query.contains("baseRef {"));
+}
+
+/// Regression guard for the supervision gates that bail when `head_ref_oid` is `None`
+/// (`pr_merge_poller.rs` review-monitor and review-feedback paths): a null `headRef` object must
+/// not erase the SHA the PR scalar still carries.
+#[test]
+fn batched_snapshot_parser_reads_head_sha_when_ref_object_is_null() {
+    let json = r#"{"data":{"repository":{"pr0":{
+        "number":101,"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
+        "isDraft":false,"mergedAt":null,"headRefName":"feature","baseRefName":"main",
+        "headRefOid":"head-oid","baseRefOid":"base-oid",
+        "headRef":null,"baseRef":null,
+        "mergeCommit":null,"reviewDecision":null,"autoMergeRequest":null,
+        "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}
+    }}}}"#;
+
+    let snapshots =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect("a null ref object should not fail the parse");
+
+    let pr = snapshots.get(&101).expect("PR 101 should be present");
+    assert_eq!(
+        pr.sync_state.head_ref_oid.as_deref(),
+        Some("head-oid"),
+        "head SHA must come from the non-null PR scalar, not the nullable ref object"
+    );
+    assert_eq!(pr.sync_state.base_ref_oid.as_deref(), Some("base-oid"));
+}
+
+/// GitHub can report an exhausted rate limit in a 200 response body, so `gh` exits zero and the
+/// stderr classifier never sees it. The batched query is the primary workspace read, so
+/// misclassifying this leaves `RateLimitState` untouched and every poller at full cadence.
+#[test]
+fn batched_snapshot_parser_types_a_body_rate_limit_as_rate_limited() {
+    let json = r#"{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}"#;
+
+    let err =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect_err("a rate-limited body is an error");
+
+    assert!(
+        matches!(err, AppError::GithubRateLimited { .. }),
+        "expected GithubRateLimited, got {err:?}"
+    );
+}
+
+#[test]
+fn batched_snapshot_parser_keeps_unrelated_graphql_errors_as_infrastructure() {
+    let json = r#"{"errors":[{"message":"Could not resolve to a Repository with the name 'x'"}]}"#;
+
+    let err =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect_err("an unresolvable repository is an error");
+
+    assert!(
+        matches!(err, AppError::Infrastructure(_)),
+        "only rate-limit bodies may narrow away from Infrastructure, got {err:?}"
+    );
 }
 
 #[test]
@@ -57,7 +129,7 @@ fn batched_snapshot_parser_maps_check_runs_and_status_contexts_alike() {
     let json = r#"{"data":{"rateLimit":{"cost":1},"repository":{
         "pr0":{"number":101,"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
           "isDraft":false,"mergedAt":null,"headRefName":"feature","baseRefName":"main",
-          "headRef":{"target":{"oid":"head-oid"}},"baseRef":{"target":{"oid":"base-oid"}},
+          "headRefOid":"head-oid","baseRefOid":"base-oid",
           "mergeCommit":null,"reviewDecision":"APPROVED",
           "autoMergeRequest":{"mergeMethod":"SQUASH","enabledBy":{"login":"maintainer"}},
           "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
@@ -110,7 +182,7 @@ fn batched_snapshot_matches_the_per_pr_health_read_field_for_field() {
     let batched_json = r#"{"data":{"repository":{"pr0":{
         "state":"MERGED","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","isDraft":false,
         "headRefName":"feature","baseRefName":"main",
-        "headRef":{"target":{"oid":"head-oid"}},"baseRef":{"target":{"oid":"base-oid"}},
+        "headRefOid":"head-oid","baseRefOid":"base-oid",
         "mergedAt":"2026-08-11T10:00:00Z","mergeCommit":{"oid":"merge-oid"},
         "reviewDecision":"APPROVED",
         "autoMergeRequest":{"mergeMethod":"REBASE","enabledBy":{"login":"maintainer"}},
@@ -173,7 +245,7 @@ fn batched_snapshot_parser_omits_pr_when_total_count_exceeds_node_count() {
     let json = r#"{"data":{"repository":{"pr0":{
         "number":101,"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
         "isDraft":false,"mergedAt":null,"headRefName":"feature","baseRefName":"main",
-        "headRef":{"target":{"oid":"head-oid"}},"baseRef":{"target":{"oid":"base-oid"}},
+        "headRefOid":"head-oid","baseRefOid":"base-oid",
         "mergeCommit":null,"reviewDecision":null,"autoMergeRequest":null,
         "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
             "totalCount":5,
@@ -203,7 +275,7 @@ fn batched_snapshot_parser_includes_pr_when_total_count_equals_node_count() {
     let json = r#"{"data":{"repository":{"pr0":{
         "number":101,"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
         "isDraft":false,"mergedAt":null,"headRefName":"feature","baseRefName":"main",
-        "headRef":{"target":{"oid":"head-oid"}},"baseRef":{"target":{"oid":"base-oid"}},
+        "headRefOid":"head-oid","baseRefOid":"base-oid",
         "mergeCommit":null,"reviewDecision":null,"autoMergeRequest":null,
         "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
             "totalCount":1,
@@ -235,7 +307,7 @@ fn batched_snapshot_parser_serves_snapshot_when_status_rollup_is_absent() {
     let json = r#"{"data":{"repository":{"pr0":{
         "number":101,"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
         "isDraft":false,"mergedAt":null,"headRefName":"feature","baseRefName":"main",
-        "headRef":{"target":{"oid":"head-oid"}},"baseRef":{"target":{"oid":"base-oid"}},
+        "headRefOid":"head-oid","baseRefOid":"base-oid",
         "mergeCommit":null,"reviewDecision":null,"autoMergeRequest":null,
         "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}
     }}}}"#;
