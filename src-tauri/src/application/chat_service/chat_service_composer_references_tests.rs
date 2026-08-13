@@ -28,6 +28,9 @@ fn live_reference_merge_prefers_current_references_and_deduplicates_inherited_id
         url: None,
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     };
     let inherited_duplicate = ComposerIntegrationReference {
         title: Some("Older title".to_string()),
@@ -42,6 +45,9 @@ fn live_reference_merge_prefers_current_references_and_deduplicates_inherited_id
         url: None,
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     };
 
     let merged = super::merge_conversation_integration_references(

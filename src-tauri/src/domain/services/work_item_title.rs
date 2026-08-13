@@ -265,6 +265,9 @@ mod tests {
                 url: None,
                 summary_excerpt: None,
                 include_transcript: None,
+                selected_excerpt: None,
+                selected_source_path: None,
+                selected_range_label: None,
             },
             ComposerIntegrationReference {
                 provider: "atlassian".to_string(),
@@ -275,6 +278,9 @@ mod tests {
                 url: Some("https://jira.test/browse/RX-42".to_string()),
                 summary_excerpt: None,
                 include_transcript: None,
+                selected_excerpt: None,
+                selected_source_path: None,
+                selected_range_label: None,
             },
         ];
 

@@ -93,6 +93,9 @@ fn integration_reference(kind: &str, id: &str) -> ComposerIntegrationReference {
         url: None,
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }
 }
 

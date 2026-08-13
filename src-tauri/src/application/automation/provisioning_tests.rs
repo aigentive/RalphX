@@ -311,6 +311,9 @@ fn automation_run_start_request_maps_to_manual_start_input() {
         url: None,
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }];
     request.composer_artifact_references = vec![ComposerArtifactReference {
         artifact_id: "artifact-1".to_string(),

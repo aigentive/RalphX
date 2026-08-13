@@ -188,6 +188,9 @@ pub fn assigned_note_to_composer_reference(
         url: link.note_url.clone(),
         summary_excerpt: link.summary_markdown.clone(),
         include_transcript: Some(link.include_transcript),
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }
 }
 

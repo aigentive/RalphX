@@ -164,6 +164,9 @@ fn note_reference(include_transcript: Option<bool>) -> ComposerIntegrationRefere
         url: Some("https://granola.ai/notes/not_1234567890ABCD".to_string()),
         summary_excerpt: Some("Summary decisions".to_string()),
         include_transcript,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }
 }
 

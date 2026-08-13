@@ -31,6 +31,9 @@ fn clickup_reference(id: impl Into<String>) -> ComposerIntegrationReference {
         url: None,
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }
 }
 
@@ -595,6 +598,9 @@ async fn prompt_expansion_renders_clickup_task_and_reports_zero_budget() {
         url: None,
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     };
 
     let rendered = service

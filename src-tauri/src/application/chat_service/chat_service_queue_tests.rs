@@ -310,6 +310,9 @@ fn queue_reference_merge_uses_the_live_deduplication_seam() {
         url: None,
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     };
     let current = ComposerIntegrationReference {
         title: Some("Queued current".to_string()),
@@ -622,6 +625,9 @@ fn provider_switch_send_options_for_queued_message_preserve_payload() {
         url: None,
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }];
     message.composer_artifact_references = vec![ComposerArtifactReference {
         artifact_id: "artifact-1".to_string(),

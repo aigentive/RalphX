@@ -51,7 +51,7 @@ pub struct ComposerProjectReference {
 }
 
 /// An external integration reference selected in the chat composer.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ComposerIntegrationReference {
     pub provider: String,
@@ -67,6 +67,17 @@ pub struct ComposerIntegrationReference {
     pub summary_excerpt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_transcript: Option<bool>,
+    /// User-selected excerpt text captured from an artifact surface (ticket,
+    /// PR, Granola note). Untrusted external context — never instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_excerpt: Option<String>,
+    /// Human-readable location the excerpt was selected from (e.g. a file
+    /// path, PR review comment path, or transcript section name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_source_path: Option<String>,
+    /// Human-readable range/line label for the selection (e.g. "L12-L20").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_range_label: Option<String>,
 }
 
 /// An artifact reference selected in the chat composer.

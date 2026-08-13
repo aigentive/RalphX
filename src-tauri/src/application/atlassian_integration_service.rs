@@ -1228,6 +1228,9 @@ fn reference_from_atlassian_url(
             url: Some(format!("{site_origin}/browse/{key}")),
             summary_excerpt: None,
             include_transcript: None,
+            selected_excerpt: None,
+            selected_source_path: None,
+            selected_range_label: None,
         });
     }
     let page_id = confluence_page_id_from_uri(&uri, &segments)?;
@@ -1240,6 +1243,9 @@ fn reference_from_atlassian_url(
         url: Some(raw_url.to_string()),
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     })
 }
 

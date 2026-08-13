@@ -2614,6 +2614,9 @@ fn ticket_ref_to_composer_reference(
         url: None,
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }
 }
 

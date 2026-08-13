@@ -289,6 +289,9 @@ fn ticket_reference(provider: &str, kind: &str, ticket_id: &str) -> ComposerInte
         url: None,
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }
 }
 

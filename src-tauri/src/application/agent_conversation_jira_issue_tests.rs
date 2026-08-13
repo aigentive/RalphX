@@ -23,6 +23,9 @@ fn jira_ref(key: &str) -> ComposerIntegrationReference {
         url: Some(format!("https://jira.test/browse/{key}")),
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }
 }
 
@@ -36,6 +39,9 @@ fn confluence_ref(id: &str) -> ComposerIntegrationReference {
         url: Some(format!("https://jira.test/wiki/{id}")),
         summary_excerpt: None,
         include_transcript: None,
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }
 }
 

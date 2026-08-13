@@ -95,6 +95,9 @@ fn granola_reference() -> ComposerIntegrationReference {
         url: Some("https://granola.ai/notes/not_1234567890ABCD".to_string()),
         summary_excerpt: Some("Initial summary".to_string()),
         include_transcript: Some(true),
+        selected_excerpt: None,
+        selected_source_path: None,
+        selected_range_label: None,
     }
 }
 
