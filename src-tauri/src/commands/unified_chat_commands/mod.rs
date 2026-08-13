@@ -47,11 +47,14 @@ pub use crate::application::agent_conversation_start_service::{
     AgentWorkspaceSourcePullRequestInput, StartAgentConversationInput,
 };
 use crate::application::agent_conversation_workspace::{
+    classify_agent_conversation_workspace_path,
+    classify_effective_agent_conversation_workspace_path,
     ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
     prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
     reject_persona_builder_workspace_mode, resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspacePrAutomationDefaults, AgentConversationWorkspaceSetupMode,
+    WorkspacePathResolution,
 };
 use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base,
@@ -6886,7 +6889,18 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         match resolve_agent_workspace_publish_target(state, &project, &workspace).await {
             Ok(target) => target,
             Err(error) => {
-                if error.contains("Agent conversation workspace is missing") {
+                // Classify through the same effective resolver the publish target used: a
+                // linked-plan-branch workspace never evaluates its record path, so its record
+                // path must not decide whether the workspace is missing.
+                if matches!(
+                    classify_effective_agent_conversation_workspace_path(
+                        &project,
+                        &workspace,
+                        state.plan_branch_repo.as_ref(),
+                    )
+                    .await,
+                    Ok(WorkspacePathResolution::Missing { .. })
+                ) {
                     let _ = state
                         .agent_conversation_workspace_repo
                         .update_status(
@@ -8969,10 +8983,12 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         match resolve_valid_agent_conversation_workspace_path(&project, &workspace).await {
             Ok(path) => path,
             Err(error) => {
-                if error
-                    .to_string()
-                    .contains("Agent conversation workspace is missing")
-                {
+                // `resolve_valid_…` resolves the record path, so the record classifier is the
+                // matching companion here.
+                if matches!(
+                    classify_agent_conversation_workspace_path(&project, &workspace),
+                    Ok(WorkspacePathResolution::Missing { .. })
+                ) {
                     let _ = state
                         .agent_conversation_workspace_repo
                         .update_status(

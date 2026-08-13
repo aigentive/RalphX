@@ -24,14 +24,13 @@ use crate::application::agent_workspace_publish_recovery::{
     recover_stale_publish_repair_for_workspace_with_project_repo_outcome,
     recover_stale_transient_publish_statuses, recover_stale_transient_publish_statuses_for_state,
     recover_stale_transient_publish_statuses_for_state_with_redrive_emitter,
-    settle_redrive_delivery, PrAutofixSuccessorDecision, StalePublishRepairRecoveryOutcome,
-    AGENT_WORKSPACE_PUBLISH_REDRIVE_DELIVERING_STATUS,
+    settle_missing_workspace_resolution, settle_redrive_delivery, PrAutofixSuccessorDecision,
+    StalePublishRepairRecoveryOutcome, AGENT_WORKSPACE_PUBLISH_REDRIVE_DELIVERING_STATUS,
     AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS, AUTO_RETRY_BLOCKED_REPAIR_REASON_PREFIX,
     AUTO_RETRY_READY_REPAIR_REASON_PREFIX, BLOCKED_STREAK_REARMED_REASON_PREFIX,
     CONTINUATION_OPEN_EFFECT_ATTENTION_REASON, EXHAUSTED_PUBLISH_REDRIVE_CHECKED_REASON_PREFIX,
-    STALE_NEEDS_AGENT_CLASSIFICATION,
-    STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP, STALE_TRANSIENT_CLASSIFICATION,
-    STALE_TRANSIENT_RECOVERED_STEP,
+    STALE_NEEDS_AGENT_CLASSIFICATION, STALE_REPAIR_BLOCKED_SUMMARY, STALE_REPAIR_RECOVERED_STEP,
+    STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP, WORKSPACE_MISSING_SETTLED_STEP,
 };
 use crate::application::agent_workspace_publish_repair_state::{
     held_repair_has_unpublished_head, reserve_agent_workspace_repair_dispatch,
@@ -51,14 +50,15 @@ use crate::application::{AppState, GitService};
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentRun, AgentRunActionKind, AgentRunId,
-    AgentRunStatus, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairEffectStatus,
-    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation,
-    ChatConversationId, GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, Project, ProjectId,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
+    AgentRunActionKind, AgentRunId, AgentRunStatus, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind,
+    AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversation, ChatConversationId,
+    GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranch, Project, ProjectId,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -7495,11 +7495,8 @@ async fn not_applied_push_effect_does_not_re_raise_attention_when_already_escala
         ReconciliationRemoteShape::MatchesPrecondition,
     )
     .await;
-    let (state, conversation_id, attempt) = (
-        fixture.state,
-        fixture.conversation_id,
-        fixture.attempt,
-    );
+    let (state, conversation_id, attempt) =
+        (fixture.state, fixture.conversation_id, fixture.attempt);
 
     // Escalate the attempt by injecting CONTINUATION_OPEN_EFFECT_ATTENTION_REASON into its
     // pending_reasons, simulating a previously escalated open-effect streak.
@@ -8530,4 +8527,278 @@ async fn blocked_sweep_keeps_an_orphaned_create_pr_handoff_effect_fenced() {
         .expect("an unproven pull-request creation stays fenced");
     assert_eq!(open.kind, AgentWorkspaceRepairEffectKind::CreatePr);
     assert_eq!(open.status, AgentWorkspaceRepairEffectStatus::InFlight);
+}
+
+/// Proof obligation 6: one pass over a deleted worktree marks the workspace exactly once —
+/// evidence written, status `Missing`, the unsettled repair attempt settled — and a second pass
+/// changes nothing. Before this, each pass logged a warning and left the workspace retryable, so
+/// the same dead workspace was re-examined forever.
+#[tokio::test]
+async fn a_deleted_worktree_is_marked_missing_once_and_settles_its_repair_attempt() {
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_orphaned_repair_dispatch(61, "#!/bin/sh\nexit 0\n").await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+    let worktree_path = PathBuf::from(&workspace.worktree_path);
+    std::fs::remove_dir_all(&worktree_path).expect("delete the workspace worktree");
+
+    settle_missing_workspace_resolution(&state, &workspace, &worktree_path, true, "test_pass")
+        .await
+        .expect("settling a deleted worktree must succeed");
+
+    let settled = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("reload workspace")
+        .expect("workspace exists");
+    assert_eq!(
+        settled.status,
+        AgentConversationWorkspaceStatus::Missing,
+        "the workspace must be recoverable-Missing, never terminalized"
+    );
+
+    let evidence: Vec<_> = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("load publication events")
+        .into_iter()
+        .filter(|event| event.step == WORKSPACE_MISSING_SETTLED_STEP)
+        .collect();
+    assert_eq!(evidence.len(), 1, "exactly one evidence row");
+    assert!(evidence[0]
+        .summary
+        .contains(&worktree_path.display().to_string()));
+
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load repair attempt")
+        .expect("an attempt exists");
+    assert_eq!(
+        attempt.phase,
+        AgentWorkspaceRepairPhase::Blocked,
+        "the unsettled attempt must be blocked for a human, not left auto-retryable"
+    );
+
+    // Idempotency: the reloaded (already-Missing) workspace is a no-op.
+    settle_missing_workspace_resolution(&state, &settled, &worktree_path, true, "test_pass")
+        .await
+        .expect("a second pass must be a no-op");
+    let repeated = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("reload publication events")
+        .into_iter()
+        .filter(|event| event.step == WORKSPACE_MISSING_SETTLED_STEP)
+        .count();
+    assert_eq!(repeated, 1, "no duplicate evidence on a second pass");
+}
+
+/// A missing worktree *root* is disk or mount trouble, not a deleted workspace. It must warn and
+/// change nothing — otherwise one unmounted volume would settle every workspace on it.
+#[tokio::test]
+async fn a_missing_worktree_root_settles_nothing() {
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_orphaned_repair_dispatch(62, "#!/bin/sh\nexit 0\n").await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+    let worktree_path = PathBuf::from(&workspace.worktree_path);
+
+    settle_missing_workspace_resolution(&state, &workspace, &worktree_path, false, "test_pass")
+        .await
+        .expect("a missing root must not fail the pass");
+
+    let unchanged = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("reload workspace")
+        .expect("workspace exists");
+    assert_eq!(unchanged.status, AgentConversationWorkspaceStatus::Active);
+    assert!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("load publication events")
+            .iter()
+            .all(|event| event.step != WORKSPACE_MISSING_SETTLED_STEP),
+        "no evidence may be written when the whole worktree root is absent"
+    );
+    assert!(
+        state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("load repair attempt")
+            .is_some_and(|attempt| attempt.is_unsettled()),
+        "the repair attempt must stay unsettled so it retries once the volume returns"
+    );
+}
+
+/// Adds a second conversation, real worktree, workspace, and unsettled repair attempt to a state
+/// already seeded by [`seed_orphaned_repair_dispatch`], so one pass can span two attempts.
+#[cfg(unix)]
+async fn seed_second_repair_attempt_in_same_project(
+    state: &AppState,
+    project_dir: &std::path::Path,
+    suffix: u8,
+    branch_name: &str,
+) -> ChatConversationId {
+    let second_id = conversation_id(suffix);
+    let project = state
+        .project_repo
+        .get_by_id(&project_id())
+        .await
+        .expect("load seeded project")
+        .expect("seeded project exists");
+    let workspace_path = resolve_agent_conversation_workspace_path(&project, &second_id)
+        .expect("derive second workspace path");
+    recovery_git(
+        project_dir,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            branch_name,
+            workspace_path.to_str().expect("workspace path"),
+            "main",
+        ],
+    );
+    let mut conversation = ChatConversation::new_project(project_id());
+    conversation.id = second_id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed second conversation");
+    let mut workspace = needs_agent_workspace(second_id.clone());
+    workspace.branch_name = branch_name.to_string();
+    workspace.worktree_path = workspace_path.display().to_string();
+    workspace.base_commit = Some(recovery_git(project_dir, &["rev-parse", "HEAD"]));
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed second workspace");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                second_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "second attempt in the same pass".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start second repair attempt");
+    assert!(matches!(
+        started,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+    second_id
+}
+
+/// Proof obligation 7: a pass containing one orphaned attempt (worktree missing, root present)
+/// followed by a healthy attempt reconciles both. The orphan is marked `Missing` and settled, the
+/// healthy attempt is still processed, and the pass returns success.
+///
+/// Before this, `redeliver_due_repair_dispatch` propagated the missing-worktree error through the
+/// loop's `?`, so a single orphan aborted the whole pass — the production symptom was the startup
+/// `durable claims remain fenced` ERROR, with 17 of 24 unsettled attempts never reconciled and the
+/// in-flight git-mutation stage never running at all.
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn one_orphaned_worktree_no_longer_aborts_the_whole_recovery_pass() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, orphan_id, _worktree_parent, project_dir) =
+        seed_orphaned_repair_dispatch(63, "#!/bin/sh\nexit 1\n").await;
+    let healthy_id = seed_second_repair_attempt_in_same_project(
+        &state,
+        project_dir.path(),
+        64,
+        "ralphx/test/publish-recovery-healthy",
+    )
+    .await;
+    age_requested_repair_attempt(&state, &orphan_id).await;
+    age_requested_repair_attempt(&state, &healthy_id).await;
+
+    let orphan_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&orphan_id)
+        .await
+        .expect("load orphan workspace")
+        .expect("orphan workspace exists");
+    std::fs::remove_dir_all(PathBuf::from(&orphan_workspace.worktree_path))
+        .expect("delete the orphan worktree");
+
+    let recovered = recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("one orphaned worktree must not abort the pass");
+
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&orphan_id)
+            .await
+            .expect("reload orphan workspace")
+            .expect("orphan workspace exists")
+            .status,
+        AgentConversationWorkspaceStatus::Missing,
+        "the orphan must be settled as recoverable-Missing"
+    );
+    assert_eq!(
+        state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&orphan_id)
+            .await
+            .expect("load orphan attempt")
+            .expect("orphan attempt exists")
+            .phase,
+        AgentWorkspaceRepairPhase::Blocked,
+        "the orphan's attempt must stop being re-dispatched"
+    );
+
+    let healthy = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&healthy_id)
+        .await
+        .expect("load healthy attempt")
+        .expect("healthy attempt remains current");
+    assert_eq!(healthy.phase, AgentWorkspaceRepairPhase::Requested);
+    assert_eq!(
+        healthy.dispatch_count, 1,
+        "the healthy attempt must still be processed in the same pass"
+    );
+    assert!(healthy.next_dispatch_at.is_some());
+    assert_eq!(
+        recovered, 1,
+        "only the healthy attempt counts as recovered; the orphan is a settled no-op"
+    );
 }

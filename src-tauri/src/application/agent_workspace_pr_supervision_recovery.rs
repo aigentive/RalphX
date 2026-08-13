@@ -10,10 +10,12 @@ use futures::{stream, StreamExt as _};
 use ralphx_events::EventSink;
 
 use crate::application::agent_conversation_workspace::{
-    ensure_linked_plan_branch_agent_worktree, resolve_valid_agent_conversation_workspace_path,
+    classify_agent_conversation_workspace_path, ensure_linked_plan_branch_agent_worktree,
+    resolve_valid_agent_conversation_workspace_path, WorkspacePathResolution,
 };
 use crate::application::agent_workspace_pr_autofix_attempt::load_pr_autofix_attempt_decision;
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
+use crate::application::agent_workspace_publish_recovery::settle_missing_workspace_resolution;
 #[cfg(any(test, feature = "test-utils"))]
 use crate::application::agent_workspace_publish_recovery::{
     recover_stale_publish_repair_for_workspace_with_project_repo_outcome,
@@ -746,6 +748,28 @@ async fn resolve_pr_supervision_recovery_target(
             {
                 Ok(path) => path,
                 Err(error) => {
+                    // A deleted worktree is permanent, not transient: without settling it this
+                    // site warned and returned a retryable skip on every scan, forever.
+                    // `resolve_valid_…` reads the record path, so the record classifier matches.
+                    if let (
+                        Some(state),
+                        Ok(WorkspacePathResolution::Missing {
+                            expected,
+                            parent_root_present,
+                        }),
+                    ) = (
+                        deps.durable_recovery_state.as_deref(),
+                        classify_agent_conversation_workspace_path(project, workspace),
+                    ) {
+                        settle_missing_workspace_resolution(
+                            state,
+                            workspace,
+                            &expected,
+                            parent_root_present,
+                            trigger.as_str(),
+                        )
+                        .await?;
+                    }
                     tracing::warn!(
                         conversation_id = workspace.conversation_id.as_str(),
                         pr_number,

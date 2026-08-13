@@ -66,8 +66,11 @@ pub use durable_attempt_recovery::recover_agent_workspace_repair_after_terminal_
 pub(crate) use durable_attempt_recovery::recover_agent_workspace_repair_after_terminal_run;
 pub(crate) use durable_attempt_recovery::recover_agent_workspace_repair_attempts_for_state;
 pub(crate) use durable_attempt_recovery::recover_stale_publish_repair_for_workspace_in_state_result;
+pub(crate) use durable_attempt_recovery::settle_missing_workspace_resolution;
 #[cfg(test)]
 pub(crate) use durable_attempt_recovery::CONTINUATION_RECOVERY_BLOCKED_STEP;
+#[cfg(test)]
+pub(crate) use durable_attempt_recovery::WORKSPACE_MISSING_SETTLED_STEP;
 #[cfg(test)]
 pub(crate) use durable_attempt_recovery::{
     recover_agent_workspace_repair_continuation, DurableRepairRecoveryOutcome,
