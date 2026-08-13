@@ -1944,9 +1944,9 @@ async fn drain_one_queued_message(
         None,
         Arc::new(events.clone()),
         None,
-        Some(crate::application::runtime_factory::ChatRuntimeFactoryDeps::from_app_state(
-            app_state,
-        )),
+        Some(
+            crate::application::runtime_factory::ChatRuntimeFactoryDeps::from_app_state(app_state),
+        ),
         None,
         None,
         tokio_util::sync::CancellationToken::new(),
@@ -1962,8 +1962,8 @@ async fn drain_one_queued_message(
 #[tokio::test]
 async fn queue_drain_emits_render_ready_user_message_at_repo_sequence() {
     let app_state = AppState::new_test();
-    let events = drain_one_queued_message(&app_state, "session-queue-render-ready", "Queued ask")
-        .await;
+    let events =
+        drain_one_queued_message(&app_state, "session-queue-render-ready", "Queued ask").await;
 
     let created = events
         .events()
@@ -1976,11 +1976,9 @@ async fn queue_drain_emits_render_ready_user_message_at_repo_sequence() {
         .to_string();
     let persisted = app_state
         .chat_timeline_repo
-        .get_by_conversation(
-            &ChatConversationId::from_string(
-                created.payload["conversation_id"].as_str().expect("cid"),
-            ),
-        )
+        .get_by_conversation(&ChatConversationId::from_string(
+            created.payload["conversation_id"].as_str().expect("cid"),
+        ))
         .await
         .expect("timeline should read back")
         .into_iter()
