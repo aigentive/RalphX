@@ -867,6 +867,42 @@ pub(crate) fn is_blocked_and_not_auto_retryable(attempt: &AgentWorkspaceRepairAt
                 && automatic_blocked_repair_streak(attempt) >= MAX_AUTO_RETRY_BLOCKED_REPAIR_STREAK))
 }
 
+/// A blocked-exhausted attempt fences new base-freshness work unless its local repair already
+/// landed on the remote branch. Such a continuation-stage block failed *after* the push, so the
+/// worktree itself is fine and holding new base work hostage only strands the workspace. A
+/// human hold, a repair-stage block, or an unreadable effect all keep the fence.
+pub(crate) async fn blocked_repair_fences_new_base_work(
+    state: &AppState,
+    attempt: &AgentWorkspaceRepairAttempt,
+) -> bool {
+    if !is_blocked_and_not_auto_retryable(attempt) {
+        return false;
+    }
+    if attempt.pending_reasons.iter().any(|reason| {
+        reason == crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+    }) {
+        return true;
+    }
+    match crate::application::publish_resilience::has_authoritative_observed_agent_workspace_repair_push(
+        state, attempt,
+    )
+    .await
+    {
+        Ok(observed_push) => !observed_push,
+        Err(error) => {
+            tracing::warn!(
+                target: "ralphx_lib::application::agent_workspace_publish_recovery",
+                operation = "blocked_repair_fences_new_base_work",
+                conversation_id = %attempt.conversation_id,
+                attempt_id = %attempt.id,
+                error = %error,
+                "Failed to read repair push effect; keeping the base-freshness fence"
+            );
+            true
+        }
+    }
+}
+
 fn automatic_blocked_repair_retry_delay(streak: u32) -> Duration {
     let multiplier = 1_i64 << streak.min(4);
     Duration::seconds(

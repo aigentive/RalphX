@@ -6,6 +6,9 @@ leak-timeout = "500ms"
 [profile.ci]
 inherits = "default"
 fail-fast = false
+# Backstop only: hung tests are caught by the inherited 60s slow-timeout
+# (terminate-after 2). The instrumented lib coverage shards already burn ~28m of
+# the budget, so a slower-than-usual runner tripped this before any test failed.
 global-timeout = "40m"
 retries = 1
 
