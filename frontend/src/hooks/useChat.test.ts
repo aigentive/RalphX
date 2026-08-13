@@ -1398,6 +1398,98 @@ describe("useConversationTimelineWindow", () => {
     ).toBe(false);
   });
 
+  it("retires only the first matching optimistic row when two identical-content optimistic rows exist", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 0,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [
+          timelinePage([], {
+            totalItemCount: 0,
+            oldestLoadedSequence: null,
+            newestLoadedSequence: null,
+          }),
+        ],
+        pageParams: [null],
+      },
+    );
+
+    // Seed two optimistic rows with identical content — rapid double-send scenario.
+    addOptimisticUserMessageToConversationCache(queryClient, "conv-1", "Same message");
+    addOptimisticUserMessageToConversationCache(queryClient, "conv-1", "Same message");
+
+    const pageBefore = queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1")
+    )?.pages[0];
+    expect(
+      pageBefore?.items.filter((item) => item.id.startsWith("optimistic-timeline:"))
+    ).toHaveLength(2);
+
+    upsertRenderReadyMessageIntoConversationCache(queryClient, "conv-1", {
+      message: {
+        id: "user-double-send",
+        conversation_id: "conv-1",
+        role: "user",
+        content: "Same message",
+        content_blocks: [{ type: "text", text: "Same message" }],
+        created_at: "2026-01-24T10:01:00Z",
+      },
+      timeline_items: [{
+        id: "block:user-double-send:0",
+        conversation_id: "conv-1",
+        message_id: "user-double-send",
+        run_id: null,
+        sequence: 2,
+        block_index: 0,
+        role: "user",
+        kind: "text",
+        status: "finalized",
+        content: "Same message",
+        content_blocks: [{ type: "text", text: "Same message" }],
+        tool_call: null,
+        metadata: null,
+        provider_harness: null,
+        provider_session_id: null,
+        created_at: "2026-01-24T10:01:00Z",
+        updated_at: "2026-01-24T10:01:00Z",
+        finalized_at: "2026-01-24T10:01:00Z",
+      }],
+    });
+
+    const pageAfter = queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1")
+    )?.pages[0];
+
+    // Exactly one optimistic row survives (the second one); the backend row is inserted.
+    expect(
+      pageAfter?.items.filter((item) => item.id.startsWith("optimistic-timeline:"))
+    ).toHaveLength(1);
+    expect(
+      pageAfter?.items.filter((item) => item.id === "block:user-double-send:0")
+    ).toHaveLength(1);
+    expect(pageAfter?.items.filter((item) => item.content === "Same message")).toHaveLength(2);
+  });
+
   it("does not upsert hidden render-ready bootstrap rows into conversation caches", () => {
     const { queryClient } = createWrapperWithClient();
     queryClient.setQueryData(chatKeys.conversation("conv-1"), {

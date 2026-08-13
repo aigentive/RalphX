@@ -8261,11 +8261,12 @@ impl ChatService for AppChatService {
                             }
                         }
 
-                        let _ = chat_service_streaming::persist_message_text_timeline_item(
-                            &self.chat_timeline_repo,
-                            &user_msg,
-                        )
-                        .await;
+                        let persisted_timeline_item =
+                            chat_service_streaming::persist_message_text_timeline_item(
+                                &self.chat_timeline_repo,
+                                &user_msg,
+                            )
+                            .await;
 
                         if context_type == ChatContextType::Ideation {
                             let _ = self
@@ -8286,7 +8287,12 @@ impl ChatService for AppChatService {
                                 content: content.to_string(),
                                 created_at: Some(user_msg_created_at),
                                 metadata: None,
-                                render_ready: None,
+                                render_ready: persisted_timeline_item.and_then(|item| {
+                                    AgentMessageRenderReadyPayload::from_message_and_timeline_items(
+                                        &user_msg,
+                                        vec![item],
+                                    )
+                                }),
                             },
                         );
 
@@ -9772,6 +9778,110 @@ mod agent_workspace_send_tests {
         assert!(
             !render_ready.is_null(),
             "user-message event must carry render_ready so the frontend can place it"
+        );
+        assert_eq!(render_ready["message"]["id"], message_id.as_str());
+        assert_eq!(render_ready["message"]["role"], "user");
+        let items = render_ready["timeline_items"]
+            .as_array()
+            .expect("timeline items");
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0]["sequence"].as_i64(),
+            Some(persisted.sequence),
+            "render_ready must carry the repo-assigned sequence, not a guess"
+        );
+        assert_eq!(persisted.sequence, 4);
+    }
+
+    #[tokio::test]
+    async fn queue_message_interactive_fast_path_emits_render_ready_at_repo_sequence() {
+        let mut state = AppState::new_test();
+        let events = RecordingEventSink::new();
+        state.events = Arc::new(events.clone());
+        let context_id = "task-queue-interactive-render-ready";
+        let conversation = ChatConversation::new_task(TaskId::from_string(context_id.to_string()));
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+
+        // Seed streamed timeline items so the user message lands above them.
+        for index in 0..3 {
+            let mut streamed = ChatTimelineItem::for_message_block(
+                ChatMessageId::from_string(format!("streamed-q-{index}")),
+                conversation_id,
+                0,
+                MessageRole::Orchestrator,
+                ChatTimelineItemKind::Text,
+            );
+            streamed.text = Some(format!("streamed {index}"));
+            state
+                .chat_timeline_repo
+                .upsert_item(streamed)
+                .await
+                .expect("streamed evidence should persist");
+        }
+
+        // Register an interactive process so queue_message uses the fast-path.
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("cat should spawn for queue_message fast-path test");
+        let stdin = child.stdin.take().expect("cat stdin should be piped");
+        let interactive_key = InteractiveProcessKey::new("task", context_id);
+        state
+            .interactive_process_registry
+            .register_with_metadata(
+                interactive_key.clone(),
+                stdin,
+                InteractiveProcessMetadata {
+                    agent_run_id: None,
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        let service =
+            state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+        service
+            .queue_message(ChatContextType::Task, context_id, "queue-follow-up", None)
+            .await
+            .expect("queue_message fast-path should succeed");
+
+        state
+            .interactive_process_registry
+            .remove(&interactive_key)
+            .await;
+        let _ = child.kill().await;
+
+        let created = events
+            .events()
+            .into_iter()
+            .find(|event| event.event == "agent:message_created")
+            .expect("queue_message fast-path should emit agent:message_created");
+        let message_id = created.payload["message_id"]
+            .as_str()
+            .expect("message id")
+            .to_string();
+        let persisted = state
+            .chat_timeline_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("timeline should read back")
+            .into_iter()
+            .find(|item| {
+                item.message_id.as_ref().map(|id| id.as_str()) == Some(message_id.as_str())
+            })
+            .expect("user message should have a persisted timeline item");
+
+        let render_ready = &created.payload["render_ready"];
+        assert!(
+            !render_ready.is_null(),
+            "queue_message fast-path must carry render_ready"
         );
         assert_eq!(render_ready["message"]["id"], message_id.as_str());
         assert_eq!(render_ready["message"]["role"], "user");

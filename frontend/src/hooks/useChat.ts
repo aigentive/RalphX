@@ -695,21 +695,26 @@ export function upsertRenderReadyMessageIntoConversationCache(
         return oldData;
       }
 
+      // The optimistic row carries a client-generated id, so the backend id
+      // cannot retire it — without this the user sees two identical bubbles.
+      // Use findIndex (not filter) so only the first matching optimistic row is
+      // retired, matching the single-replacement semantics of replaceMatchingOptimisticMessage.
+      const optimisticIndex = newestPage.items.findIndex((item) =>
+        matchesOptimisticMessage(
+          {
+            id: item.messageId ?? item.id,
+            conversationId: item.conversationId,
+            role: item.role,
+            content: item.content,
+          },
+          message
+        )
+      );
       const retainedItems = newestPage.items.filter(
-        (item) =>
+        (item, index) =>
           item.messageId !== message.id &&
           item.asMessage.parentMessageId !== message.id &&
-          // The optimistic row carries a client-generated id, so the backend id
-          // cannot retire it — without this the user sees two identical bubbles.
-          !matchesOptimisticMessage(
-            {
-              id: item.messageId ?? item.id,
-              conversationId: item.conversationId,
-              role: item.role,
-              content: item.content,
-            },
-            message
-          )
+          index !== optimisticIndex
       );
       const items = [...retainedItems, ...insertedItems].sort(
         (left, right) => left.sequence - right.sequence
