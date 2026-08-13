@@ -23,11 +23,15 @@ defer_merge_enabled: false
 # Env override: RALPHX_FILE_LOGGING=true|false
 file_logging: true
 
-# Maximum bytes retained in each per-launch log (including the cap marker).
+# Total bytes a single launch may keep on disk. The cap is split into two
+# chunks: when the active log fills its half it rotates into
+# ralphx_<timestamp>_rolled.log and a fresh active log takes over, so the newest
+# output is always in the newest .log and at least half the cap is retained.
 # Env override: RALPHX_FILE_LOGGING_MAX_BYTES (default: 1073741824 / 1 GiB)
 file_logging_max_bytes: 1073741824
 
-# Number of prior per-launch ralphx_*.log files to retain on startup.
+# Number of prior launches to retain on startup. A launch that rotated owns both
+# its active log and its _rolled chunk; they are kept or deleted together.
 # Env override: RALPHX_FILE_LOGGING_KEEP_FILES (default: 5)
 file_logging_keep_files: 5
 
