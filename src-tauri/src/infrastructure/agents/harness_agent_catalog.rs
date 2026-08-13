@@ -1233,11 +1233,12 @@ fn build_generated_agent_task_appendix(
                 "<rule>If you already created one task for genuinely single-step work, mark that accidental task `dropped` before continuing without the ledger.</rule>",
                 "</when_not_required>",
                 "<mandatory_start_sequence>",
-                "<step>Before search, read, edit, shell, or other tool-backed work, call `list_agent_tasks`.</step>",
-                "<step>If a matching open or active item exists, reuse it instead of creating a duplicate.</step>",
-                "<step>If no suitable task exists, create concrete tasks for each independent work item.</step>",
-                "<step>If the ledger is empty and this request requires ledger use, do not perform search, read, shell, edit, or other tool-backed work until you create the required task or tasks.</step>",
+                "<step>When a `<task_ledger>` block is present in `<agent_runtime_state>`, treat it as the authoritative ledger snapshot for this turn. `state=\"empty\"` means no open or active tasks exist; do not call `list_agent_tasks` to re-read state already shown.</step>",
+                "<step>Call `list_agent_tasks` only when no `<task_ledger>` block is present, the block reports `state=\"unavailable\"`, or the ledger may have changed since the snapshot (your own mutations mid-turn, another actor, or resuming a thread).</step>",
+                "<step>If a matching open or active item exists in the snapshot, reuse it instead of creating a duplicate.</step>",
+                "<step>If no suitable task exists and this request requires ledger use, create concrete tasks for each independent work item before performing search, read, shell, edit, or other tool-backed work.</step>",
                 "<step>Claim or mark active exactly the task you are starting before implementation begins.</step>",
+                "<step>After you mutate the ledger, trust the mutation tool results over the turn-start snapshot.</step>",
                 "</mandatory_start_sequence>",
                 "<state_rules>",
                 "<rule>Treat `open` as not started, `active` as currently being worked, `done` as fully completed, and `dropped` as intentionally abandoned.</rule>",
@@ -1267,7 +1268,7 @@ fn build_generated_agent_task_appendix(
 
     lines.push("<tool_guidance>".to_string());
     if let Some(tool) = list_tool {
-        lines.push(format!("<rule>Use `{tool}` before depending on prior ledger state or when resuming a multi-step thread.</rule>"));
+        lines.push(format!("<rule>Use `{tool}` when the runtime envelope's `<task_ledger>` is missing or unavailable, when resuming a multi-step thread, or when the ledger may have changed since the turn-start snapshot.</rule>"));
     }
     if let Some(tool) = create_tool {
         lines.push(format!("<rule>Use `{tool}` for concrete work items with a clear title and details; connect blockers with `blocked_by` or `blocks` when ordering matters.</rule>"));

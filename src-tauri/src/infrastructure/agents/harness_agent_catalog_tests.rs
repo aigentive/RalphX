@@ -2335,12 +2335,34 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
             "prompt for {agent_name} should mention live agent task tools"
         );
         assert!(
-            prompt.contains("Before search, read, edit, shell, or other tool-backed work"),
-            "prompt for {agent_name} should require ledger listing before work starts"
+            prompt.contains("treat it as the authoritative ledger snapshot for this turn"),
+            "prompt for {agent_name} should trust the injected runtime-state ledger snapshot"
         );
         assert!(
-            prompt.contains("do not perform search, read, shell, edit, or other tool-backed work"),
-            "prompt for {agent_name} should hard-gate empty-ledger required work"
+            prompt.contains("`state=\"empty\"` means no open or active tasks exist"),
+            "prompt for {agent_name} should define the explicit empty-ledger marker"
+        );
+        assert!(
+            prompt.contains("Call `list_agent_tasks` only when no `<task_ledger>` block is present"),
+            "prompt for {agent_name} should scope list calls to missing/unavailable/stale snapshots"
+        );
+        assert!(
+            prompt.contains("the block reports `state=\"unavailable\"`"),
+            "prompt for {agent_name} should treat unavailable as unknown rather than empty"
+        );
+        assert!(
+            prompt.contains(
+                "create concrete tasks for each independent work item before performing search, read, shell, edit, or other tool-backed work"
+            ),
+            "prompt for {agent_name} should hard-gate required work behind task creation"
+        );
+        assert!(
+            prompt.contains("trust the mutation tool results over the turn-start snapshot"),
+            "prompt for {agent_name} should prefer fresh mutation results over the snapshot"
+        );
+        assert!(
+            !prompt.contains("Before search, read, edit, shell, or other tool-backed work"),
+            "prompt for {agent_name} should no longer mandate a redundant ledger read"
         );
         assert!(
             prompt.contains("Read-only audits, multi-file investigations, prompt-surface reviews"),
