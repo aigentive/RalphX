@@ -745,8 +745,14 @@ pub struct GitRuntimeConfig {
     pub index_lock_stale_secs: u64,
     /// TTL for reusable provider CLI runtime probes, in seconds.
     pub provider_probe_cache_ttl_secs: u64,
-    /// Short TTL for agent workspace freshness responses, in milliseconds.
+    /// Short TTL for local-scope agent workspace freshness responses, in milliseconds.
     pub workspace_freshness_cache_ttl_ms: u64,
+    /// TTL for full-scope agent workspace freshness responses, in milliseconds.
+    ///
+    /// Full scope fetches the origin remote and reads PR status per PR-as-base workspace, so it is
+    /// far more expensive than local scope and tolerates a much longer window.
+    #[serde(default = "default_workspace_freshness_full_scope_cache_ttl_ms")]
+    pub workspace_freshness_full_scope_cache_ttl_ms: u64,
     /// Short TTL for agent workspace review context and payload cache, in milliseconds.
     pub workspace_review_cache_ttl_ms: u64,
     /// Short TTL for precomputed agent workspace PR descriptions, in milliseconds.
@@ -795,6 +801,30 @@ pub struct GitRuntimeConfig {
     pub agent_kill_settle_secs: u64,
     /// Timeout in seconds for each stop_agent() call in pre-merge cleanup step 0.
     pub agent_stop_timeout_secs: u64,
+    /// Base interval between agent workspace PR poll iterations, in seconds.
+    ///
+    /// The workspace poller escalates from this value toward
+    /// `workspace_pr_poll_max_secs` while a PR shows no observable change, and snaps back here
+    /// the moment health changes or a supervision branch dispatches work.
+    #[serde(default = "default_workspace_pr_poll_base_secs")]
+    pub workspace_pr_poll_base_secs: u64,
+    /// Ceiling for the adaptive agent workspace PR poll interval, in seconds.
+    ///
+    /// Also bounds worst-case merged/closed detection latency for an otherwise idle PR.
+    #[serde(default = "default_workspace_pr_poll_max_secs")]
+    pub workspace_pr_poll_max_secs: u64,
+    /// Minimum seconds between `gh api rate_limit` probes shared by all PR pollers.
+    ///
+    /// The probe endpoint does not consume quota, but it is still a subprocess per call, so one
+    /// poller refreshes the shared state on behalf of the rest.
+    #[serde(default = "default_github_rate_limit_probe_interval_secs")]
+    pub github_rate_limit_probe_interval_secs: u64,
+    /// TTL for a repository's batched PR snapshot, in seconds.
+    ///
+    /// Sits just under the base poll cadence so each tick still reads GitHub once, while every
+    /// other workspace polling the same repository inside that tick is served from the batch.
+    #[serde(default = "default_pr_snapshot_hub_ttl_secs")]
+    pub pr_snapshot_hub_ttl_secs: u64,
     /// Timeout in seconds for deleting the task worktree during pre-merge cleanup.
     pub cleanup_worktree_timeout_secs: u64,
     /// Timeout in seconds for merge/rebase worktree deletion and git clean during pre-merge cleanup.
@@ -818,6 +848,12 @@ impl Default for GitRuntimeConfig {
             index_lock_stale_secs: 5,
             provider_probe_cache_ttl_secs: 300,
             workspace_freshness_cache_ttl_ms: 2_000,
+            workspace_freshness_full_scope_cache_ttl_ms:
+                default_workspace_freshness_full_scope_cache_ttl_ms(),
+            workspace_pr_poll_base_secs: default_workspace_pr_poll_base_secs(),
+            workspace_pr_poll_max_secs: default_workspace_pr_poll_max_secs(),
+            github_rate_limit_probe_interval_secs: default_github_rate_limit_probe_interval_secs(),
+            pr_snapshot_hub_ttl_secs: default_pr_snapshot_hub_ttl_secs(),
             workspace_review_cache_ttl_ms: 2_000,
             workspace_pr_description_cache_ttl_ms: 300_000,
             workspace_pr_annotations_cache_ttl_ms: 30_000,
@@ -870,6 +906,26 @@ fn default_agent_workspace_publish_lease_heartbeat_interval_secs() -> u64 {
 
 fn default_agent_workspace_publish_recovery_interval_secs() -> u64 {
     120
+}
+
+fn default_workspace_freshness_full_scope_cache_ttl_ms() -> u64 {
+    30_000
+}
+
+fn default_workspace_pr_poll_base_secs() -> u64 {
+    60
+}
+
+fn default_workspace_pr_poll_max_secs() -> u64 {
+    300
+}
+
+fn default_github_rate_limit_probe_interval_secs() -> u64 {
+    300
+}
+
+fn default_pr_snapshot_hub_ttl_secs() -> u64 {
+    55
 }
 
 fn default_agent_workspace_repair_reconciliation_scan_interval_secs() -> u64 {
@@ -1430,6 +1486,26 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.git.workspace_freshness_cache_ttl_ms,
         "RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS"
+    );
+    env_u64!(
+        cfg.git.workspace_freshness_full_scope_cache_ttl_ms,
+        "RALPHX_GIT_WORKSPACE_FRESHNESS_FULL_SCOPE_CACHE_TTL_MS"
+    );
+    env_u64!(
+        cfg.git.workspace_pr_poll_base_secs,
+        "RALPHX_GIT_WORKSPACE_PR_POLL_BASE_SECS"
+    );
+    env_u64!(
+        cfg.git.workspace_pr_poll_max_secs,
+        "RALPHX_GIT_WORKSPACE_PR_POLL_MAX_SECS"
+    );
+    env_u64!(
+        cfg.git.github_rate_limit_probe_interval_secs,
+        "RALPHX_GIT_GITHUB_RATE_LIMIT_PROBE_INTERVAL_SECS"
+    );
+    env_u64!(
+        cfg.git.pr_snapshot_hub_ttl_secs,
+        "RALPHX_GIT_PR_SNAPSHOT_HUB_TTL_SECS"
     );
     env_u64!(
         cfg.git.workspace_review_cache_ttl_ms,

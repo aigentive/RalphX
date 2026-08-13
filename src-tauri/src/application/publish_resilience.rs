@@ -41,6 +41,11 @@ pub(crate) use crate::application::publish_resilience_repair_effects::{
     repair_effect_base_idempotency_key, resolve_repair_effect_identity,
     terminate_orphaned_blocked_repair_pr_handoff_effect, RepairEffectIdentity,
 };
+// Settling an orphaned `create_pr` effect needs GitHub evidence rather than durable receipts, so
+// it lives in its own sibling module and is re-exported alongside the receipts-only helpers.
+pub(crate) use crate::application::publish_resilience_create_pr_reconciliation::{
+    reconcile_blocked_agent_workspace_repair_create_pr_effect, BlockedCreatePrEffectReconciliation,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishFailureClass {
@@ -708,7 +713,10 @@ pub(crate) async fn observe_agent_workspace_repair_pr_handoff_effect(
     .await
 }
 
-async fn observe_agent_workspace_repair_pr_handoff_effect_for_phase(
+/// Records the PR-handoff receipt for a caller that has already proved which phase the attempt is
+/// in. The `Continuing` wrapper above owns the normal publish path; blocked-arm reconcilers in
+/// sibling modules own `Blocked`.
+pub(crate) async fn observe_agent_workspace_repair_pr_handoff_effect_for_phase(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
     mut effect: AgentWorkspaceRepairEffect,
@@ -936,6 +944,23 @@ pub(crate) async fn reconcile_blocked_agent_workspace_repair_pr_handoff(
     }
 }
 
+/// User-facing blocker text for a failed pull-request continuation.
+///
+/// A rate limit gets its own wording because the default copy ("Retry the blocked operation")
+/// tells the user to do the one thing that cannot work while GitHub's window is exhausted.
+///
+/// This is copy only. Retry *eligibility* stays structural: the automatic ladder in
+/// `durable_attempt_recovery` defers on the shared `RateLimitState`, never on this text. The
+/// module deliberately treats blocker prose as unusable as evidence, and that stays true.
+pub(crate) fn agent_workspace_repair_pr_handoff_blocker(error: &str) -> String {
+    if crate::infrastructure::services::gh_cli_github_service::is_github_rate_limit_message(error) {
+        return format!(
+            "GitHub API rate limit reached: {error}. RalphX will retry automatically after the limit resets; you can also retry manually."
+        );
+    }
+    format!("Pull-request continuation could not complete: {error}. Retry the blocked operation.")
+}
+
 async fn block_agent_workspace_repair_pr_handoff(
     state: &AppState,
     attempt: AgentWorkspaceRepairAttempt,
@@ -948,9 +973,7 @@ async fn block_agent_workspace_repair_pr_handoff(
         .get_by_conversation_id(&attempt.conversation_id)
         .await?
         .and_then(|workspace| workspace.pr_auto_merge_current);
-    let blocker = format!(
-        "Pull-request continuation could not complete: {error}. Retry the blocked operation."
-    );
+    let blocker = agent_workspace_repair_pr_handoff_blocker(error);
     let what_happened = attempt.what_happened.clone();
     let what_i_did = attempt.what_i_did.clone();
     let _ = crate::application::agent_workspace_publish_repair_state::block_agent_workspace_repair_completion_with_projection(
@@ -1078,7 +1101,7 @@ async fn settle_agent_workspace_repair_after_pr_handoff(
 
 /// A post-PR receipt proves the repair branch no longer owns a Git mutation. Release only the
 /// exact canonical lease persisted by that attempt; mismatched/newer owners are untouched.
-async fn release_agent_workspace_repair_lease_after_pr_handoff(
+pub(crate) async fn release_agent_workspace_repair_lease_after_pr_handoff(
     state: &AppState,
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> AppResult<()> {

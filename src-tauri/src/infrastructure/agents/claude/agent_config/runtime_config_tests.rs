@@ -65,6 +65,16 @@ fn test_all_defaults_are_sensible() {
     assert_eq!(cfg.git.retry_backoff_secs, vec![1, 2, 4]);
     assert_eq!(cfg.git.provider_probe_cache_ttl_secs, 300);
     assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 2_000);
+    // Full scope fetches origin and reads PR status per PR-as-base workspace, so it gets a much
+    // longer window than the cheap local scope above.
+    assert_eq!(cfg.git.workspace_freshness_full_scope_cache_ttl_ms, 30_000);
+    assert_eq!(cfg.git.workspace_pr_poll_base_secs, 60);
+    assert_eq!(cfg.git.workspace_pr_poll_max_secs, 300);
+    assert!(
+        cfg.git.workspace_pr_poll_base_secs <= cfg.git.workspace_pr_poll_max_secs,
+        "the adaptive poll ceiling must not sit below its base"
+    );
+    assert_eq!(cfg.git.github_rate_limit_probe_interval_secs, 300);
     assert_eq!(cfg.git.workspace_review_cache_ttl_ms, 2_000);
     assert_eq!(cfg.git.workspace_pr_description_cache_ttl_ms, 300_000);
     assert_eq!(cfg.git.workspace_pr_annotations_cache_ttl_ms, 30_000);
@@ -216,9 +226,7 @@ fn test_env_overrides_apply() {
         "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_DAYS" => Some("21".to_string()),
         "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ARCHIVED_DAYS" => Some("3".to_string()),
         "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_ROWS" => Some("17".to_string()),
-        "RALPHX_STREAM_CHAT_PAYLOAD_SIZE_BUDGET_RECOMMENDED_BYTES" => {
-            Some("268435456".to_string())
-        }
+        "RALPHX_STREAM_CHAT_PAYLOAD_SIZE_BUDGET_RECOMMENDED_BYTES" => Some("268435456".to_string()),
         "RALPHX_STREAM_CHAT_PAYLOAD_ADVISORY_THRESHOLD_BYTES" => Some("536870912".to_string()),
         "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_INTERVAL_HOURS" => Some("2".to_string()),
         "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_BATCH_PAUSE_MS" => Some("5".to_string()),
@@ -234,6 +242,11 @@ fn test_env_overrides_apply() {
         "RALPHX_GIT_RETRY_BACKOFF_SECS" => Some("2,4,8,16".to_string()),
         "RALPHX_GIT_PROVIDER_PROBE_CACHE_TTL_SECS" => Some("120".to_string()),
         "RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS" => Some("750".to_string()),
+        "RALPHX_GIT_WORKSPACE_FRESHNESS_FULL_SCOPE_CACHE_TTL_MS" => Some("15000".to_string()),
+        "RALPHX_GIT_WORKSPACE_PR_POLL_BASE_SECS" => Some("90".to_string()),
+        "RALPHX_GIT_WORKSPACE_PR_POLL_MAX_SECS" => Some("450".to_string()),
+        "RALPHX_GIT_GITHUB_RATE_LIMIT_PROBE_INTERVAL_SECS" => Some("600".to_string()),
+        "RALPHX_GIT_PR_SNAPSHOT_HUB_TTL_SECS" => Some("30".to_string()),
         "RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS" => Some("900".to_string()),
         "RALPHX_GIT_WORKSPACE_PR_DESCRIPTION_CACHE_TTL_MS" => Some("1200".to_string()),
         "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CACHE_TTL_MS" => Some("45000".to_string()),
@@ -277,7 +290,10 @@ fn test_env_overrides_apply() {
         cfg.stream.chat_payload_size_budget_recommended_bytes,
         268_435_456
     );
-    assert_eq!(cfg.stream.chat_payload_advisory_threshold_bytes, 536_870_912);
+    assert_eq!(
+        cfg.stream.chat_payload_advisory_threshold_bytes,
+        536_870_912
+    );
     assert_eq!(cfg.stream.chat_payload_retention_interval_hours, 2);
     assert_eq!(cfg.stream.chat_payload_retention_batch_pause_ms, 5);
     assert_eq!(cfg.stream.chat_payload_retention_checkpoint_batches, 9);
@@ -301,6 +317,15 @@ fn test_env_overrides_apply() {
     assert_eq!(cfg.git.retry_backoff_secs, vec![2, 4, 8, 16]);
     assert_eq!(cfg.git.provider_probe_cache_ttl_secs, 120);
     assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 750);
+    assert_eq!(cfg.git.workspace_freshness_full_scope_cache_ttl_ms, 15_000);
+    assert_eq!(cfg.git.workspace_pr_poll_base_secs, 90);
+    assert_eq!(cfg.git.workspace_pr_poll_max_secs, 450);
+    assert!(
+        cfg.git.workspace_pr_poll_base_secs <= cfg.git.workspace_pr_poll_max_secs,
+        "overridden PR poll base interval must not exceed the adaptive ceiling"
+    );
+    assert_eq!(cfg.git.github_rate_limit_probe_interval_secs, 600);
+    assert_eq!(cfg.git.pr_snapshot_hub_ttl_secs, 30);
     assert_eq!(cfg.git.workspace_review_cache_ttl_ms, 900);
     assert_eq!(cfg.git.workspace_pr_description_cache_ttl_ms, 1200);
     assert_eq!(cfg.git.workspace_pr_annotations_cache_ttl_ms, 45_000);
