@@ -160,10 +160,10 @@ pub(super) fn should_process_stream_queue(
 }
 
 const AGENT_TASK_LEDGER_SUBSTANTIAL_TOOL_CALL_COUNT: usize = 3;
+// Ledger writes only: reading the injected snapshot is not evidence that the run
+// engaged the ledger, so `list_agent_tasks` / `get_agent_task` do not suppress the warning.
 const AGENT_TASK_LEDGER_TOOL_NAMES: &[&str] = &[
     "create_agent_task",
-    "get_agent_task",
-    "list_agent_tasks",
     "update_agent_task",
     "claim_agent_task",
     "complete_agent_task",

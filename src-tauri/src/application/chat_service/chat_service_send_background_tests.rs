@@ -1206,6 +1206,41 @@ fn agent_task_ledger_warning_recognizes_codex_mutating_tools_and_namespaced_ledg
 }
 
 #[test]
+fn agent_task_ledger_warning_triggers_when_the_run_only_reads_the_ledger() {
+    let conversation = agent_mode_conversation();
+
+    assert!(should_warn_missing_agent_task_ledger(
+        Some(&conversation),
+        &[
+            test_tool_call("mcp__ralphx__list_agent_tasks"),
+            test_tool_call("Read"),
+            test_tool_call("Grep"),
+            test_tool_call("Read"),
+        ],
+    ));
+    assert!(should_warn_missing_agent_task_ledger(
+        Some(&conversation),
+        &[
+            test_tool_call("mcp__ralphx__get_agent_task"),
+            test_tool_call("Edit"),
+        ],
+    ));
+}
+
+#[test]
+fn agent_task_ledger_warning_is_suppressed_after_claiming_a_task() {
+    let conversation = agent_mode_conversation();
+
+    assert!(!should_warn_missing_agent_task_ledger(
+        Some(&conversation),
+        &[
+            test_tool_call("mcp__ralphx__claim_agent_task"),
+            test_tool_call("Edit"),
+        ],
+    ));
+}
+
+#[test]
 fn agent_task_ledger_warning_is_suppressed_for_non_agent_mode_conversation() {
     let conversation = ChatConversation::new_project(ProjectId::new());
 
