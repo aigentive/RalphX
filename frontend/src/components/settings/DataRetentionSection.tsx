@@ -196,8 +196,13 @@ export function DataRetentionSection() {
             variant={sizeBudgetActive ? "outline" : "default"}
             disabled={saving || previewing || !settings || !budgetBytes}
             onClick={() => void applyBudget()}
+            // The pending state replaces the label with an icon, so the name has to
+            // come from the button itself or the control becomes unannounceable.
+            {...(previewing && { "aria-label": "Checking the size limit", "aria-busy": true })}
           >
-            {previewing ? <Loader2 className="h-4 w-4 animate-spin" /> : sizeBudgetActive ? "Update limit" : "Enable size limit…"}
+            {previewing
+              ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              : sizeBudgetActive ? "Update limit" : "Enable size limit…"}
           </Button>
           {sizeBudgetActive ? (
             <Button
@@ -235,8 +240,14 @@ export function DataRetentionSection() {
           ? "Applies the time window and the size limit immediately."
           : "Removes only tool-call detail older than the time window above."}
       >
-        <Button disabled={running || !settings} onClick={() => setRunConfirm(true)}>
-          {running ? <Loader2 className="h-4 w-4 animate-spin" /> : "Run cleanup now"}
+        <Button
+          disabled={running || !settings}
+          onClick={() => setRunConfirm(true)}
+          {...(running && { "aria-label": "Running cleanup", "aria-busy": true })}
+        >
+          {running
+            ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            : "Run cleanup now"}
         </Button>
       </SettingRow>
 
@@ -285,8 +296,14 @@ export function DataRetentionSection() {
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={(event) => { event.preventDefault(); void runNow(); }}>
-            Run cleanup
+          {/* The dialog deliberately stays open for the whole cycle, so this action — not
+              the button behind the overlay — is the control the user can still reach. */}
+          <AlertDialogAction
+            disabled={running}
+            aria-busy={running}
+            onClick={(event) => { event.preventDefault(); void runNow(); }}
+          >
+            {running ? "Running cleanup" : "Run cleanup"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
