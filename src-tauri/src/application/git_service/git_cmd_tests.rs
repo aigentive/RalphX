@@ -98,6 +98,58 @@ fn auth_stderr_is_not_transient() {
     );
 }
 
+/// Regression guard for the `AppError::GithubRateLimited` split. That variant renders as
+/// "GitHub rate limit exceeded: …", which matches no git pattern here, so without an explicit
+/// branch it would degrade from `DeterministicInfra` (its behavior as `Infrastructure`) all the
+/// way to `Unknown` — a strictly worse retry class than before the variant existed.
+#[test]
+fn github_rate_limit_text_classifies_as_transient_not_unknown() {
+    use crate::domain::entities::MergeFailureSource;
+
+    let rendered = AppError::GithubRateLimited {
+        message:
+            "gh exited with code 1: GraphQL: API rate limit already exceeded for user ID 6580668."
+                .to_string(),
+    }
+    .to_string();
+
+    assert_eq!(
+        classify_git_failure_text(&rendered),
+        MergeFailureSource::TransientGit
+    );
+    assert_eq!(
+        classify_git_failure_source(&AppError::GithubRateLimited {
+            message: "secondary rate limit".to_string(),
+        }),
+        MergeFailureSource::TransientGit
+    );
+}
+
+/// Auth precedence must survive the new branch: an auth failure that also happens to mention a
+/// rate limit is still an auth failure, and must never be retried.
+#[test]
+fn auth_precedence_survives_the_rate_limit_branch() {
+    use crate::domain::entities::MergeFailureSource;
+
+    let stderr = "fatal: could not read Username for 'https://github.com': terminal prompts disabled (API rate limit exceeded)";
+
+    assert_eq!(
+        classify_git_failure_text(stderr),
+        MergeFailureSource::AuthFailure
+    );
+}
+
+/// The pre-existing mapping for ordinary infrastructure errors must be untouched.
+#[test]
+fn plain_infrastructure_text_still_classifies_as_deterministic_infra() {
+    use crate::domain::entities::MergeFailureSource;
+
+    assert_eq!(
+        classify_git_failure_text("Infrastructure error: gh exited with code 1: unexpected"),
+        MergeFailureSource::DeterministicInfra
+    );
+}
+
 #[test]
 fn classify_git_failure_source_maps_app_error_variants() {
     use crate::domain::entities::MergeFailureSource;
