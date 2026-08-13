@@ -56,10 +56,8 @@ pub(crate) async fn list_jira_boards<C: AtlassianJsonRequester + ?Sized>(
 }
 
 /// Lists issues in a Jira Software sprint as enriched summaries (status, issue
-/// type, assignee, updated timestamp — the same shape [`search_resources_with_mode`]
-/// returns), capped at `limit`.
-///
-/// [`search_resources_with_mode`]: crate::application::AtlassianIntegrationService::search_resources_with_mode
+/// type, assignee, updated timestamp — the same shape the Atlassian integration
+/// service's `search_resources_with_mode` returns), capped at `limit`.
 pub(crate) async fn list_jira_sprint_issues<C: AtlassianJsonRequester + ?Sized>(
     client: &C,
     auth: &JiraAgileAuthContext,
