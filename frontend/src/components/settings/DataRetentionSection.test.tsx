@@ -107,6 +107,8 @@ describe("DataRetentionSection", () => {
     render(<DataRetentionSection />);
 
     const days = await screen.findByLabelText("Keep tool-call detail for");
+    // Input starts disabled while settings load; wait for it to become editable.
+    await waitFor(() => expect(days).toBeEnabled());
     await user.clear(days);
     await user.type(days, "30");
     await user.tab();
