@@ -199,7 +199,7 @@ async fn delegation_and_ledger_caps_bound_large_runtime_state() {
 }
 
 #[tokio::test]
-async fn empty_runtime_state_omits_the_envelope() {
+async fn empty_task_ledger_renders_explicit_empty_marker() {
     let conversation_id = ChatConversationId::from_string("conversation-empty");
     let scope = AgentRuntimeContextScope {
         conversation_id: &conversation_id,
@@ -211,9 +211,13 @@ async fn empty_runtime_state_omits_the_envelope() {
         entity_status: None,
     };
 
-    let rendered = compose_agent_runtime_context(&scope, &empty_deps()).await;
+    let rendered = compose_agent_runtime_context(&scope, &empty_deps())
+        .await
+        .expect("empty ledger should render an explicit marker");
 
-    assert_eq!(rendered, None);
+    assert!(rendered.contains("<agent_runtime_state>"));
+    assert!(rendered.contains("<task_ledger state=\"empty\"/>"));
+    assert!(!rendered.contains("<task_ledger state=\"unavailable\""));
 }
 
 #[tokio::test]
