@@ -25,6 +25,9 @@ fn test_all_defaults_are_sensible() {
     assert_eq!(cfg.stream.agent_completion_processed_capacity, 4_096);
     assert_eq!(cfg.stream.launch_reservation_lease_secs, 30);
     assert_eq!(cfg.stream.execution_attempt_start_tolerance_secs, 1);
+    assert_eq!(cfg.stream.desktop_notification_max_click_waits, 3);
+    assert_eq!(cfg.stream.desktop_notification_click_wait_ttl_secs, 900);
+    assert_eq!(cfg.stream.desktop_notification_reap_interval_secs, 60);
     assert_eq!(cfg.stream.notification_retention_read_days, 30);
     assert_eq!(cfg.stream.notification_retention_max_rows, 1000);
     assert!(cfg.stream.chat_payload_retention_enabled);
@@ -204,6 +207,9 @@ fn test_env_overrides_apply() {
         "RALPHX_STREAM_AGENT_COMPLETION_PROCESSED_TTL_SECS" => Some("600".to_string()),
         "RALPHX_STREAM_AGENT_COMPLETION_PROCESSED_CAPACITY" => Some("2048".to_string()),
         "RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS" => Some("60".to_string()),
+        "RALPHX_STREAM_DESKTOP_NOTIFICATION_MAX_CLICK_WAITS" => Some("7".to_string()),
+        "RALPHX_STREAM_DESKTOP_NOTIFICATION_CLICK_WAIT_TTL_SECS" => Some("120".to_string()),
+        "RALPHX_STREAM_DESKTOP_NOTIFICATION_REAP_INTERVAL_SECS" => Some("15".to_string()),
         "RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS" => Some("14".to_string()),
         "RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS" => Some("250".to_string()),
         "RALPHX_STREAM_CHAT_PAYLOAD_RETENTION_ENABLED" => Some("false".to_string()),
@@ -258,6 +264,9 @@ fn test_env_overrides_apply() {
     assert_eq!(cfg.stream.agent_completion_processed_ttl_secs, 600);
     assert_eq!(cfg.stream.agent_completion_processed_capacity, 2_048);
     assert_eq!(cfg.stream.launch_reservation_lease_secs, 60);
+    assert_eq!(cfg.stream.desktop_notification_max_click_waits, 7);
+    assert_eq!(cfg.stream.desktop_notification_click_wait_ttl_secs, 120);
+    assert_eq!(cfg.stream.desktop_notification_reap_interval_secs, 15);
     assert_eq!(cfg.stream.notification_retention_read_days, 14);
     assert_eq!(cfg.stream.notification_retention_max_rows, 250);
     assert!(!cfg.stream.chat_payload_retention_enabled);

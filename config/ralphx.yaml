@@ -137,6 +137,14 @@ timeouts:
     launch_reservation_lease_secs: 30 # Env: RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS
     # notification_service.rs — batch eligible desktop notifications before delivery
     desktop_notification_coalesce_window_secs: 5 # Env: RALPHX_STREAM_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS
+    # desktop_notification.rs — cap concurrent native click-waits; each outstanding wait costs a
+    # repeating 0.5s main-thread timer inside mac-notification-sys. Over budget, notifications are
+    # still delivered but only activate the app (no in-app deep navigation).
+    desktop_notification_max_click_waits: 3 # Env: RALPHX_STREAM_DESKTOP_NOTIFICATION_MAX_CLICK_WAITS
+    # desktop_notification_reaper.rs — remove RalphX notifications older than this from Notification
+    # Center, which releases the click-wait slot they were holding.
+    desktop_notification_click_wait_ttl_secs: 900 # Env: RALPHX_STREAM_DESKTOP_NOTIFICATION_CLICK_WAIT_TTL_SECS
+    desktop_notification_reap_interval_secs: 60 # Env: RALPHX_STREAM_DESKTOP_NOTIFICATION_REAP_INTERVAL_SECS
     # startup_jobs.rs — durable notification history retention (read rows only)
     notification_retention_read_days: 30 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS
     notification_retention_max_rows: 1000 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS
