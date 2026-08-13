@@ -5,15 +5,15 @@
 //! via `mod common;`.
 
 use async_trait::async_trait;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
 use ralphx_lib::domain::services::github_service::{
     validate_pr_metadata_patch, GithubServiceTrait, PrDetail, PrMergeStateStatus, PrMergeableState,
-    PrReviewFeedback, PrReviewSubmissionEvent, PrReviewThread, PrStatus, PrSubmittedReview,
-    PrSyncState,
+    PrReviewFeedback, PrReviewSubmissionEvent, PrReviewThread, PrStatus, PrStatusSnapshot,
+    PrSubmittedReview, PrSyncState,
 };
 use ralphx_lib::{AppError, AppResult};
 
@@ -500,6 +500,36 @@ impl GithubServiceTrait for MockGithubService {
 
     async fn fetch_remote(&self, _wd: &Path, _branch: &str) -> AppResult<()> {
         Ok(())
+    }
+
+    async fn fetch_pr_status_snapshots(
+        &self,
+        working_dir: &Path,
+        pr_numbers: &[i64],
+    ) -> AppResult<HashMap<i64, PrStatusSnapshot>> {
+        let mut out = HashMap::new();
+        for &number in pr_numbers {
+            let status = self.check_pr_status(working_dir, number).await?;
+            out.insert(
+                number,
+                PrStatusSnapshot {
+                    sync_state: PrSyncState {
+                        status,
+                        merge_state_status: None,
+                        mergeable: None,
+                        is_draft: false,
+                        head_ref_name: format!("feature-{number}"),
+                        base_ref_name: "main".to_string(),
+                        head_ref_oid: None,
+                        base_ref_oid: None,
+                    },
+                    review_decision: None,
+                    checks: Vec::new(),
+                    auto_merge_request: None,
+                },
+            );
+        }
+        Ok(out)
     }
 
     async fn get_pr_diff_patch(
