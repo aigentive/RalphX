@@ -201,12 +201,13 @@ async fn team_state_is_omitted_for_non_coordinator_conversations() {
         .expect("member should persist");
 
     let non_coordinator_id = ChatConversationId::new();
-    let rendered =
-        compose_agent_runtime_context(&scope(&non_coordinator_id), &deps(team_repo)).await;
+    let rendered = compose_agent_runtime_context(&scope(&non_coordinator_id), &deps(team_repo))
+        .await
+        .expect("envelope should render with the empty ledger marker");
 
-    assert_eq!(
-        rendered, None,
-        "unexpected runtime state for non-coordinator"
+    assert!(
+        !rendered.contains("<team_state"),
+        "unexpected team state for non-coordinator"
     );
 }
 
