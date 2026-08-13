@@ -2,7 +2,7 @@ use tracing::{info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter, Registry};
 
 use crate::utils::redacting_writer::RedactingMakeWriter;
-use crate::utils::size_capped_writer::SizeCappedWriter;
+use crate::utils::rotating_capped_writer::RotatingCappedWriter;
 
 pub(crate) fn create_file_log(
     log_dir: &std::path::Path,
@@ -92,7 +92,7 @@ pub(crate) fn initialize_process_bootstrap() -> Option<tracing_appender::non_blo
                 }
 
                 let (non_blocking_writer, guard) = tracing_appender::non_blocking(
-                    SizeCappedWriter::new(log_file, file_logging_max_bytes),
+                    RotatingCappedWriter::new(log_file, log_path.clone(), file_logging_max_bytes),
                 );
                 let layer = fmt::layer()
                     .with_writer(RedactingMakeWriter::new(non_blocking_writer))

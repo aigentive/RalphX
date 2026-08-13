@@ -132,3 +132,165 @@ fn cleanup_previous_launch_logs_keeps_current_and_newest_matching_files() {
     assert!(log_dir.path().join("other.log").exists());
     assert!(log_dir.path().join("ralphx_.log").exists());
 }
+
+fn seed_logs(log_dir: &std::path::Path, names: &[&str]) {
+    for name in names {
+        std::fs::write(log_dir.join(name), *name).expect("test log file");
+    }
+}
+
+fn assert_present(log_dir: &std::path::Path, names: &[&str]) {
+    for name in names {
+        assert!(log_dir.join(name).exists(), "{name} should have been kept");
+    }
+}
+
+fn assert_absent(log_dir: &std::path::Path, names: &[&str]) {
+    for name in names {
+        assert!(
+            !log_dir.join(name).exists(),
+            "{name} should have been deleted"
+        );
+    }
+}
+
+#[test]
+fn cleanup_counts_launches_so_rotated_pairs_are_kept_or_deleted_together() {
+    let log_dir = tempfile::tempdir().expect("temp log directory");
+    seed_logs(
+        log_dir.path(),
+        &[
+            "ralphx_2026-07-30_10-00-00.log",
+            "ralphx_2026-07-30_11-00-00.log",
+            "ralphx_2026-07-30_11-00-00_rolled.log",
+            "ralphx_2026-07-30_12-00-00.log",
+        ],
+    );
+
+    let warnings =
+        cleanup_previous_launch_logs(log_dir.path(), "ralphx_2026-07-30_12-00-00.log", 1);
+
+    assert!(
+        warnings.is_empty(),
+        "unexpected cleanup warnings: {warnings:?}"
+    );
+    assert_present(
+        log_dir.path(),
+        &[
+            "ralphx_2026-07-30_12-00-00.log",
+            "ralphx_2026-07-30_11-00-00.log",
+            "ralphx_2026-07-30_11-00-00_rolled.log",
+        ],
+    );
+    assert_absent(log_dir.path(), &["ralphx_2026-07-30_10-00-00.log"]);
+}
+
+#[test]
+fn cleanup_never_deletes_the_current_launch_rolled_chunk() {
+    let log_dir = tempfile::tempdir().expect("temp log directory");
+    seed_logs(
+        log_dir.path(),
+        &[
+            "ralphx_2026-07-30_09-00-00.log",
+            "ralphx_2026-07-30_09-00-00_rolled.log",
+            "ralphx_2026-07-30_10-00-00.log",
+            "ralphx_2026-07-30_11-00-00.log",
+            "ralphx_2026-07-30_12-00-00.log",
+        ],
+    );
+
+    // The current launch is the oldest by name, so file-level retention would
+    // have deleted its rolled chunk as "previous".
+    let warnings =
+        cleanup_previous_launch_logs(log_dir.path(), "ralphx_2026-07-30_09-00-00.log", 1);
+
+    assert!(
+        warnings.is_empty(),
+        "unexpected cleanup warnings: {warnings:?}"
+    );
+    assert_present(
+        log_dir.path(),
+        &[
+            "ralphx_2026-07-30_09-00-00.log",
+            "ralphx_2026-07-30_09-00-00_rolled.log",
+            "ralphx_2026-07-30_12-00-00.log",
+        ],
+    );
+    assert_absent(
+        log_dir.path(),
+        &[
+            "ralphx_2026-07-30_10-00-00.log",
+            "ralphx_2026-07-30_11-00-00.log",
+        ],
+    );
+}
+
+#[test]
+fn cleanup_groups_collision_suffixed_launches_with_their_rolled_chunk() {
+    let log_dir = tempfile::tempdir().expect("temp log directory");
+    seed_logs(
+        log_dir.path(),
+        &[
+            "ralphx_2026-07-30_10-00-00.log",
+            "ralphx_2026-07-30_12-00-00_1.log",
+            "ralphx_2026-07-30_12-00-00_1_rolled.log",
+            "ralphx_2026-07-30_13-00-00.log",
+        ],
+    );
+
+    let warnings =
+        cleanup_previous_launch_logs(log_dir.path(), "ralphx_2026-07-30_13-00-00.log", 1);
+
+    assert!(
+        warnings.is_empty(),
+        "unexpected cleanup warnings: {warnings:?}"
+    );
+    assert_present(
+        log_dir.path(),
+        &[
+            "ralphx_2026-07-30_13-00-00.log",
+            "ralphx_2026-07-30_12-00-00_1.log",
+            "ralphx_2026-07-30_12-00-00_1_rolled.log",
+        ],
+    );
+    assert_absent(log_dir.path(), &["ralphx_2026-07-30_10-00-00.log"]);
+}
+
+#[test]
+fn cleanup_treats_a_bare_rolled_name_as_its_own_launch_group() {
+    let log_dir = tempfile::tempdir().expect("temp log directory");
+    let names = [
+        "ralphx__rolled.log",
+        "ralphx_2026-07-30_11-00-00.log",
+        "ralphx_2026-07-30_11-00-00_rolled.log",
+        "ralphx_2026-07-30_12-00-00.log",
+    ];
+    seed_logs(log_dir.path(), &names);
+
+    let warnings =
+        cleanup_previous_launch_logs(log_dir.path(), "ralphx_2026-07-30_12-00-00.log", 2);
+
+    assert!(
+        warnings.is_empty(),
+        "unexpected cleanup warnings: {warnings:?}"
+    );
+    // An empty group key would have swallowed the unrelated launch pair.
+    assert_present(log_dir.path(), &names);
+
+    let warnings =
+        cleanup_previous_launch_logs(log_dir.path(), "ralphx_2026-07-30_12-00-00.log", 0);
+
+    assert!(
+        warnings.is_empty(),
+        "unexpected cleanup warnings: {warnings:?}"
+    );
+    assert_present(log_dir.path(), &["ralphx_2026-07-30_12-00-00.log"]);
+    assert_absent(
+        log_dir.path(),
+        &[
+            "ralphx__rolled.log",
+            "ralphx_2026-07-30_11-00-00.log",
+            "ralphx_2026-07-30_11-00-00_rolled.log",
+        ],
+    );
+}
