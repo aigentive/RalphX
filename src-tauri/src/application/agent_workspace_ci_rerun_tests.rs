@@ -438,3 +438,31 @@ fn hold_ends_for_empty_string_fingerprint() {
     );
     assert!(!ci_rerun_hold_still_pending(&health, Some("")));
 }
+
+#[test]
+fn plan_ignores_transient_check_with_no_details_url() {
+    // A transient check with no details_url has no parseable run ID and is silently ignored.
+    let health = health(
+        Some("head-1"),
+        vec![check("Hosted runner", Some("completed"), Some("cancelled"), None)],
+    );
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::NoObservedFailure
+    );
+}
+
+#[test]
+fn plan_rejects_deterministic_failure_with_no_details_url() {
+    // A deterministic check with no details_url is still a real failure regardless of URL.
+    let health = health(
+        Some("head-1"),
+        vec![check("Rust tests", Some("completed"), Some("failure"), None)],
+    );
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::DeterministicFailures(vec!["Rust tests (failure)".to_string()])
+    );
+}
