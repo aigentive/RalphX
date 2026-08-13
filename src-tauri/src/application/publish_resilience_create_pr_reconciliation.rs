@@ -252,10 +252,15 @@ pub(crate) async fn reconcile_blocked_agent_workspace_repair_create_pr_effect(
     // unsettled workspace, which the next sweep finishes; the reverse order would leave a settled
     // but unlinked workspace that nothing repairs.
     //
-    // The unguarded writer is correct here only because the external-PR adopter skips
-    // repair-blocked workspaces and the repair pipeline holds the target lease, so there is
-    // provably no competing writer for `publication_pr_number` while this attempt is unsettled. If
-    // that exclusion ever changes, this call must move to `update_publication_with_events`.
+    // The external-PR adopter (`agent_workspace_external_pr_reconciliation.rs:735-766`) is
+    // reachable for this exact shape: no linked PR, `publication_push_status == "pushed"`, active
+    // edit-mode workspace. Write exclusivity is not the safety property — the safety property is
+    // settlement authority. Both writers resolve the same pull request from the same head-branch
+    // lookup, so they converge on the same `publication_pr_number` / `publication_pr_url`. If the
+    // external adopter links first, the post-fence replay degrades from `create_pr` to `update_pr`,
+    // which is the safer direction, not a duplicate PR. This reconciler still refuses to settle
+    // `Succeeded` without `sync_state.head_ref_oid == repair_head`, so no false-success is
+    // reachable through any ordering.
     state
         .agent_conversation_workspace_repo
         .update_publication(
