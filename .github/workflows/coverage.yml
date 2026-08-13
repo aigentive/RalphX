@@ -165,9 +165,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          df -h /
-          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
-          sudo docker system prune -af || true
+          # Cleanup costs ~77s; today's 145G runners start with ~88G free, so
+          # only pay it when headroom is actually low (re-arms if images shrink).
+          avail_gb=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          if (( avail_gb < 40 )); then
+            sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+            sudo docker system prune -af || true
+          fi
           df -h /
 
       - name: Install Linux system dependencies
@@ -520,9 +524,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          df -h /
-          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
-          sudo docker system prune -af || true
+          # Cleanup costs ~77s; today's 145G runners start with ~88G free, so
+          # only pay it when headroom is actually low (re-arms if images shrink).
+          avail_gb=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          if (( avail_gb < 40 )); then
+            sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+            sudo docker system prune -af || true
+          fi
           df -h /
 
       - name: Install Linux system dependencies
