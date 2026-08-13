@@ -1888,7 +1888,7 @@ async fn terminal_recovery_blocks_a_conflicted_durable_repair_without_effects() 
 }
 
 #[tokio::test]
-async fn startup_recovery_blocks_a_base_mismatch_without_effects() {
+async fn startup_recovery_retargets_a_clean_repair_behind_an_advanced_base() {
     let conversation_id = ChatConversationId::from_string("54545454-5454-5454-5454-545454545454");
     let fixture = setup_rewritten_repair_publish_fixture(
         conversation_id,
@@ -1909,7 +1909,56 @@ async fn startup_recovery_blocks_a_base_mismatch_without_effects() {
             .expect("recover base-mismatched repair"),
         1
     );
-    assert_recovery_blocked_without_effects(&state, mock_github.as_ref(), &conversation_id).await;
+    // The new behavior retargets instead of blocking: the old generation is superseded and a
+    // successor is dispatched toward the advanced base. The successor is not Blocked — it is in
+    // a dispatch phase (Requested or Repairing) waiting for the next recovery pass.
+    let successor = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load retargeted successor")
+        .expect("a successor repair attempt must exist after retarget");
+    assert_ne!(
+        successor.phase,
+        AgentWorkspaceRepairPhase::Blocked,
+        "a clean repair behind a newer base must be retargeted into a new dispatch, not blocked"
+    );
+    // No GitHub side effects — retarget dispatches an agent run, not a direct push.
+    assert_eq!(
+        *mock_github
+            .push_branch_calls
+            .lock()
+            .expect("normal push counter"),
+        0,
+        "retarget must not enter the normal publisher"
+    );
+    assert_eq!(
+        *mock_github
+            .push_branch_with_expected_remote_oid_lease_calls
+            .lock()
+            .expect("exact push counter"),
+        0,
+        "retarget must not push the repair branch"
+    );
+    assert_eq!(
+        mock_github.create_calls(),
+        0,
+        "retarget must not create a pull request"
+    );
+    // The retarget event must be durably recorded so the publish panel shows the transition.
+    let events = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("read retarget publication events");
+    assert!(
+        events
+            .iter()
+            .any(|e| e.step == "repair_base_advance_retargeted"),
+        "retarget must record a 'repair_base_advance_retargeted' publication event"
+    );
 }
 
 #[tokio::test]
