@@ -281,6 +281,58 @@ describe("DataRetentionSection", () => {
     expect(el.textContent).not.toMatch(/stored/);
   });
 
+  it("keeps an accessible name on the size-limit button while the preview is in flight", async () => {
+    const user = userEvent.setup();
+    let releasePreview: (() => void) | null = null;
+    mockRetentionInvoke();
+    const settled = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "preview_data_retention_size_budget") {
+        await new Promise<void>((resolve) => { releasePreview = resolve; });
+      }
+      return settled(command, args);
+    });
+    render(<DataRetentionSection />);
+
+    await user.click(await screen.findByRole("button", { name: "Enable size limit…" }));
+
+    const pending = await screen.findByRole("button", { name: "Checking the size limit" });
+    expect(pending).toHaveAttribute("aria-busy", "true");
+
+    releasePreview!();
+    await screen.findByTestId("size-budget-preview");
+  });
+
+  it("keeps an accessible name on the run-cleanup button while the cycle is in flight", async () => {
+    const user = userEvent.setup();
+    let releaseRun: (() => void) | null = null;
+    mockRetentionInvoke();
+    const settled = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "run_data_retention_now") {
+        await new Promise<void>((resolve) => { releaseRun = resolve; });
+      }
+      return settled(command, args);
+    });
+    render(<DataRetentionSection />);
+
+    await user.click(await screen.findByRole("button", { name: "Run cleanup now" }));
+    await user.click(await screen.findByRole("button", { name: "Run cleanup" }));
+
+    // The dialog stays open for the whole cycle, so its action is the reachable control.
+    const inDialog = await screen.findByRole("button", { name: "Running cleanup" });
+    expect(inDialog).toHaveAttribute("aria-busy", "true");
+    expect(inDialog).toBeDisabled();
+
+    // Dismissing mid-run uncovers the section button, which is still pending.
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    const inSection = await screen.findByRole("button", { name: "Running cleanup" });
+    expect(inSection).toHaveAttribute("aria-busy", "true");
+
+    releaseRun!();
+    await screen.findByTestId("retention-run-report");
+  });
+
   it("surfaces load failures instead of rendering empty policy values", async () => {
     vi.mocked(invoke).mockRejectedValue(new Error("retention backend down"));
     render(<DataRetentionSection />);

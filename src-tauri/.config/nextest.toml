@@ -15,6 +15,13 @@ retries = 1
 [profile.ci.junit]
 path = "junit.xml"
 
+# Coverage-instrumented lib shards run ~60% slower than plain test shards and
+# sit near the 30m ci budget on nominal runners; 40m absorbs runner-speed
+# variance while still bounding runaway runs under the 60m job timeout.
+[profile.ci-coverage]
+inherits = "ci"
+global-timeout = "40m"
+
 [test-groups.git-heavy]
 max-threads = 2
 
