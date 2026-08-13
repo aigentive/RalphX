@@ -434,6 +434,122 @@ fn verifies_clean_agent_workspace_repair_completion() {
 }
 
 #[test]
+fn classifies_clean_agent_workspace_repair_completion_as_proven() {
+    assert_eq!(
+        classify_agent_workspace_repair_completion(repaired_workspace_check()),
+        AgentWorkspaceRepairCompletionClassification::Proven
+    );
+}
+
+#[test]
+fn classifies_a_settled_workspace_behind_a_moved_base_as_behind_new_base() {
+    let stale_status =
+        publish_branch_freshness_status_from_commits(Some("old-base"), "origin/main", "new-base");
+    let mut check = repaired_workspace_check();
+    check.freshness_status = &stale_status;
+
+    assert_eq!(
+        classify_agent_workspace_repair_completion(check),
+        AgentWorkspaceRepairCompletionClassification::BehindNewBase {
+            target_ref: "origin/main".to_string(),
+            target_base_commit: "new-base".to_string(),
+        }
+    );
+}
+
+#[test]
+fn classifies_a_settled_workspace_missing_base_ancestry_as_behind_new_base() {
+    let unintegrated_status = publish_branch_freshness_status_from_commits_and_branch(
+        Some("new-base"),
+        "origin/main",
+        "new-base",
+        false,
+    );
+    let mut check = repaired_workspace_check();
+    check.freshness_status = &unintegrated_status;
+
+    assert_eq!(
+        classify_agent_workspace_repair_completion(check),
+        AgentWorkspaceRepairCompletionClassification::BehindNewBase {
+            target_ref: "origin/main".to_string(),
+            target_base_commit: "new-base".to_string(),
+        }
+    );
+}
+
+#[test]
+fn classifies_a_captured_base_mismatch_on_a_settled_tree_as_behind_new_base() {
+    let mut check = repaired_workspace_check();
+    check.resolved_base_commit = "other-base";
+
+    assert!(matches!(
+        classify_agent_workspace_repair_completion(check),
+        AgentWorkspaceRepairCompletionClassification::BehindNewBase { .. }
+    ));
+}
+
+#[test]
+fn classifies_an_unsettled_workspace_as_unprovable_even_when_it_is_also_behind() {
+    let stale_status =
+        publish_branch_freshness_status_from_commits(Some("old-base"), "origin/main", "new-base");
+    let mut check = repaired_workspace_check();
+    check.freshness_status = &stale_status;
+    check.has_uncommitted_changes = true;
+
+    // The classifier must refuse to retarget a tree that is not settled...
+    let AgentWorkspaceRepairCompletionClassification::Unprovable(detail) =
+        classify_agent_workspace_repair_completion(check)
+    else {
+        panic!("a dirty tree can never be retargeted onto a new base");
+    };
+    assert!(
+        detail.contains("uncommitted"),
+        "unexpected detail: {detail}"
+    );
+
+    // ...while the pass/fail adapter keeps reporting the base failure first, because the
+    // trusted-completion handler's error text and status derive from that exact order.
+    let mut adapter_check = repaired_workspace_check();
+    adapter_check.freshness_status = &stale_status;
+    adapter_check.has_uncommitted_changes = true;
+    let error = verify_agent_workspace_repair_completion(adapter_check)
+        .expect_err("a dirty tree behind a moved base must still fail the adapter");
+    assert!(error.contains("still behind"), "unexpected error: {error}");
+}
+
+#[test]
+fn classifies_conflict_markers_as_unprovable() {
+    let mut check = repaired_workspace_check();
+    check.has_conflict_markers = true;
+
+    let AgentWorkspaceRepairCompletionClassification::Unprovable(detail) =
+        classify_agent_workspace_repair_completion(check)
+    else {
+        panic!("conflict markers can never be proven clean");
+    };
+    assert!(
+        detail.contains("conflict markers"),
+        "unexpected detail: {detail}"
+    );
+}
+
+#[test]
+fn classifies_a_base_ref_identity_mismatch_as_unprovable() {
+    let mut check = repaired_workspace_check();
+    check.resolved_base_ref = "origin/release";
+
+    let AgentWorkspaceRepairCompletionClassification::Unprovable(detail) =
+        classify_agent_workspace_repair_completion(check)
+    else {
+        panic!("a foreign base ref is an identity failure, never a moved base");
+    };
+    assert!(
+        detail.contains("resolved_base_ref"),
+        "unexpected detail: {detail}"
+    );
+}
+
+#[test]
 fn rejects_agent_workspace_repair_when_base_still_ahead() {
     let stale_status =
         publish_branch_freshness_status_from_commits(Some("old-base"), "origin/main", "new-base");

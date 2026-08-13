@@ -39,7 +39,8 @@ use tauri::Manager;
 pub(crate) use crate::application::publish_resilience_repair_effects::{
     next_agent_workspace_repair_retry_idempotency_key, observed_repair_push_receipt_for_head,
     repair_effect_base_idempotency_key, resolve_repair_effect_identity,
-    terminate_orphaned_blocked_repair_pr_handoff_effect, RepairEffectIdentity,
+    terminate_orphaned_blocked_repair_pr_handoff_effect,
+    terminate_orphaned_blocked_repair_push_effect, RepairEffectIdentity,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2190,43 +2191,55 @@ pub fn verify_agent_workspace_settled_current_head(
     Ok(())
 }
 
-pub fn verify_agent_workspace_repair_completion(
-    check: AgentWorkspaceRepairCompletionCheck<'_>,
-) -> Result<(), String> {
-    let target_ref = check.freshness_status.target_ref.as_str();
-    if check.resolved_base_ref != check.workspace_base_ref && check.resolved_base_ref != target_ref
-    {
-        return Err(format!(
-            "resolved_base_ref '{}' does not match workspace base '{}' or target '{}'",
-            check.resolved_base_ref, check.workspace_base_ref, target_ref
-        ));
-    }
+/// The three independent reasons a repair completion can fail to verify, evaluated without
+/// short-circuiting so callers can tell an integrity failure apart from a base that merely moved.
+struct AgentWorkspaceRepairCompletionFailures {
+    /// The reported base ref is not the workspace or target base at all.
+    identity: Option<String>,
+    /// The tree is fine as far as this check knows, but the base it was proven against is not the
+    /// current target base.
+    base: Option<String>,
+    /// The working tree is not a settled commit of the reported head.
+    settled: Option<String>,
+}
 
-    if check.resolved_base_commit != check.freshness_status.target_base_commit {
-        return Err(format!(
+fn agent_workspace_repair_completion_failures(
+    check: &AgentWorkspaceRepairCompletionCheck<'_>,
+) -> AgentWorkspaceRepairCompletionFailures {
+    let target_ref = check.freshness_status.target_ref.as_str();
+    let identity = (check.resolved_base_ref != check.workspace_base_ref
+        && check.resolved_base_ref != target_ref)
+        .then(|| {
+            format!(
+                "resolved_base_ref '{}' does not match workspace base '{}' or target '{}'",
+                check.resolved_base_ref, check.workspace_base_ref, target_ref
+            )
+        });
+
+    let base = if check.resolved_base_commit != check.freshness_status.target_base_commit {
+        Some(format!(
             "resolved_base_commit '{}' does not match current target base '{}'",
             check.resolved_base_commit, check.freshness_status.target_base_commit
-        ));
-    }
-
-    if check.freshness_status.is_base_ahead {
-        return Err(format!(
+        ))
+    } else if check.freshness_status.is_base_ahead {
+        Some(format!(
             "workspace branch is still behind {} at {}",
             check.freshness_status.target_ref, check.freshness_status.target_base_commit
-        ));
-    }
-
-    // `is_base_ahead` compares captured against target, so it cannot see a conflict-routed attempt
-    // whose captured base is the observed tip the branch never merged. Require the positive
-    // ancestry proof, which is absent by default whenever the status carried no ancestry evidence.
-    if !check.freshness_status.source_contains_target_base {
-        return Err(format!(
+        ))
+    } else if !check.freshness_status.source_contains_target_base {
+        // `is_base_ahead` compares captured against target, so it cannot see a conflict-routed
+        // attempt whose captured base is the observed tip the branch never merged. Require the
+        // positive ancestry proof, which is absent by default whenever the status carried no
+        // ancestry evidence.
+        Some(format!(
             "workspace branch does not contain base {} at {}",
             check.freshness_status.target_ref, check.freshness_status.target_base_commit
-        ));
-    }
+        ))
+    } else {
+        None
+    };
 
-    verify_agent_workspace_settled_current_head(AgentWorkspaceSettledHeadCheck {
+    let settled = verify_agent_workspace_settled_current_head(AgentWorkspaceSettledHeadCheck {
         reported_head_sha: check.repair_commit_sha,
         workspace_head_sha: check.workspace_head_sha,
         has_uncommitted_changes: check.has_uncommitted_changes,
@@ -2235,6 +2248,64 @@ pub fn verify_agent_workspace_repair_completion(
         has_conflict_files: check.has_conflict_files,
         has_conflict_markers: check.has_conflict_markers,
     })
+    .err();
+
+    AgentWorkspaceRepairCompletionFailures {
+        identity,
+        base,
+        settled,
+    }
+}
+
+/// Why a repair-completion inspection did or did not prove a clean committed repair.
+///
+/// The distinction this type exists for: a workspace whose tree is fully settled but whose base
+/// moved on is not an integrity failure, it is ordinary new input a recovery pass can retarget.
+/// Only tree and identity failures are genuinely unprovable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentWorkspaceRepairCompletionClassification {
+    Proven,
+    BehindNewBase {
+        target_ref: String,
+        target_base_commit: String,
+    },
+    /// Carries a human sentence describing the exact condition, never an `AppError` Display.
+    Unprovable(String),
+}
+
+/// Classifies a repair completion for callers that can act on a moved base.
+///
+/// Precedence here is deliberately *not* the adapter's: a tree that is both dirty and behind is
+/// unprovable, because retargeting an unsettled tree would carry the mess onto the new base.
+pub(crate) fn classify_agent_workspace_repair_completion(
+    check: AgentWorkspaceRepairCompletionCheck<'_>,
+) -> AgentWorkspaceRepairCompletionClassification {
+    let failures = agent_workspace_repair_completion_failures(&check);
+    if let Some(failure) = failures.identity.or(failures.settled) {
+        return AgentWorkspaceRepairCompletionClassification::Unprovable(failure);
+    }
+    if failures.base.is_some() {
+        return AgentWorkspaceRepairCompletionClassification::BehindNewBase {
+            target_ref: check.freshness_status.target_ref.clone(),
+            target_base_commit: check.freshness_status.target_base_commit.clone(),
+        };
+    }
+    AgentWorkspaceRepairCompletionClassification::Proven
+}
+
+/// Pass/fail adapter for the trusted-completion path.
+///
+/// The `identity → base → settled` order is load-bearing: it is the order the handler's error text
+/// and HTTP status have always been derived from, so it must not follow the classifier's own
+/// precedence.
+pub fn verify_agent_workspace_repair_completion(
+    check: AgentWorkspaceRepairCompletionCheck<'_>,
+) -> Result<(), String> {
+    let failures = agent_workspace_repair_completion_failures(&check);
+    match failures.identity.or(failures.base).or(failures.settled) {
+        Some(message) => Err(message),
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn publish_branch_freshness_outcome_from_source_update(

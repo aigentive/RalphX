@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 
+use super::base_advance_retarget::retarget_reserved_repair_to_advanced_base;
 use super::pr_autofix_redelivery::{
     due_pr_autofix_redispatch_message, evaluate_pr_autofix_successor, pr_autofix_fingerprint_spend,
     remember_blocked_pr_autofix_fingerprint, PrAutofixFingerprintSpend, PrAutofixSuccessorDecision,
@@ -13,7 +14,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_dispatch_is_due, agent_workspace_repair_hold_reason,
     block_agent_workspace_repair_completion, block_agent_workspace_repair_needs_human,
     classify_agent_workspace_repair_delivery, continue_agent_workspace_repair_at_boundary,
-    inspect_agent_workspace_repair_completion, last_human_repair_reason,
+    inspect_agent_workspace_repair_completion_classified, last_human_repair_reason,
     reacquire_agent_workspace_repair_target_lease_for_continuation,
     record_agent_workspace_repair_validation,
     release_and_clear_agent_workspace_repair_target_lease,
@@ -21,15 +22,17 @@ use crate::application::agent_workspace_publish_repair_state::{
     reserve_agent_workspace_unchanged_health_hold, resume_current_agent_workspace_repair_publish,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
     transition_agent_workspace_repair_attempt, validate_agent_workspace_repair_target_lease,
-    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
-    AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PublishAuthority,
+    AgentWorkspaceRepairCompletionInspection, AgentWorkspaceRepairDispatchOutcome,
+    AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
+    AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
+    AgentWorkspaceRepairTransitionOutcome, PublishAuthority,
     ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS,
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::publish_resilience::{
     reconcile_blocked_agent_workspace_repair_pr_handoff,
-    terminate_orphaned_blocked_repair_pr_handoff_effect, BlockedRepairPrHandoffReconciliation,
+    terminate_orphaned_blocked_repair_pr_handoff_effect,
+    terminate_orphaned_blocked_repair_push_effect, BlockedRepairPrHandoffReconciliation,
 };
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
@@ -534,6 +537,21 @@ async fn reconcile_agent_workspace_repair_attempt(
                             attempt_id = current.id.as_str(),
                             %error,
                             "Orphaned blocked PR-handoff effect could not be terminated; leaving the attempt unsettled"
+                        );
+                        return Ok(DurableRepairRecoveryOutcome::Noop);
+                    }
+                    // At most one of the two hatches can fire: each matches a different effect kind
+                    // and an attempt holds at most one open effect. A blocked repair whose branch
+                    // push was abandoned in flight is fenced by that effect alone, so clearing it
+                    // is what lets the retry evaluation below re-drive the real publish.
+                    if let Err(error) =
+                        terminate_orphaned_blocked_repair_push_effect(state, &current).await
+                    {
+                        tracing::warn!(
+                            conversation_id = current.conversation_id.as_str(),
+                            attempt_id = current.id.as_str(),
+                            %error,
+                            "Orphaned blocked branch-push effect could not be terminated; leaving the attempt unsettled"
                         );
                         return Ok(DurableRepairRecoveryOutcome::Noop);
                     }
@@ -1570,9 +1588,72 @@ async fn rescue_orphaned_repair_dispatch(
     .await
 }
 
-async fn reserve_and_deliver_repair_dispatch(
+/// Records the remote head a rescued PR autofix generation is fixing against, so the completion
+/// gate at `repair_completion.rs` has the "before" side of the comparison it requires. The poller
+/// sets this from live PR health; recovery must work without GitHub, so it uses the fetched remote
+/// branch head — the same commit the PR reports — and falls back to the local branch head when the
+/// remote is unreachable. Never overwrites dispatch evidence an earlier dispatch already proved,
+/// and never fails the delivery: a NULL head only reproduces today's behavior.
+async fn backfill_pr_autofix_dispatch_head(
+    attempt: &mut AgentWorkspaceRepairAttempt,
+    workspace: &AgentConversationWorkspace,
+    working_directory: &std::path::Path,
+) {
+    if attempt.source != AgentWorkspaceRepairSource::PrAutofix
+        || attempt
+            .pr_autofix_dispatch_head_commit
+            .as_deref()
+            .is_some_and(|head| !head.trim().is_empty())
+    {
+        return;
+    }
+    let remote_head =
+        match crate::application::git_mutation_recovery::read_repair_origin_branch_oid(
+            working_directory,
+            &workspace.branch_name,
+        )
+        .await
+        {
+            Ok(head) => head,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = attempt.conversation_id.as_str(),
+                    branch = workspace.branch_name.as_str(),
+                    error = %error,
+                    "Could not read the remote head for PR autofix dispatch evidence; falling back to the local branch head"
+                );
+                None
+            }
+        };
+    let resolved = match remote_head {
+        Some(head) => Some(head),
+        None => match GitService::get_branch_sha(working_directory, &workspace.branch_name).await {
+            Ok(head) => Some(head),
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = attempt.conversation_id.as_str(),
+                    branch = workspace.branch_name.as_str(),
+                    error = %error,
+                    "Could not resolve any dispatch head for a rescued PR autofix generation"
+                );
+                None
+            }
+        },
+    };
+    let Some(head) = resolved.filter(|head| !head.trim().is_empty()) else {
+        return;
+    };
+    tracing::info!(
+        conversation_id = attempt.conversation_id.as_str(),
+        dispatch_head = head.as_str(),
+        "Backfilled PR autofix dispatch head evidence for a recovery-side delivery"
+    );
+    attempt.pr_autofix_dispatch_head_commit = Some(head);
+}
+
+pub(super) async fn reserve_and_deliver_repair_dispatch(
     state: &AppState,
-    attempt: AgentWorkspaceRepairAttempt,
+    mut attempt: AgentWorkspaceRepairAttempt,
     target_identity: crate::domain::entities::GitTargetIdentity,
     workspace: AgentConversationWorkspace,
     working_directory: std::path::PathBuf,
@@ -1594,6 +1675,9 @@ async fn reserve_and_deliver_repair_dispatch(
     } else {
         None
     };
+    // Dispatch evidence must exist before the reservation persists the attempt: the reservation is
+    // the only write on this lane that carries `pr_autofix_dispatch_head_commit`.
+    backfill_pr_autofix_dispatch_head(&mut attempt, &workspace, &working_directory).await;
     let reserved = match reserve_agent_workspace_repair_dispatch(
         Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.branch_update_repo),
@@ -1674,6 +1758,20 @@ async fn reserve_and_deliver_repair_dispatch(
     }
 }
 
+/// The human sentence inside an inspection failure, without the variant label `AppError`'s
+/// `Display` prepends. Matched on variants rather than stripping a prefix, so the blocked-repair
+/// banner cannot start showing `Conflict:` again if a variant's `Display` changes.
+fn workspace_inspection_detail(error: &AppError) -> String {
+    match error {
+        AppError::Conflict(detail)
+        | AppError::Validation(detail)
+        | AppError::NotFound(detail)
+        | AppError::GitOperation(detail)
+        | AppError::Infrastructure(detail) => detail.clone(),
+        other => other.to_string(),
+    }
+}
+
 /// Replays only the completion-owned half of an exact interrupted repair. Reserving `Validating`
 /// before every Git read fences duplicate startup/terminal recovery and reuses the normal review
 /// and publish continuation rather than redispatching a repair agent.
@@ -1731,7 +1829,7 @@ async fn recover_clean_interrupted_repair(
         )
         .await;
     };
-    let validation = match inspect_agent_workspace_repair_completion(
+    let validation = match inspect_agent_workspace_repair_completion_classified(
         state,
         &workspace,
         &reserved.target_base_ref,
@@ -1739,13 +1837,49 @@ async fn recover_clean_interrupted_repair(
     )
     .await
     {
-        Ok(validation) => validation,
+        Ok(AgentWorkspaceRepairCompletionInspection::Proven(validation)) => validation,
+        // A settled tree behind a newer base is ordinary new input, not an integrity failure. The
+        // blocked-redelivery path has always treated a moved base that way; this is the same rule
+        // for the interrupted path.
+        Ok(AgentWorkspaceRepairCompletionInspection::BehindNewBase {
+            target_ref,
+            target_base_commit,
+            repair_head_commit,
+        }) => {
+            tracing::info!(
+                conversation_id = reserved.conversation_id.as_str(),
+                target_ref = target_ref.as_str(),
+                target_base_commit = target_base_commit.as_str(),
+                repair_head_commit = repair_head_commit.as_str(),
+                "Interrupted workspace repair is settled but behind a newer base; retargeting instead of blocking"
+            );
+            return retarget_reserved_repair_to_advanced_base(
+                state,
+                reserved,
+                &workspace,
+                &target_base_commit,
+            )
+            .await;
+        }
+        // `detail` is a human sentence owned by the classifier, so the banner never shows an
+        // `AppError` variant name like `Conflict:` to a user.
+        Ok(AgentWorkspaceRepairCompletionInspection::Unprovable(detail)) => {
+            return block_recovery_attempt(
+                state,
+                reserved,
+                &format!(
+                    "Workspace repair recovery could not prove a clean committed repair: {detail}"
+                ),
+            )
+            .await;
+        }
         Err(error) => {
             return block_recovery_attempt(
                 state,
                 reserved,
                 &format!(
-                    "Workspace repair recovery could not prove a clean committed repair: {error}"
+                    "Workspace repair recovery could not inspect the workspace: {}",
+                    workspace_inspection_detail(&error)
                 ),
             )
             .await;
@@ -1952,6 +2086,12 @@ async fn escalate_or_record_continuation_recovery_failure(
         return Ok(DurableRepairRecoveryOutcome::Stale);
     }
     if current.phase == AgentWorkspaceRepairPhase::Blocked {
+        // A blocked attempt still holding an open effect is fenced twice over: automatic retry
+        // declines on the open effect, and the user's Retry action is withheld until the attention
+        // reason exists. Recording it here is the manual backstop behind the automatic hatch, so no
+        // recovery depends solely on automation firing. `CreatePr` stays fenced by the admission
+        // projection itself, which never re-admits an unproven pull-request creation.
+        record_blocked_open_effect_attention(state, current.clone()).await?;
         release_repair_lease_if_settled_boundary(state, &current).await?;
         return Ok(DurableRepairRecoveryOutcome::Blocked);
     }
@@ -2021,6 +2161,61 @@ async fn escalate_or_record_continuation_recovery_failure(
         }
         AgentWorkspaceRepairTransitionOutcome::Stale(_)
         | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(DurableRepairRecoveryOutcome::Stale),
+    }
+}
+
+/// Records the open-effect attention reason on an attempt that is already blocked, which is the
+/// one shape `record_open_effect_continuation_recovery_failure` can never reach: it only runs for
+/// `ContinuationPending`/`Continuing`.
+///
+/// Without this the admission projection at
+/// `agent_workspace_publish_repair_state::load_agent_workspace_repair_operation_recovery_action`
+/// withholds the user's Retry action forever, because it requires the reason to be present before
+/// re-admitting an idempotent push/update replay.
+///
+/// Additive and idempotent: it appends one reason and keeps the attempt blocked. A write race just
+/// means the next sweep records it instead.
+async fn record_blocked_open_effect_attention(
+    state: &AppState,
+    current: AgentWorkspaceRepairAttempt,
+) -> AppResult<()> {
+    if current
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON)
+    {
+        return Ok(());
+    }
+    if state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&current.id)
+        .await?
+        .is_none()
+    {
+        return Ok(());
+    }
+    let summary = current.summary.clone().unwrap_or_else(|| {
+        "Workspace repair publication is blocked behind an open external effect.".to_string()
+    });
+    let mut marked = current;
+    marked
+        .pending_reasons
+        .push(CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string());
+    let expected_phase = marked.phase;
+    match transition_agent_workspace_repair_attempt(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        marked,
+        expected_phase,
+        &summary,
+        None,
+    )
+    .await?
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(marked) => {
+            surface_open_effect_continuation_attention(state, &marked, &summary).await
+        }
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+        | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(()),
     }
 }
 
