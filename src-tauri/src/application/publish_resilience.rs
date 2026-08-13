@@ -41,6 +41,11 @@ pub(crate) use crate::application::publish_resilience_repair_effects::{
     repair_effect_base_idempotency_key, resolve_repair_effect_identity,
     terminate_orphaned_blocked_repair_pr_handoff_effect, RepairEffectIdentity,
 };
+// Settling an orphaned `create_pr` effect needs GitHub evidence rather than durable receipts, so
+// it lives in its own sibling module and is re-exported alongside the receipts-only helpers.
+pub(crate) use crate::application::publish_resilience_create_pr_reconciliation::{
+    reconcile_blocked_agent_workspace_repair_create_pr_effect, BlockedCreatePrEffectReconciliation,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishFailureClass {
@@ -708,7 +713,10 @@ pub(crate) async fn observe_agent_workspace_repair_pr_handoff_effect(
     .await
 }
 
-async fn observe_agent_workspace_repair_pr_handoff_effect_for_phase(
+/// Records the PR-handoff receipt for a caller that has already proved which phase the attempt is
+/// in. The `Continuing` wrapper above owns the normal publish path; blocked-arm reconcilers in
+/// sibling modules own `Blocked`.
+pub(crate) async fn observe_agent_workspace_repair_pr_handoff_effect_for_phase(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
     mut effect: AgentWorkspaceRepairEffect,
@@ -1093,7 +1101,7 @@ async fn settle_agent_workspace_repair_after_pr_handoff(
 
 /// A post-PR receipt proves the repair branch no longer owns a Git mutation. Release only the
 /// exact canonical lease persisted by that attempt; mismatched/newer owners are untouched.
-async fn release_agent_workspace_repair_lease_after_pr_handoff(
+pub(crate) async fn release_agent_workspace_repair_lease_after_pr_handoff(
     state: &AppState,
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> AppResult<()> {
