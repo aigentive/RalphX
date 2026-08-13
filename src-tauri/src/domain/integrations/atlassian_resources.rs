@@ -7,6 +7,11 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use super::atlassian_api_error::AtlassianApiError;
+use super::atlassian_mcp_ops::{
+    AtlassianRawMethod, ConfluencePageContent, ConfluencePageCreateRequest,
+    ConfluencePageUpdateRequest, JiraIssueCreateRequest, JiraIssueCreated, JiraIssueUpdateRequest,
+};
 use super::jira_agile_types::{JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary};
 use crate::domain::services::ComposerIntegrationReference;
 
@@ -323,6 +328,76 @@ pub trait AtlassianApiClient: Send + Sync {
         _board_id: &str,
     ) -> Result<Vec<JiraSprintSummary>, String> {
         Err("Jira sprint enumeration is not available for this client".to_string())
+    }
+
+    // ---- Atlassian MCP tool operations ---------------------------------
+    //
+    // These return `AtlassianApiError` so callers classify failures on the
+    // numeric HTTP status instead of parsing message text.
+
+    async fn create_jira_issue(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _request: &JiraIssueCreateRequest,
+    ) -> Result<JiraIssueCreated, AtlassianApiError> {
+        Err(AtlassianApiError::transport(
+            "Jira issue creation is not available for this client",
+        ))
+    }
+
+    async fn update_jira_issue(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _request: &JiraIssueUpdateRequest,
+    ) -> Result<(), AtlassianApiError> {
+        Err(AtlassianApiError::transport(
+            "Jira issue updates are not available for this client",
+        ))
+    }
+
+    async fn confluence_get_page(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _page_id: &str,
+    ) -> Result<ConfluencePageContent, AtlassianApiError> {
+        Err(AtlassianApiError::transport(
+            "Confluence page reads are not available for this client",
+        ))
+    }
+
+    async fn confluence_create_page(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _request: &ConfluencePageCreateRequest,
+    ) -> Result<ConfluencePageContent, AtlassianApiError> {
+        Err(AtlassianApiError::transport(
+            "Confluence page creation is not available for this client",
+        ))
+    }
+
+    async fn confluence_update_page(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _page_id: &str,
+        _request: &ConfluencePageUpdateRequest,
+    ) -> Result<ConfluencePageContent, AtlassianApiError> {
+        Err(AtlassianApiError::transport(
+            "Confluence page updates are not available for this client",
+        ))
+    }
+
+    async fn raw_api_request(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _method: AtlassianRawMethod,
+        _kind: AtlassianResourceKind,
+        _path: &str,
+        _body: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, AtlassianApiError> {
+        Err(AtlassianApiError::transport(
+            "Generic Atlassian API requests are not available for this client",
+        ))
     }
 
     async fn exchange_oauth_code(

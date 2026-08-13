@@ -527,6 +527,34 @@ fn finalize_body_with_empty_plan_appends_only_footer() {
     assert!(!body.contains("<details>"));
 }
 
+/// A degraded describe step publishes an empty editable body on purpose: the managed content is
+/// the whole PR body, and it must never come back empty.
+#[test]
+fn finalize_empty_body_without_plan_still_yields_managed_content() {
+    let body = finalize_agent_workspace_pr_body("", &None);
+
+    assert_eq!(
+        body,
+        format!(
+            "\n\n{RALPHX_MANAGED_PR_BODY_START}\n\
+             {RALPHX_GENERATED_FOOTER}\n{RALPHX_MANAGED_PR_BODY_END}"
+        )
+    );
+    assert!(!body.trim().is_empty());
+    assert!(!body.contains("<details>"));
+}
+
+#[test]
+fn finalize_empty_body_with_plan_yields_the_plan_section_and_footer() {
+    let body = finalize_agent_workspace_pr_body("", &Some("# Plan\n\nDo the thing".to_string()));
+
+    assert!(body.starts_with(&format!("\n\n{RALPHX_MANAGED_PR_BODY_START}\n")));
+    assert!(body.contains("<summary>View full plan</summary>"));
+    assert!(body.contains("# Plan\n\nDo the thing"));
+    assert!(body.contains(RALPHX_GENERATED_FOOTER));
+    assert!(body.chars().count() <= GITHUB_PR_BODY_SOFT_LIMIT_CHARS);
+}
+
 #[test]
 fn oversized_plan_body_keeps_the_canonical_footer_after_truncation() {
     let prefix = "## Summary\n\n<details>\n\n";

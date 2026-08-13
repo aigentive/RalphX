@@ -4156,6 +4156,7 @@ async fn untouched_start_resolves_the_current_complete_role_default_at_launch() 
                 persona_id: None,
                 approval_policy: Some("never".to_string()),
                 sandbox_mode: Some("danger-full-access".to_string()),
+                atlassian_access: None,
             },
         )
         .await

@@ -8,6 +8,10 @@ from functools import lru_cache
 
 
 ALWAYS_ON_ALLOWLIST = frozenset({"git-workflow.md"})
+# Every touch pays the always-on payload, so both gates enforce this one number: the
+# validator as a hard budget, the activation test as the ceiling for its rule-editing
+# scenario, whose activation set is exactly the always-on payload.
+ALWAYS_ON_BUDGET_BYTES = 17_000
 # Generated, gitignored scopes need explicit stable examples; never discover them by
 # walking a developer's filesystem or local and CI validation will diverge.
 GENERATED_PATH_EXEMPLARS = frozenset({".artifacts/specs/example/tracker.md"})

@@ -11,10 +11,15 @@ use crate::commands::ExecutionState;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentRun, AgentRunActionKind, ChatContextType, ChatConversationId, IdeationAnalysisBaseRefKind,
-    Project,
+    AgentRun, AgentRunActionKind, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation,
+    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, ChatContextType, ChatConversationId,
+    IdeationAnalysisBaseRefKind, Project,
 };
 use crate::domain::entities::{ArtifactId, IdeationSessionId, PlanBranch, PlanBranchId, ProjectId};
+use crate::domain::repositories::{
+    AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
+    StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+};
 use std::path::Path;
 use std::process::Command;
 use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
@@ -633,6 +638,128 @@ async fn direct_auto_publish_reports_missing_project() {
     )
     .await
     .expect_err("missing project should fail");
+
+    assert!(error.contains("Project not found: project-1"));
+}
+
+const GATE_REPAIR_HEAD: &str = "6666666666666666666666666666666666666666";
+
+/// Seeds an exhausted blocked repair for the durable gate, optionally with the authoritative push
+/// receipt that makes the block continuation-stage.
+async fn seed_exhausted_blocked_repair(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    observed_push: bool,
+) {
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                workspace.conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                workspace.base_ref.clone(),
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "seed durable gate fixture".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("durable gate fixture attempt should persist");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(started) = started else {
+        panic!("durable gate fixture must start a fresh attempt");
+    };
+    if observed_push {
+        crate::testing::record_observed_agent_workspace_repair_push_receipt(
+            state.agent_workspace_repair_repo.as_ref(),
+            &started,
+            GATE_REPAIR_HEAD,
+        )
+        .await;
+    }
+    let mut blocked = started.clone();
+    blocked.phase = AgentWorkspaceRepairPhase::Blocked;
+    blocked.repair_head_commit = Some(GATE_REPAIR_HEAD.to_string());
+    blocked.blocker = Some("PR description failed".to_string());
+    blocked
+        .pending_reasons
+        .push("auto_retry_blocked_repair:3".to_string());
+    blocked.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: blocked,
+            expected_phase: started.phase,
+            expected_updated_at: started.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("durable gate fixture should block")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("durable gate fixture must block, got {outcome:?}"),
+    }
+}
+
+#[tokio::test]
+async fn direct_auto_publish_fences_new_base_work_behind_a_repair_stage_block() {
+    let state = AppState::new_test();
+    let workspace = workspace();
+    let conversation_id = workspace.conversation_id.clone();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should seed");
+    seed_exhausted_blocked_repair(&state, &workspace, false).await;
+
+    let decision = auto_publish_existing_agent_workspace_pr::<MockRuntime>(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        None,
+        conversation_id,
+        AutoPublishTrigger::BaseFreshness,
+    )
+    .await
+    .expect("the durable gate should decide, not error");
+
+    assert_eq!(
+        decision,
+        AutoPublishDecision::Skip(AutoPublishSkipReason::DurableRepairBlockedExhausted)
+    );
+}
+
+/// A continuation-stage block already pushed its repair, so it must stop fencing new base work.
+/// Passing the gate is observable here as the later missing-project failure.
+#[tokio::test]
+async fn direct_auto_publish_passes_the_gate_after_a_continuation_stage_block() {
+    let state = AppState::new_test();
+    let workspace = workspace();
+    let conversation_id = workspace.conversation_id.clone();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should seed");
+    seed_exhausted_blocked_repair(&state, &workspace, true).await;
+
+    let error = auto_publish_existing_agent_workspace_pr::<MockRuntime>(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        None,
+        conversation_id,
+        AutoPublishTrigger::BaseFreshness,
+    )
+    .await
+    .expect_err("the workspace must reach normal publishing work");
 
     assert!(error.contains("Project not found: project-1"));
 }

@@ -1096,6 +1096,7 @@ async fn resume_pr_supervision_redrive_does_not_grant_durable_publish_consent() 
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -2068,6 +2069,7 @@ async fn complete_repair_hands_off_auto_publish_to_durable_continuation() {
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -2111,6 +2113,7 @@ async fn complete_repair_hands_off_auto_publish_to_durable_continuation() {
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -2176,6 +2179,7 @@ async fn ready_repair_publish_uses_durable_continuation_not_normal_publisher() {
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -2602,6 +2606,7 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation_b
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -2678,6 +2683,7 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation_b
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -2745,6 +2751,7 @@ async fn passed_workspace_review_resumes_the_current_durable_repair_generation_b
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -2945,6 +2952,7 @@ async fn failed_workspace_review_blocks_durable_repair_without_starting_or_publi
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -3032,6 +3040,7 @@ async fn unavailable_workspace_reviewer_blocks_durable_repair_without_publishing
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -3157,6 +3166,7 @@ async fn repaired_auto_publish_continuation_uses_one_exact_lease_effect_and_push
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     ));
     continuation_gate.wait().await;
@@ -3170,6 +3180,7 @@ async fn repaired_auto_publish_continuation_uses_one_exact_lease_effect_and_push
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -3251,6 +3262,7 @@ async fn repaired_auto_publish_continuation_uses_one_exact_lease_effect_and_push
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -3427,6 +3439,7 @@ async fn repaired_auto_publish_blocks_when_base_advances_before_pr_handoff() {
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -3537,6 +3550,7 @@ async fn repaired_auto_publish_blocks_when_base_advances_before_pr_handoff() {
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -3670,6 +3684,7 @@ async fn complete_update_only_repair_auto_publishes_when_enabled() {
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await
@@ -3853,6 +3868,7 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     ));
     tokio::select! {
@@ -4023,6 +4039,7 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
             blocker: None,
             resolution: None,
             reported_fix_commit_sha: None,
+            ..Default::default()
         }),
     )
     .await

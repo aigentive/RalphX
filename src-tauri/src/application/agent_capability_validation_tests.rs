@@ -147,6 +147,7 @@ fn manual_role_workflow_validation_tracks_the_live_gate() {
         persona_id: None,
         approval_policy: None,
         sandbox_mode: None,
+        atlassian_access: None,
     };
 
     assert!(validate_manual_role_runtime_capabilities(&value, &gate)

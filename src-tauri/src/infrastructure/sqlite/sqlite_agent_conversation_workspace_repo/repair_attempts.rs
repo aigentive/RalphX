@@ -78,6 +78,8 @@ fn row_to_repair_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentWorks
         repair_head_commit: row.get("repair_head_commit")?,
         summary: row.get("summary")?,
         blocker: row.get("blocker")?,
+        what_happened: row.get("what_happened")?,
+        what_i_did: row.get("what_i_did")?,
         git_common_dir: row.get("git_common_dir")?,
         target_ref: row.get("target_ref")?,
         target_identity_version: row
@@ -198,13 +200,13 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             review_required, auto_publish_enabled, auto_merge_desired, auto_merge_method,
             dispatch_count, next_dispatch_at, ci_rerun_count, ci_rerun_fingerprint,
             pr_autofix_dispatch_head_commit, pr_autofix_health_fingerprint, base_update_target_commit,
-            repair_head_commit, summary, blocker,
+            repair_head_commit, summary, blocker, what_happened, what_i_did,
             git_common_dir, target_ref, target_identity_version, target_lease_epoch, outcome,
             created_at, updated_at, settled_at, explicit_publish_requested
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
             ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
-            ?32, ?33
+            ?32, ?33, ?34, ?35
          )",
         rusqlite::params![
             attempt.id.as_str(),
@@ -234,6 +236,8 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             attempt.repair_head_commit,
             attempt.summary,
             attempt.blocker,
+            attempt.what_happened,
+            attempt.what_i_did,
             attempt.git_common_dir,
             attempt.target_ref,
             attempt
@@ -293,17 +297,19 @@ fn update_repair_attempt(
              repair_head_commit = ?21,
              summary = ?22,
              blocker = ?23,
-             git_common_dir = ?24,
-             target_ref = ?25,
-             target_identity_version = ?26,
-             target_lease_epoch = ?27,
-             outcome = ?28,
-             updated_at = ?29,
-             settled_at = ?30,
-             explicit_publish_requested = ?31
+             what_happened = ?24,
+             what_i_did = ?25,
+             git_common_dir = ?26,
+             target_ref = ?27,
+             target_identity_version = ?28,
+             target_lease_epoch = ?29,
+             outcome = ?30,
+             updated_at = ?31,
+             settled_at = ?32,
+             explicit_publish_requested = ?33
          WHERE id = ?1 AND generation = ?2 AND phase = ?3
-           AND (?32 IS NULL OR updated_at = ?32)
-           AND (?33 = 0 OR settled_at IS NULL)",
+           AND (?34 IS NULL OR updated_at = ?34)
+           AND (?35 = 0 OR settled_at IS NULL)",
         rusqlite::params![
             attempt.id.as_str(),
             i64::try_from(attempt.generation).map_err(|_| {
@@ -331,6 +337,8 @@ fn update_repair_attempt(
             attempt.repair_head_commit,
             attempt.summary,
             attempt.blocker,
+            attempt.what_happened,
+            attempt.what_i_did,
             attempt.git_common_dir,
             attempt.target_ref,
             attempt
@@ -379,7 +387,7 @@ fn apply_compatibility_projection(
              pr_supervision_summary = ?4,
              pr_supervision_updated_at = ?5,
              pr_auto_merge_current = ?6,
-             base_commit = ?7,
+             base_commit = COALESCE(?7, base_commit),
              pr_autofix_enabled = COALESCE(?8, pr_autofix_enabled),
              pr_auto_merge_desired = COALESCE(?9, pr_auto_merge_desired),
              updated_at = ?10

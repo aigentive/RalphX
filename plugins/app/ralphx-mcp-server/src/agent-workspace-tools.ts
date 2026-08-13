@@ -547,6 +547,16 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           description:
             "Full 40-character SHA of the current committed workspace HEAD. Required for a fixed completion; RalphX verifies the actual branch head changed from dispatch.",
         },
+        what_happened: {
+          type: "string",
+          description:
+            "Optional 1-2 plain-language sentences describing what happened. Write for someone who doesn't know what a CI runner is; summary stays the engineer-facing field. Max 480 characters; over-cap is rejected, not truncated.",
+        },
+        what_i_did: {
+          type: "string",
+          description:
+            "Optional 1-2 plain-language sentences describing what you did about it. Write for someone who doesn't know what a CI runner is; summary stays the engineer-facing field. Max 480 characters; over-cap is rejected, not truncated.",
+        },
       },
       required: ["conversation_id", "summary"],
     },
@@ -580,6 +590,16 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           pattern: "^[0-9a-f]{40}$",
           description:
             "Full 40-character SHA of the current committed workspace HEAD. Required for a fixed repair completion; RalphX verifies the actual branch head changed from dispatch.",
+        },
+        what_happened: {
+          type: "string",
+          description:
+            "Optional 1-2 plain-language sentences describing what happened. Write for someone who doesn't know what a CI runner is; summary stays the engineer-facing field. Max 480 characters; over-cap is rejected, not truncated.",
+        },
+        what_i_did: {
+          type: "string",
+          description:
+            "Optional 1-2 plain-language sentences describing what you did about it. Write for someone who doesn't know what a CI runner is; summary stays the engineer-facing field. Max 480 characters; over-cap is rejected, not truncated.",
         },
       },
       required: ["summary"],
@@ -1068,12 +1088,14 @@ export async function callCompleteAgentWorkspacePrFixTool(
   args: unknown,
   runtimeContext?: AgentWorkspaceToolRuntimeContext
 ): Promise<unknown> {
-  const { conversation_id, summary, blocker, resolution, fix_commit_sha } = args as {
+  const { conversation_id, summary, blocker, resolution, fix_commit_sha, what_happened, what_i_did } = args as {
     conversation_id: string;
     summary: string;
     blocker?: string;
     resolution?: string;
     fix_commit_sha?: string;
+    what_happened?: string;
+    what_i_did?: string;
   };
 
   return callTauri(`agent-workspaces/${conversation_id}/complete-pr-fix`, {
@@ -1082,6 +1104,8 @@ export async function callCompleteAgentWorkspacePrFixTool(
     resolution,
     fix_commit_sha,
     created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
+    ...(what_happened === undefined ? {} : { what_happened }),
+    ...(what_i_did === undefined ? {} : { what_i_did }),
   });
 }
 
@@ -1090,11 +1114,13 @@ export async function callCompleteAgentWorkspaceRepairTool(
   args: unknown,
   runtimeContext?: AgentWorkspaceToolRuntimeContext,
 ): Promise<unknown> {
-  const { summary, blocker, resolution, fix_commit_sha } = (args && typeof args === "object" ? args : {}) as {
+  const { summary, blocker, resolution, fix_commit_sha, what_happened, what_i_did } = (args && typeof args === "object" ? args : {}) as {
     summary: string;
     blocker?: string;
     resolution?: string;
     fix_commit_sha?: string;
+    what_happened?: string;
+    what_i_did?: string;
   };
   const conversation_id = resolveRuntimeAgentWorkspaceConversationId(
     "complete_agent_workspace_repair",
@@ -1115,6 +1141,8 @@ export async function callCompleteAgentWorkspaceRepairTool(
     blocker,
     ...(resolution === undefined ? {} : { resolution }),
     ...(fix_commit_sha === undefined ? {} : { reported_fix_commit_sha: fix_commit_sha }),
+    ...(what_happened === undefined ? {} : { what_happened }),
+    ...(what_i_did === undefined ? {} : { what_i_did }),
   }, { headers });
 }
 

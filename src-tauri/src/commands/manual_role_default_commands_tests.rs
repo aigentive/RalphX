@@ -27,6 +27,7 @@ fn catalog_entry_maps_the_backend_owned_role_description() {
             persona_id: None,
             approval_policy: None,
             sandbox_mode: None,
+            atlassian_access: None,
         },
         source: ManualDefaultSource::ProviderDefault,
         diagnostics: Vec::new(),
@@ -158,6 +159,7 @@ async fn unsupported_codex_model_is_rejected_before_role_default_persistence() {
                 persona_id: None,
                 approval_policy: None,
                 sandbox_mode: None,
+                atlassian_access: None,
             },
         },
         &state,
@@ -193,6 +195,7 @@ async fn disabled_team_is_rejected_before_role_default_persistence() {
                 persona_id: None,
                 approval_policy: None,
                 sandbox_mode: None,
+                atlassian_access: None,
             },
         },
         &state,
@@ -226,6 +229,7 @@ async fn unsupported_fast_mode_is_rejected_before_role_default_persistence() {
                 persona_id: None,
                 approval_policy: None,
                 sandbox_mode: None,
+                atlassian_access: None,
             },
         },
         &state,
@@ -253,6 +257,7 @@ fn parses_explicit_standard_solo_and_persona_without_collapsing_them() {
         persona_id: Some("persona-1".into()),
         approval_policy: Some("never".into()),
         sandbox_mode: Some("danger-full-access".into()),
+        atlassian_access: None,
     })
     .unwrap();
 
@@ -272,6 +277,7 @@ fn parses_trimmed_optional_fields_and_drops_blank_values() {
         persona_id: Some("   ".into()),
         approval_policy: Some("  never  ".into()),
         sandbox_mode: Some("  danger-full-access  ".into()),
+        atlassian_access: None,
     })
     .unwrap();
 
@@ -302,6 +308,7 @@ async fn global_role_default_update_persists_and_returns_normalized_value() {
                 persona_id: None,
                 approval_policy: Some("  never  ".into()),
                 sandbox_mode: Some("  danger-full-access  ".into()),
+                atlassian_access: None,
             },
         },
         &state,
@@ -356,6 +363,7 @@ async fn project_role_default_update_persists_without_touching_global_defaults()
                 persona_id: None,
                 approval_policy: None,
                 sandbox_mode: None,
+                atlassian_access: None,
             },
         },
         &state,
@@ -404,6 +412,7 @@ async fn invalid_update_role_is_rejected_before_persistence() {
                 persona_id: None,
                 approval_policy: None,
                 sandbox_mode: None,
+                atlassian_access: None,
             },
         },
         &state,
@@ -446,6 +455,7 @@ async fn active_conversation_reset_applies_complete_role_binding_together() {
                 persona_id: None,
                 approval_policy: None,
                 sandbox_mode: None,
+                atlassian_access: None,
             },
         )
         .await
@@ -583,6 +593,7 @@ async fn rejected_active_conversation_reset_leaves_all_role_bindings_unchanged()
                 persona_id: None,
                 approval_policy: None,
                 sandbox_mode: None,
+                atlassian_access: None,
             },
         )
         .await
