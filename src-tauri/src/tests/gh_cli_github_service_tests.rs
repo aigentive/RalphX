@@ -6,6 +6,10 @@
 use crate::domain::services::github_service::{PrMergeStateStatus, PrMergeableState, PrStatus};
 use crate::error::AppError;
 use crate::infrastructure::services::gh_cli_github_service::{
+    build_rate_limit_args, gh_process_failure_error, is_github_rate_limit_message,
+    parse_rate_limit_output,
+};
+use crate::infrastructure::services::gh_cli_github_service::{
     parse_branch_check_conclusions, parse_check_run_annotations_output, parse_check_runs_output,
     parse_code_scanning_alert_annotations_output, parse_gh_auth_status_lines,
     parse_issue_create_plain_output, parse_pr_annotation_head_sha_output,
@@ -16,6 +20,430 @@ use crate::infrastructure::services::gh_cli_github_service::{
     parse_pr_sync_state_output, parse_submit_pr_review_output, sanitize_stderr_line,
     scrub_token_urls, CheckRunAnnotationSource,
 };
+
+// ── batched PR snapshots ───────────────────────────────────────────────────
+
+#[test]
+fn batched_snapshot_query_aliases_each_pr_and_uses_gh_repo_placeholders() {
+    let args =
+        crate::infrastructure::services::gh_cli_github_service::build_pr_status_snapshots_args(&[
+            101, 102,
+        ]);
+
+    assert_eq!(args[0], "api");
+    assert_eq!(args[1], "graphql");
+    // `{owner}`/`{repo}` are gh's own placeholders, resolved from the repository the command runs
+    // in — so the hub never spends a call resolving the repo.
+    assert!(args.contains(&"owner={owner}".to_string()));
+    assert!(args.contains(&"name={repo}".to_string()));
+
+    let query = args
+        .last()
+        .expect("query arg")
+        .strip_prefix("query=")
+        .expect("query arg should carry the document");
+    assert!(query.contains("pr0: pullRequest(number: 101)"));
+    assert!(query.contains("pr1: pullRequest(number: 102)"));
+    // Free, and makes each response report its own measured point cost.
+    assert!(query.contains("rateLimit { cost remaining resetAt }"));
+    // Context limit covers the full check surface (ci.yml + coverage.yml + codeql.yml all on
+    // pull_request); totalCount lets the parser detect truncation and fall back to per-PR reads.
+    assert!(query.contains("contexts(first: 100)"));
+    assert!(query.contains("totalCount"));
+    // `headRefOid`/`baseRefOid` are non-null scalars on the PR; the nullable `headRef` object is
+    // not, so selecting through it loses the SHA whenever GitHub reports a null ref.
+    assert!(query.contains("headRefOid baseRefOid"));
+    assert!(!query.contains("headRef {"));
+    assert!(!query.contains("baseRef {"));
+}
+
+/// Regression guard for the supervision gates that bail when `head_ref_oid` is `None`
+/// (`pr_merge_poller.rs` review-monitor and review-feedback paths): a null `headRef` object must
+/// not erase the SHA the PR scalar still carries.
+#[test]
+fn batched_snapshot_parser_reads_head_sha_when_ref_object_is_null() {
+    let json = r#"{"data":{"repository":{"pr0":{
+        "number":101,"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
+        "isDraft":false,"mergedAt":null,"headRefName":"feature","baseRefName":"main",
+        "headRefOid":"head-oid","baseRefOid":"base-oid",
+        "headRef":null,"baseRef":null,
+        "mergeCommit":null,"reviewDecision":null,"autoMergeRequest":null,
+        "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}
+    }}}}"#;
+
+    let snapshots =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect("a null ref object should not fail the parse");
+
+    let pr = snapshots.get(&101).expect("PR 101 should be present");
+    assert_eq!(
+        pr.sync_state.head_ref_oid.as_deref(),
+        Some("head-oid"),
+        "head SHA must come from the non-null PR scalar, not the nullable ref object"
+    );
+    assert_eq!(pr.sync_state.base_ref_oid.as_deref(), Some("base-oid"));
+}
+
+/// GitHub can report an exhausted rate limit in a 200 response body, so `gh` exits zero and the
+/// stderr classifier never sees it. The batched query is the primary workspace read, so
+/// misclassifying this leaves `RateLimitState` untouched and every poller at full cadence.
+#[test]
+fn batched_snapshot_parser_types_a_body_rate_limit_as_rate_limited() {
+    let json = r#"{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}"#;
+
+    let err =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect_err("a rate-limited body is an error");
+
+    assert!(
+        matches!(err, AppError::GithubRateLimited { .. }),
+        "expected GithubRateLimited, got {err:?}"
+    );
+}
+
+#[test]
+fn batched_snapshot_parser_keeps_unrelated_graphql_errors_as_infrastructure() {
+    let json = r#"{"errors":[{"message":"Could not resolve to a Repository with the name 'x'"}]}"#;
+
+    let err =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect_err("an unresolvable repository is an error");
+
+    assert!(
+        matches!(err, AppError::Infrastructure(_)),
+        "only rate-limit bodies may narrow away from Infrastructure, got {err:?}"
+    );
+}
+
+#[test]
+fn batched_snapshot_parser_maps_check_runs_and_status_contexts_alike() {
+    let json = r#"{"data":{"rateLimit":{"cost":1},"repository":{
+        "pr0":{"number":101,"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
+          "isDraft":false,"mergedAt":null,"headRefName":"feature","baseRefName":"main",
+          "headRefOid":"head-oid","baseRefOid":"base-oid",
+          "mergeCommit":null,"reviewDecision":"APPROVED",
+          "autoMergeRequest":{"mergeMethod":"SQUASH","enabledBy":{"login":"maintainer"}},
+          "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
+            {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/run"},
+            {"__typename":"StatusContext","context":"ci/legacy","state":"SUCCESS","targetUrl":"https://example.test/legacy"}
+          ]}}}}]}}
+    }}}"#;
+
+    let snapshots =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect("batched payload should parse");
+
+    let pr = snapshots.get(&101).expect("PR 101 should be present");
+    assert_eq!(pr.sync_state.status, PrStatus::Open);
+    assert_eq!(pr.sync_state.head_ref_oid.as_deref(), Some("head-oid"));
+    assert_eq!(pr.sync_state.base_ref_oid.as_deref(), Some("base-oid"));
+    assert_eq!(pr.review_decision.as_deref(), Some("APPROVED"));
+    assert_eq!(
+        pr.auto_merge_request
+            .as_ref()
+            .and_then(|request| request.merge_method.as_deref()),
+        Some("squash"),
+        "auto-merge method must be normalized exactly as the per-PR path normalizes it"
+    );
+    // Both union members must survive; the StatusContext branch is what `gh pr view --json`
+    // flattens automatically and is easy to lose in a hand-rolled mapper.
+    assert_eq!(pr.checks.len(), 2);
+    assert_eq!(pr.checks[0].name, "build");
+    assert_eq!(pr.checks[0].conclusion.as_deref(), Some("SUCCESS"));
+    assert_eq!(pr.checks[1].name, "ci/legacy");
+    assert_eq!(pr.checks[1].conclusion.as_deref(), Some("SUCCESS"));
+    assert_eq!(
+        pr.checks[1].details_url.as_deref(),
+        Some("https://example.test/legacy")
+    );
+}
+
+/// Field equivalence with the per-PR path, asserted end to end rather than by inspection.
+#[test]
+fn batched_snapshot_matches_the_per_pr_health_read_field_for_field() {
+    let view_json = r#"{"state":"MERGED","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
+        "isDraft":false,"headRefName":"feature","baseRefName":"main",
+        "headRefOid":"head-oid","baseRefOid":"base-oid","mergedAt":"2026-08-11T10:00:00Z",
+        "mergeCommit":{"oid":"merge-oid"},"reviewDecision":"APPROVED",
+        "autoMergeRequest":{"mergeMethod":"REBASE","enabledBy":{"login":"maintainer"}},
+        "statusCheckRollup":[{"name":"build","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://example.test/run"}]}"#;
+    let batched_json = r#"{"data":{"repository":{"pr0":{
+        "state":"MERGED","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","isDraft":false,
+        "headRefName":"feature","baseRefName":"main",
+        "headRefOid":"head-oid","baseRefOid":"base-oid",
+        "mergedAt":"2026-08-11T10:00:00Z","mergeCommit":{"oid":"merge-oid"},
+        "reviewDecision":"APPROVED",
+        "autoMergeRequest":{"mergeMethod":"REBASE","enabledBy":{"login":"maintainer"}},
+        "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
+          {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://example.test/run"}
+        ]}}}}]}
+    }}}}"#;
+
+    let per_pr = parse_pr_health_output(view_json, "[]").expect("per-PR health should parse");
+    let batched =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            batched_json,
+            &[101],
+        )
+        .expect("batched payload should parse");
+    let rebuilt = crate::domain::services::github_service::PrHealth::from_snapshot_and_comments(
+        batched.get(&101).expect("PR 101").clone(),
+        Vec::new(),
+    );
+
+    assert_eq!(
+        rebuilt, per_pr,
+        "a snapshot-built PrHealth must be indistinguishable from a per-PR read"
+    );
+}
+
+/// A PR the response omits must be absent, so the caller falls back instead of acting on a guess.
+#[test]
+fn batched_snapshot_parser_omits_prs_the_response_did_not_return() {
+    let json = r#"{"data":{"repository":{"pr0":null}}}"#;
+
+    let snapshots =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect("a null PR node is not a parse failure");
+
+    assert!(snapshots.is_empty());
+}
+
+#[test]
+fn batched_snapshot_parser_rejects_a_response_without_a_repository() {
+    let json = r#"{"errors":[{"message":"Could not resolve to a Repository"}]}"#;
+
+    assert!(
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101]
+        )
+        .is_err()
+    );
+}
+
+/// A PR whose totalCount exceeds the returned nodes must be omitted so PrSnapshotHub falls back
+/// to the uncapped per-PR path, rather than treating the truncated list as "nothing failing".
+#[test]
+fn batched_snapshot_parser_omits_pr_when_total_count_exceeds_node_count() {
+    // 2 checks reported but totalCount = 5 → truncated; must not appear in the map.
+    let json = r#"{"data":{"repository":{"pr0":{
+        "number":101,"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
+        "isDraft":false,"mergedAt":null,"headRefName":"feature","baseRefName":"main",
+        "headRefOid":"head-oid","baseRefOid":"base-oid",
+        "mergeCommit":null,"reviewDecision":null,"autoMergeRequest":null,
+        "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
+            "totalCount":5,
+            "nodes":[
+                {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/run"},
+                {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/run2"}
+            ]
+        }}}}]}
+    }}}}"#;
+
+    let snapshots =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect("truncated payload should not be a parse error");
+
+    assert!(
+        snapshots.is_empty(),
+        "a PR with totalCount > nodes.len() must be absent so the hub uses per-PR fallback"
+    );
+}
+
+/// A PR whose totalCount equals the returned nodes is complete — serve it from the batch.
+#[test]
+fn batched_snapshot_parser_includes_pr_when_total_count_equals_node_count() {
+    let json = r#"{"data":{"repository":{"pr0":{
+        "number":101,"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
+        "isDraft":false,"mergedAt":null,"headRefName":"feature","baseRefName":"main",
+        "headRefOid":"head-oid","baseRefOid":"base-oid",
+        "mergeCommit":null,"reviewDecision":null,"autoMergeRequest":null,
+        "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
+            "totalCount":1,
+            "nodes":[
+                {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/run"}
+            ]
+        }}}}]}
+    }}}}"#;
+
+    let snapshots =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect("complete payload should parse");
+
+    assert!(
+        snapshots.contains_key(&101),
+        "a PR with totalCount == nodes.len() is complete and must be served from the batch"
+    );
+    assert_eq!(snapshots[&101].checks.len(), 1);
+}
+
+/// A PR with no status rollup (null commits or null rollup) has an absent totalCount — not
+/// truncation. Must be served from the batch with empty checks rather than triggering fallback.
+#[test]
+fn batched_snapshot_parser_serves_snapshot_when_status_rollup_is_absent() {
+    // statusCheckRollup is null → no totalCount → not truncation → serve with empty checks.
+    let json = r#"{"data":{"repository":{"pr0":{
+        "number":101,"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
+        "isDraft":false,"mergedAt":null,"headRefName":"feature","baseRefName":"main",
+        "headRefOid":"head-oid","baseRefOid":"base-oid",
+        "mergeCommit":null,"reviewDecision":null,"autoMergeRequest":null,
+        "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}
+    }}}}"#;
+
+    let snapshots =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect("null rollup should parse without error");
+
+    let pr = snapshots.get(&101).expect("null rollup must still yield a snapshot");
+    assert!(pr.checks.is_empty(), "null rollup yields empty checks, not a fallback");
+}
+
+// ── rate limit probe ───────────────────────────────────────────────────────
+
+#[test]
+fn rate_limit_probe_targets_the_quota_free_endpoint() {
+    // `GET /rate_limit` is the one endpoint that does not consume quota. If this ever grows a
+    // `graphql` or `--paginate` argument the probe starts costing the budget it is measuring.
+    assert_eq!(build_rate_limit_args(), vec!["api", "rate_limit"]);
+}
+
+#[test]
+fn rate_limit_parser_reports_the_tightest_pool() {
+    let json = r#"{"resources":{
+        "core":{"limit":5000,"remaining":4800,"reset":1800000000},
+        "graphql":{"limit":5000,"remaining":37,"reset":1800000600}
+    }}"#;
+
+    let snapshot = parse_rate_limit_output(json)
+        .expect("probe payload should parse")
+        .expect("both pools are present");
+
+    assert_eq!(snapshot.remaining, 37, "GraphQL is the binding pool here");
+    assert_eq!(snapshot.reset_epoch_secs, 1_800_000_600);
+}
+
+#[test]
+fn rate_limit_parser_reports_rest_when_it_is_the_tighter_pool() {
+    let json = r#"{"resources":{
+        "core":{"remaining":12,"reset":1800000000},
+        "graphql":{"remaining":4900,"reset":1800000600}
+    }}"#;
+
+    let snapshot = parse_rate_limit_output(json).unwrap().unwrap();
+
+    assert_eq!(snapshot.remaining, 12);
+    assert_eq!(snapshot.reset_epoch_secs, 1_800_000_000);
+}
+
+/// A partial payload must never be read as exhaustion — that would stall every poller on a
+/// malformed response.
+#[test]
+fn rate_limit_parser_skips_pools_it_cannot_read() {
+    let missing_reset = r#"{"resources":{"graphql":{"remaining":10}}}"#;
+    assert_eq!(parse_rate_limit_output(missing_reset).unwrap(), None);
+
+    let no_known_pools = r#"{"resources":{"search":{"remaining":5,"reset":1800000000}}}"#;
+    assert_eq!(parse_rate_limit_output(no_known_pools).unwrap(), None);
+
+    let only_graphql = r#"{"resources":{"graphql":{"remaining":10,"reset":1800000000}}}"#;
+    assert_eq!(
+        parse_rate_limit_output(only_graphql)
+            .unwrap()
+            .unwrap()
+            .remaining,
+        10
+    );
+}
+
+#[test]
+fn rate_limit_parser_rejects_malformed_json() {
+    assert!(parse_rate_limit_output("not json").is_err());
+}
+
+// ── gh_process_failure_error ───────────────────────────────────────────────
+//
+// `run_gh_process` is only reachable through the real process runner — the `GhCliCommandRunner`
+// test seam bypasses it — so classification is asserted on the extracted pure function. A fake
+// runner returning a pre-built error would prove nothing about real stderr handling.
+
+#[test]
+fn graphql_rate_limit_stderr_maps_to_typed_rate_limit_error() {
+    let err = gh_process_failure_error(
+        1,
+        "GraphQL: API rate limit already exceeded for user ID 6580668.",
+    );
+
+    assert!(
+        matches!(err, AppError::GithubRateLimited { .. }),
+        "the production incident stderr must classify as a rate limit, got: {err}"
+    );
+}
+
+#[test]
+fn secondary_rate_limit_stderr_maps_to_typed_rate_limit_error() {
+    let err = gh_process_failure_error(
+        1,
+        "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+    );
+
+    assert!(matches!(err, AppError::GithubRateLimited { .. }));
+}
+
+#[test]
+fn non_rate_limit_gh_failures_stay_infrastructure_errors() {
+    let auth = gh_process_failure_error(1, "gh: To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN environment variable.");
+    let generic = gh_process_failure_error(128, "could not resolve to a Repository");
+
+    assert!(matches!(auth, AppError::Infrastructure(_)));
+    assert!(matches!(generic, AppError::Infrastructure(_)));
+}
+
+#[test]
+fn rate_limit_error_preserves_exit_code_and_stderr_in_its_message() {
+    let err = gh_process_failure_error(1, "GraphQL: API rate limit exceeded");
+
+    assert_eq!(
+        err.to_string(),
+        "GitHub rate limit exceeded: gh exited with code 1: GraphQL: API rate limit exceeded"
+    );
+}
+
+#[test]
+fn rate_limit_message_detection_is_case_insensitive_and_scoped() {
+    assert!(is_github_rate_limit_message(
+        "GraphQL: API Rate Limit Exceeded for user"
+    ));
+    assert!(is_github_rate_limit_message("SECONDARY RATE LIMIT"));
+    assert!(!is_github_rate_limit_message(
+        "rate limited by the reviewer"
+    ));
+    assert!(!is_github_rate_limit_message(""));
+}
 
 // ── parse_pr_create_output ─────────────────────────────────────────────────
 
@@ -2094,6 +2522,8 @@ mod mock_roundtrip {
                 "repos/{owner}/{repo}/pulls/68/comments",
                 "--paginate",
                 "--slurp",
+                "--cache",
+                "55s",
             ]
             .into_iter()
             .map(str::to_string)
@@ -2184,11 +2614,65 @@ mod mock_roundtrip {
                 "repos/{owner}/{repo}/issues/68/comments",
                 "--paginate",
                 "--slurp",
+                "--cache",
+                "55s",
             ]
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>()
         );
+    }
+
+    /// Phase 4 of the rate-limit hardening. Caching is only safe on read paths: a cached
+    /// mutation would silently drop a write, so the negative half of this assertion matters
+    /// more than the positive one.
+    #[tokio::test]
+    async fn only_pr_comment_read_paths_carry_the_gh_response_cache() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
+            Ok(vec!["[]".to_string()]),
+            Ok(vec![String::new()]),
+            Ok(vec![String::new()]),
+        ]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        service
+            .check_pr_review_feedback(Path::new("/tmp"), 68)
+            .await
+            .ok();
+        service
+            .enable_pr_auto_merge(Path::new("/tmp"), 68, "squash")
+            .await
+            .ok();
+        service
+            .disable_pr_auto_merge(Path::new("/tmp"), 68)
+            .await
+            .ok();
+
+        let calls = runner.gh_calls();
+        let cached: Vec<&Vec<String>> = calls
+            .iter()
+            .filter(|args| args.iter().any(|arg| arg == "--cache"))
+            .collect();
+        for args in &cached {
+            assert!(
+                args.contains(&"api".to_string()) && args.contains(&"--paginate".to_string()),
+                "only paginated read endpoints may be cached, got: {args:?}"
+            );
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair[0] == "--cache" && pair[1] == "55s"),
+                "cached reads must use the shared TTL const, got: {args:?}"
+            );
+        }
+        for args in &calls {
+            let is_mutation = args.iter().any(|arg| {
+                arg == "--auto" || arg == "--disable-auto" || arg == "-X" || arg == "merge"
+            });
+            assert!(
+                !(is_mutation && args.iter().any(|arg| arg == "--cache")),
+                "mutations must never be served from cache, got: {args:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2352,6 +2836,8 @@ mod mock_roundtrip {
                 "repos/{owner}/{repo}/pulls/68/comments",
                 "--paginate",
                 "--slurp",
+                "--cache",
+                "55s",
             ]
             .into_iter()
             .map(str::to_string)
