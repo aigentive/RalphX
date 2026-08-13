@@ -1301,6 +1301,103 @@ describe("useConversationTimelineWindow", () => {
     expect(timelineData?.pages[0]?.messages[1]?.toolCalls?.[0]?.result).toBe("preview");
   });
 
+  it("replaces the optimistic user row when render-ready arrives under the backend id", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 0,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [
+          timelinePage([
+            {
+              ...mockMessage1,
+              id: "block:assistant-live:0",
+              parentMessageId: "assistant-live",
+              role: "assistant",
+              content: "Streamed before the send",
+              timelineSequence: 83,
+            },
+          ], {
+            totalItemCount: 83,
+            oldestLoadedSequence: 83,
+            newestLoadedSequence: 83,
+          }),
+        ],
+        pageParams: [null],
+      },
+    );
+
+    // The optimistic row carries a client-generated `optimistic:` id and a
+    // guessed tail sequence — the backend id can never match it.
+    addOptimisticUserMessageToConversationCache(queryClient, "conv-1", "Mid-run question");
+
+    const didUpsert = upsertRenderReadyMessageIntoConversationCache(queryClient, "conv-1", {
+      message: {
+        id: "user-mid-run",
+        conversation_id: "conv-1",
+        role: "user",
+        content: "Mid-run question",
+        content_blocks: [{ type: "text", text: "Mid-run question" }],
+        created_at: "2026-01-24T10:01:00Z",
+      },
+      timeline_items: [{
+        id: "block:user-mid-run:0",
+        conversation_id: "conv-1",
+        message_id: "user-mid-run",
+        run_id: null,
+        sequence: 84,
+        block_index: 0,
+        role: "user",
+        kind: "text",
+        status: "finalized",
+        content: "Mid-run question",
+        content_blocks: [{ type: "text", text: "Mid-run question" }],
+        tool_call: null,
+        metadata: null,
+        provider_harness: null,
+        provider_session_id: null,
+        created_at: "2026-01-24T10:01:00Z",
+        updated_at: "2026-01-24T10:01:00Z",
+        finalized_at: "2026-01-24T10:01:00Z",
+      }],
+    });
+
+    expect(didUpsert).toBe(true);
+    const page = queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1")
+    )?.pages[0];
+
+    expect(page?.items.map((item) => [item.id, item.sequence])).toEqual([
+      ["block:assistant-live:0", 83],
+      ["block:user-mid-run:0", 84],
+    ]);
+    expect(
+      page?.items.filter((item) => item.content === "Mid-run question"),
+    ).toHaveLength(1);
+    expect(
+      page?.items.some((item) => item.id.startsWith("optimistic-timeline:")),
+    ).toBe(false);
+  });
+
   it("does not upsert hidden render-ready bootstrap rows into conversation caches", () => {
     const { queryClient } = createWrapperWithClient();
     queryClient.setQueryData(chatKeys.conversation("conv-1"), {

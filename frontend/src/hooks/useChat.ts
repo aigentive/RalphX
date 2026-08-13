@@ -36,6 +36,7 @@ import {
   appendMessageToConversationHistory,
   appendMessageIfMissing,
   createOptimisticUserMessage,
+  matchesOptimisticMessage,
   removeMessageFromConversationHistory,
   type ConversationHistoryCacheData,
 } from "./chat-cache";
@@ -695,7 +696,20 @@ export function upsertRenderReadyMessageIntoConversationCache(
       }
 
       const retainedItems = newestPage.items.filter(
-        (item) => item.messageId !== message.id && item.asMessage.parentMessageId !== message.id
+        (item) =>
+          item.messageId !== message.id &&
+          item.asMessage.parentMessageId !== message.id &&
+          // The optimistic row carries a client-generated id, so the backend id
+          // cannot retire it — without this the user sees two identical bubbles.
+          !matchesOptimisticMessage(
+            {
+              id: item.messageId ?? item.id,
+              conversationId: item.conversationId,
+              role: item.role,
+              content: item.content,
+            },
+            message
+          )
       );
       const items = [...retainedItems, ...insertedItems].sort(
         (left, right) => left.sequence - right.sequence
