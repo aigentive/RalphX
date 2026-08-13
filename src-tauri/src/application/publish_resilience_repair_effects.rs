@@ -170,8 +170,10 @@ pub(crate) async fn observed_repair_push_receipt_for_head(
 /// stop being fenced.
 ///
 /// The decision reads durable receipts only — never GitHub — so a `gh` outage cannot re-deadlock
-/// this escape hatch. `create_pr` effects are never terminated: replaying an unproven PR creation
-/// risks a duplicate pull request.
+/// this escape hatch. `create_pr` effects are out of scope here for the same reason: no durable
+/// receipt can prove whether a PR creation landed, so replaying one from receipts alone risks a
+/// duplicate pull request. Their settlement is owned by
+/// `publish_resilience_create_pr_reconciliation`, which proves absence against GitHub first.
 ///
 /// Returns true when the fence was cleared.
 ///
