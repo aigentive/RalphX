@@ -9004,6 +9004,41 @@ async fn blocked_sweep_leaves_a_push_effect_whose_head_disagrees_with_the_attemp
     assert_eq!(open.status, AgentWorkspaceRepairEffectStatus::InFlight);
 }
 
+const PR_FIXER_RESCUE_CLI: &str = "#!/bin/sh\nexit 0\n";
+
+async fn age_requested_pr_autofix_orphan(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    dispatch_head: Option<String>,
+) -> AgentWorkspaceRepairAttempt {
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load requested orphan")
+        .expect("requested orphan exists");
+    let expected_updated_at = attempt.updated_at;
+    attempt.source = AgentWorkspaceRepairSource::PrAutofix;
+    attempt.pr_autofix_dispatch_head_commit = dispatch_head;
+    attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(61);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Requested,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("age requested pr_autofix orphan")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("requested pr_autofix orphan aging must apply, got {outcome:?}"),
+    }
+}
+
 /// Drives the seeded orphan through a real delivery (which acquires the canonical target lease),
 /// then parks it in `Continuing` holding an abandoned in-flight effect. With no GitHub service the
 /// continuation blocks the attempt and returns an error, which is the production route into the
