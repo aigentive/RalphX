@@ -6,6 +6,8 @@ use std::sync::Arc;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use async_trait::async_trait;
+
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_recovery::agent_workspace_repair_owns_unpublished_publish_continuation;
 use crate::application::agent_workspace_publish_recovery::{
@@ -66,7 +68,7 @@ use crate::domain::repositories::{
     AgentRunRepository, AgentWorkspaceRepairAttemptTransition,
     AgentWorkspaceRepairAttemptTransitionOutcome, BeginGitMutation,
     CompleteAgentWorkspaceRepairEffect, CompleteAgentWorkspaceRepairEffectOutcome,
-    CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome,
+    CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome, ProjectRepository,
     SettleAgentWorkspaceRepairAttempt, SettleAgentWorkspaceRepairAttemptOutcome,
     StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
@@ -5575,6 +5577,188 @@ async fn interrupted_repair_behind_an_advanced_base_retargets_instead_of_blockin
         settled.outcome,
         Some(AgentWorkspaceRepairOutcome::Superseded)
     );
+}
+
+/// Which of the three post-settlement reads the retarget path performs should fail.
+#[cfg(unix)]
+enum PostSettlementFailure {
+    /// The worktree is gone, so `resolve_effective_agent_conversation_workspace_path` fails.
+    MissingWorktree,
+    /// The worktree and its `.git` entry survive path resolution, so the failure lands on
+    /// `GitService::canonical_target_identity` instead.
+    UnreadableRepository,
+    /// The project row is gone, so the retarget's own project lookup fails.
+    MissingProjectRow,
+}
+
+/// The classifier and the retarget read the same facts, so a single-threaded test cannot make the
+/// second read fail on its own. Both reads pass through `project_repo.get_by_id`, and on the
+/// interrupted-repair path the classifier's is read 1 while the retarget's is read 2 — firing on
+/// read 2 reproduces the real race (a worktree or project row disappearing mid-recovery) through
+/// the production route instead of a hand-built durable row.
+#[cfg(unix)]
+const POST_SETTLEMENT_PROJECT_READ: usize = 2;
+
+#[cfg(unix)]
+struct SabotagedProjectRepository {
+    inner: Arc<dyn ProjectRepository>,
+    workspace_path: PathBuf,
+    failure: PostSettlementFailure,
+    reads: AtomicUsize,
+}
+
+#[cfg(unix)]
+#[async_trait]
+impl ProjectRepository for SabotagedProjectRepository {
+    async fn create(&self, project: Project) -> crate::error::AppResult<Project> {
+        self.inner.create(project).await
+    }
+
+    async fn get_by_id(&self, id: &ProjectId) -> crate::error::AppResult<Option<Project>> {
+        if self.reads.fetch_add(1, Ordering::SeqCst) + 1 == POST_SETTLEMENT_PROJECT_READ {
+            match self.failure {
+                PostSettlementFailure::MissingWorktree => {
+                    std::fs::remove_dir_all(&self.workspace_path)
+                        .expect("remove the workspace worktree mid-recovery");
+                }
+                PostSettlementFailure::UnreadableRepository => {
+                    std::fs::write(self.workspace_path.join(".git"), "gitdir: /nonexistent\n")
+                        .expect("break the workspace git link mid-recovery");
+                }
+                PostSettlementFailure::MissingProjectRow => return Ok(None),
+            }
+        }
+        self.inner.get_by_id(id).await
+    }
+
+    async fn get_all(&self) -> crate::error::AppResult<Vec<Project>> {
+        self.inner.get_all().await
+    }
+
+    async fn update(&self, project: &Project) -> crate::error::AppResult<()> {
+        self.inner.update(project).await
+    }
+
+    async fn delete(&self, id: &ProjectId) -> crate::error::AppResult<()> {
+        self.inner.delete(id).await
+    }
+
+    async fn get_by_working_directory(
+        &self,
+        path: &str,
+    ) -> crate::error::AppResult<Option<Project>> {
+        self.inner.get_by_working_directory(path).await
+    }
+
+    async fn archive(&self, id: &ProjectId) -> crate::error::AppResult<Project> {
+        self.inner.archive(id).await
+    }
+}
+
+/// Drives the same retarget fixture as
+/// `interrupted_repair_behind_an_advanced_base_retargets_instead_of_blocking`, then fails exactly
+/// the resolution the retarget performs after its successor is already durable. The sweep iterates
+/// every recoverable attempt with `?`, so propagating here would stop recovery for every other
+/// workspace in the pass.
+#[cfg(unix)]
+#[allow(clippy::await_holding_lock)]
+async fn assert_retarget_degrades_when_post_settlement_resolution_fails(
+    suffix: u8,
+    failure: PostSettlementFailure,
+) {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (mut state, conversation_id, _worktree_parent, project_dir) =
+        seed_orphaned_repair_dispatch(suffix, PR_FIXER_RESCUE_CLI).await;
+    let workspace_path = seeded_workspace_worktree_path(&state, &conversation_id).await;
+    let origin = tempfile::tempdir().expect("create bare origin for the degraded retarget");
+    attach_bare_origin(project_dir.path(), &workspace_path, origin.path());
+    let old_base = recovery_git(project_dir.path(), &["rev-parse", "HEAD"]);
+    std::fs::write(project_dir.path().join("advanced.md"), "advanced\n")
+        .expect("write advanced base file");
+    recovery_git(project_dir.path(), &["add", "advanced.md"]);
+    recovery_git(project_dir.path(), &["commit", "-m", "advance main"]);
+    recovery_git(project_dir.path(), &["push", "origin", "main"]);
+    let new_base = recovery_git(project_dir.path(), &["rev-parse", "HEAD"]);
+    let interrupted = interrupt_repair_at_target_base(&state, &conversation_id, &old_base).await;
+    let inner = Arc::clone(&state.project_repo);
+    state.project_repo = Arc::new(SabotagedProjectRepository {
+        inner,
+        workspace_path: workspace_path.clone(),
+        failure,
+        reads: AtomicUsize::new(0),
+    });
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("a failure after the successor is durable must not fail the recovery pass"),
+        1
+    );
+
+    let successor = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load the retargeted successor")
+        .expect("a successor generation exists");
+    assert_ne!(
+        successor.id, interrupted.id,
+        "the successor must still exist after the degraded return"
+    );
+    assert_eq!(
+        successor.target_base_commit.as_deref(),
+        Some(new_base.as_str()),
+        "the successor must still target the tip the classifier read"
+    );
+    assert_ne!(
+        successor.phase,
+        AgentWorkspaceRepairPhase::Blocked,
+        "an undelivered successor belongs to the rescue lane, not a blocked banner"
+    );
+    let settled = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&interrupted.id)
+        .await
+        .expect("load the superseded generation")
+        .expect("the superseded generation is still readable");
+    assert_eq!(
+        settled.outcome,
+        Some(AgentWorkspaceRepairOutcome::Superseded),
+        "the settlement that already happened must not be rolled back"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retarget_degrades_when_the_workspace_worktree_disappears_after_settlement() {
+    assert_retarget_degrades_when_post_settlement_resolution_fails(
+        126,
+        PostSettlementFailure::MissingWorktree,
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retarget_degrades_when_the_workspace_repository_is_unreadable_after_settlement() {
+    assert_retarget_degrades_when_post_settlement_resolution_fails(
+        127,
+        PostSettlementFailure::UnreadableRepository,
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retarget_degrades_when_the_project_row_disappears_after_settlement() {
+    assert_retarget_degrades_when_post_settlement_resolution_fails(
+        128,
+        PostSettlementFailure::MissingProjectRow,
+    )
+    .await;
 }
 
 #[cfg(unix)]

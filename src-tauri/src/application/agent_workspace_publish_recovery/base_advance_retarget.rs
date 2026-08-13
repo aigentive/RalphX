@@ -12,6 +12,7 @@
 //! When the two disagree the classifier still decides and the divergence is logged, because a
 //! silent preference between two disagreeing sources is how stale base state becomes invisible.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::durable_attempt_recovery::{
@@ -27,7 +28,7 @@ use crate::application::agent_workspace_publish_repair_state::{
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
-    AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairAttempt, GitTargetIdentity,
 };
 use crate::error::{AppError, AppResult};
 
@@ -49,7 +50,9 @@ const RETARGET_SETTLEMENT_SUMMARY: &str =
 ///
 /// # Errors
 ///
-/// Returns an error when the workspace path cannot be resolved or a repository write fails.
+/// Returns an error when a repository write before the successor exists fails, or when the
+/// successor's own delivery fails. Resolution failures after the successor is durable degrade to
+/// `Continued` instead of propagating.
 pub(super) async fn retarget_reserved_repair_to_advanced_base(
     state: &AppState,
     reserved: AgentWorkspaceRepairAttempt,
@@ -100,6 +103,46 @@ pub(super) async fn retarget_reserved_repair_to_advanced_base(
     };
     append_base_advance_retargeted_event(state, workspace, new_target_base_commit).await;
 
+    // Degrading is safe here for the same reason the event above is best effort: the successor is
+    // already durable, so this lineage's recovery has succeeded whatever these reads say. An
+    // undelivered successor is exactly the shape `rescue_orphaned_repair_dispatch` owns, and the
+    // next sweep delivers it after the spawn grace. Propagating instead would abort the batch
+    // sweep in `recover_agent_workspace_repair_attempts_for_state` for every other workspace.
+    let dispatch = match resolve_retarget_dispatch_inputs(state, workspace).await {
+        Ok(dispatch) => dispatch,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = workspace.conversation_id.as_str(),
+                successor_attempt_id = successor.id.as_str(),
+                error = %error,
+                "Retargeted workspace repair is durable but its dispatch inputs could not be resolved; leaving delivery to the orphan rescue lane"
+            );
+            return Ok(DurableRepairRecoveryOutcome::Continued);
+        }
+    };
+    reserve_and_deliver_repair_dispatch(
+        state,
+        successor,
+        dispatch.target_identity,
+        workspace.clone(),
+        dispatch.workspace_path,
+        RETARGET_RESERVATION_SUMMARY,
+        RETARGET_SETTLEMENT_SUMMARY,
+    )
+    .await
+}
+
+/// The project, workspace path, and canonical Git target the successor needs before it can be
+/// dispatched.
+struct RetargetDispatchInputs {
+    workspace_path: PathBuf,
+    target_identity: GitTargetIdentity,
+}
+
+async fn resolve_retarget_dispatch_inputs(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<RetargetDispatchInputs> {
     let project = state
         .project_repo
         .get_by_id(&workspace.project_id)
@@ -113,16 +156,10 @@ pub(super) async fn retarget_reserved_repair_to_advanced_base(
     .await?;
     let target_identity =
         GitService::canonical_target_identity(&resolved.path, &workspace.branch_name).await?;
-    reserve_and_deliver_repair_dispatch(
-        state,
-        successor,
+    Ok(RetargetDispatchInputs {
+        workspace_path: resolved.path,
         target_identity,
-        workspace.clone(),
-        resolved.path,
-        RETARGET_RESERVATION_SUMMARY,
-        RETARGET_SETTLEMENT_SUMMARY,
-    )
-    .await
+    })
 }
 
 /// Best effort by design: the lineage is already correct once the successor exists, so failing to
