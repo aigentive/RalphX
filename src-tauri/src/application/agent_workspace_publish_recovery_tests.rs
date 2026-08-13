@@ -9004,7 +9004,15 @@ async fn blocked_sweep_leaves_a_push_effect_whose_head_disagrees_with_the_attemp
     assert_eq!(open.status, AgentWorkspaceRepairEffectStatus::InFlight);
 }
 
-const PR_FIXER_RESCUE_CLI: &str = "#!/bin/sh\nexit 0\n";
+const PR_FIXER_RESCUE_CLI: &str = r#"#!/bin/sh
+cat >/dev/null &
+stdin_drain_pid=$!
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"pr fix started"}]},"session_id":"pr-fixer-rescue-session"}'
+printf '%s\n' '{"type":"result","session_id":"pr-fixer-rescue-session","is_error":false,"result":"pr fix started","cost_usd":0.0}'
+sleep 1
+kill "$stdin_drain_pid" 2>/dev/null || true
+wait "$stdin_drain_pid" 2>/dev/null || true
+"#;
 
 async fn age_requested_pr_autofix_orphan(
     state: &AppState,
