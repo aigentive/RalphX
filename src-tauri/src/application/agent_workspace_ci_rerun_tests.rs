@@ -410,3 +410,31 @@ fn hold_ends_when_identified_runs_are_absent_from_health() {
 
     assert!(!ci_rerun_hold_still_pending(&health, Some(&fingerprint)));
 }
+
+#[test]
+fn plan_rejects_whitespace_only_head_oid() {
+    // The filter trims before checking empty; whitespace-only OIDs must be treated as
+    // missing to avoid publishing a fingerprint with a nonsensical head.
+    for whitespace in ["  ", "\t", "\n"] {
+        assert_eq!(
+            transient_ci_rerun_plan(&health(Some(whitespace), Vec::new())),
+            TransientCiPlan::MissingHead,
+            "whitespace OID {whitespace:?} must be treated as missing"
+        );
+    }
+}
+
+#[test]
+fn hold_identity_parse_rejects_empty_head_oid_segment() {
+    // "ci-hold:v1::10" has an empty head OID between the second and third colons.
+    assert_eq!(CiHoldIdentity::parse("ci-hold:v1::10"), None);
+}
+
+#[test]
+fn hold_ends_for_empty_string_fingerprint() {
+    let health = health(
+        Some("head-1"),
+        vec![check("Running", Some("in_progress"), None, Some(10))],
+    );
+    assert!(!ci_rerun_hold_still_pending(&health, Some("")));
+}
