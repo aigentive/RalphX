@@ -3,7 +3,9 @@ use crate::domain::entities::{AgentTaskState, AgentTaskSummary};
 
 pub(super) fn render_task_ledger(mut tasks: Vec<AgentTaskSummary>) -> Option<String> {
     if tasks.is_empty() {
-        return None;
+        // Explicit empty marker: absence of the block must never read as "no tasks",
+        // it means the envelope was not composed.
+        return Some("<task_ledger state=\"empty\"/>".to_string());
     }
     tasks.sort_by_key(|task| match task.state {
         AgentTaskState::Open => (0, task.task_number),
