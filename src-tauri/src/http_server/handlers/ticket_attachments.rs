@@ -33,6 +33,14 @@ use crate::domain::services::ComposerIntegrationReference;
 
 const ATTACHMENT_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// The only agents whose canonical `agent.yaml` `capabilities.mcp_tools`
+/// actually grant `list_ticket_attachments`/`fetch_ticket_attachment` —
+/// the grant surface `docs/features/atlassian-mcp-access.md` and
+/// `.claude/rules/agent-mcp-tools.md` describe as authoritative for the
+/// non-Atlassian (Linear/ClickUp) attachment path.
+pub(super) const TICKET_ATTACHMENT_CANONICAL_GRANTEES: [&str; 2] =
+    ["ralphx-execution-worker", "ralphx-execution-coder"];
+
 /// Inline `contentText` cap: small enough to stay a preview, not a second
 /// download path. Binary/image attachments and text above this size are
 /// exposed through `contentPath` only.
@@ -125,8 +133,8 @@ pub async fn fetch_ticket_attachment_http(
 /// tier is re-derived per request from the run's persisted `routing_role`, so
 /// this stays independent of MCP spawn-time tool filtering. Linear and
 /// ClickUp attachments are not part of the Atlassian tier system today, so
-/// they only require the same trusted, live caller-run identity — never a
-/// fall-through with no check at all.
+/// they require the same trusted, live caller-run identity plus the
+/// canonical worker/coder grant — never a fall-through with no check at all.
 async fn authorize_ticket_attachment_access(
     state: &HttpServerState,
     headers: &HeaderMap,
@@ -160,13 +168,23 @@ async fn verify_trusted_ticket_attachment_caller(
         "x-ralphx-agent-run-id",
     )?);
 
-    resolve_live_caller_run(&state.app_state.agent_run_repo, &conversation_id, &run_id)
+    let run = resolve_live_caller_run(&state.app_state.agent_run_repo, &conversation_id, &run_id)
         .await
         .map_err(|_| {
             TicketAttachmentHttpError::CallerUnauthorized(
                 TicketAttachmentCallerRejection::Untrusted,
             )
         })?;
+
+    let is_canonical_grantee = run
+        .agent_name
+        .as_deref()
+        .is_some_and(|name| TICKET_ATTACHMENT_CANONICAL_GRANTEES.contains(&name));
+    if !is_canonical_grantee {
+        return Err(TicketAttachmentHttpError::CallerUnauthorized(
+            TicketAttachmentCallerRejection::Untrusted,
+        ));
+    }
     Ok(())
 }
 

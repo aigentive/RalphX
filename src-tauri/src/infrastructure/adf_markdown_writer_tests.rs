@@ -427,6 +427,79 @@ fn round_trip_inline_marks_bold_italic_code_link() {
 }
 
 #[test]
+fn markdown_to_adf_deeply_nested_blockquote_bounds_recursion() {
+    let input = format!("{}x", "> ".repeat(50_000));
+    let doc = markdown_to_adf(&input);
+    let rendered = serde_json::to_string(&doc).expect("doc serializes");
+    assert!(
+        rendered.contains('x'),
+        "degraded document must still contain the literal text"
+    );
+}
+
+#[test]
+fn markdown_to_storage_deeply_nested_blockquote_bounds_recursion() {
+    let input = format!("{}x", "> ".repeat(50_000));
+    let html = markdown_to_storage(&input);
+    assert!(
+        html.contains('x'),
+        "degraded storage output must still contain the literal text"
+    );
+}
+
+#[test]
+fn markdown_to_adf_three_level_blockquote_still_nests_exactly_three() {
+    let input = "> > > deep";
+    let doc = markdown_to_adf(input);
+    assert_eq!(
+        doc,
+        json!({
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "blockquote",
+                    "content": [
+                        {
+                            "type": "blockquote",
+                            "content": [
+                                {
+                                    "type": "blockquote",
+                                    "content": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": [{"type": "text", "text": "deep"}]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        })
+    );
+}
+
+#[test]
+fn markdown_to_adf_deeply_indented_list_degrades_without_losing_item_text() {
+    let depth = 40;
+    let mut lines = Vec::new();
+    for level in 0..depth {
+        lines.push(format!("{}- item{level}", "  ".repeat(level)));
+    }
+    let input = lines.join("\n");
+    let doc = markdown_to_adf(&input);
+    let rendered = serde_json::to_string(&doc).expect("doc serializes");
+    for level in 0..depth {
+        assert!(
+            rendered.contains(&format!("item{level}")),
+            "expected item{level} text to survive the depth cap"
+        );
+    }
+}
+
+#[test]
 fn round_trip_fenced_code_language_is_lost_known_reader_asymmetry() {
     // The reader (`adf_node_to_markdown`, atlassian_client.rs) always emits a bare ``` fence with
     // no language, regardless of `attrs.language`. This writer intentionally still emits

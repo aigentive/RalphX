@@ -173,6 +173,92 @@ async fn fetch_jira_board_context_groups_sprint_issues_by_board_column() {
     assert!(done_index < rx2_index);
 }
 
+fn sprint_summary_response() -> Value {
+    json!({
+        "values": [
+            {
+                "id": 100,
+                "name": "Sprint 4",
+                "state": "active",
+                "originBoardId": 12,
+                "goal": "Ship the board chip"
+            }
+        ],
+        "isLast": true
+    })
+}
+
+#[tokio::test]
+async fn fetch_jira_board_context_degrades_sprint_on_fetch_failure() {
+    let requester = FakeRequester::new(vec![
+        Ok(board_configuration_response()),
+        Ok(sprint_summary_response()),
+        Err("boom".to_string()),
+    ]);
+
+    let content = fetch_jira_board_context(&requester, &auth_context(), &board_reference())
+        .await
+        .expect("board context should still resolve despite the sprint fetch failure");
+
+    assert_eq!(content.title, "Board: RX Board");
+    assert!(
+        content.body.contains("Sprint 4"),
+        "the sprint that failed should still be named: {}",
+        content.body
+    );
+    assert!(
+        content.body.to_lowercase().contains("unavailable"),
+        "a failed sprint fetch should render an explicit unavailable marker: {}",
+        content.body
+    );
+}
+
+#[tokio::test]
+async fn fetch_jira_board_context_caps_sprint_issues_and_stops_paging() {
+    let issues: Vec<Value> = (0..60)
+        .map(|i| {
+            json!({
+                "key": format!("RX-{i}"),
+                "fields": {
+                    "summary": format!("Issue {i}"),
+                    "status": { "id": "3", "name": "In Progress" },
+                    "assignee": null
+                }
+            })
+        })
+        .collect();
+    let requester = FakeRequester::new(vec![
+        Ok(board_configuration_response()),
+        Ok(sprint_summary_response()),
+        Ok(json!({
+            "startAt": 0,
+            "maxResults": 60,
+            "total": 120,
+            "issues": issues
+        })),
+    ]);
+
+    let content = fetch_jira_board_context(&requester, &auth_context(), &board_reference())
+        .await
+        .expect("board context should resolve");
+
+    assert!(
+        content.body.contains("(50 shown of 120)"),
+        "a truncated sprint should render a shown-of-total note: {}",
+        content.body
+    );
+    let issue_line_count = content.body.matches("- RX-").count();
+    assert_eq!(
+        issue_line_count, 50,
+        "exactly 50 issues should be rendered, not the full 60 the page returned"
+    );
+    assert_eq!(
+        requester.requests.lock().expect("requests").len(),
+        3,
+        "the cap should stop paging after the first issue page even though total implies more"
+    );
+}
+
 #[tokio::test]
 async fn fetch_jira_board_context_rejects_blank_board_id() {
     let requester = FakeRequester::new(vec![]);

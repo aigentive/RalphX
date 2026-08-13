@@ -10,6 +10,7 @@ use super::ticket_attachments::{
     fetch_response, fetch_response_with_inline_text, fetch_ticket_attachment_http,
     list_ticket_attachments_http, provider_item, safe_attachment_id, safe_file_name,
     AttachmentFetchTarget, TicketAttachmentFetchRequest, TicketAttachmentListRequest,
+    TICKET_ATTACHMENT_CANONICAL_GRANTEES,
 };
 use crate::application::ticket_attachment::{
     build_ticket_attachment_content_location, TicketAttachmentDescriptor,
@@ -50,6 +51,16 @@ async fn fixture_with(
     routing_role: Option<RoutingRole>,
     settings: Option<AtlassianIntegrationSettings>,
 ) -> Fixture {
+    fixture_with_agent_name(routing_role, settings, None).await
+}
+
+/// Same as [`fixture_with`], but also sets the caller run's `agent_name` —
+/// the identity the Linear/ClickUp canonical-grant check reads.
+async fn fixture_with_agent_name(
+    routing_role: Option<RoutingRole>,
+    settings: Option<AtlassianIntegrationSettings>,
+    agent_name: Option<&str>,
+) -> Fixture {
     let mut app_state = AppState::new_test();
 
     let settings_repo = Arc::new(MemoryAtlassianIntegrationSettingsRepository::new());
@@ -76,6 +87,7 @@ async fn fixture_with(
     let mut run = AgentRun::new(conversation_id);
     run.status = AgentRunStatus::Running;
     run.routing_role = routing_role;
+    run.agent_name = agent_name.map(str::to_string);
     let run_id = run.id.as_str().to_string();
     app_state
         .agent_run_repo
@@ -356,12 +368,17 @@ async fn list_ticket_attachments_linear_rejects_missing_caller_identity() {
 }
 
 #[tokio::test]
-async fn list_ticket_attachments_linear_allows_trusted_caller_without_atlassian_tier() {
+async fn list_ticket_attachments_linear_allows_trusted_canonical_grantee_without_atlassian_tier() {
     // No Atlassian integration is configured and the role has no Atlassian
-    // access at all, yet a trusted caller must still reach the Linear
-    // provider call: Linear authorization is the canonical MCP grant, not
-    // the Atlassian tier gate.
-    let fixture = fixture_with(Some(RoutingRole::WorkspaceEdit), None).await;
+    // access at all, yet a trusted caller run bound to a canonical grantee
+    // (worker/coder) must still reach the Linear provider call: Linear
+    // authorization is the canonical MCP grant, not the Atlassian tier gate.
+    let fixture = fixture_with_agent_name(
+        Some(RoutingRole::WorkspaceEdit),
+        None,
+        Some("ralphx-execution-worker"),
+    )
+    .await;
 
     let error = list_ticket_attachments_http(
         State(fixture.state.clone()),
@@ -374,6 +391,115 @@ async fn list_ticket_attachments_linear_allows_trusted_caller_without_atlassian_
     let status = error.into_response().status();
     assert_ne!(status, StatusCode::UNAUTHORIZED);
     assert_ne!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn list_ticket_attachments_linear_rejects_non_grantee_read_tier_agent() {
+    // A Read-tier role that is not one of the two canonical grantees (for
+    // example a workspace chat agent) must not reach Linear attachments,
+    // even with a live, correctly bound caller run.
+    let fixture = fixture_with_agent_name(
+        Some(RoutingRole::WorkspaceEdit),
+        None,
+        Some("ralphx-workspace-chat"),
+    )
+    .await;
+
+    let error = list_ticket_attachments_http(
+        State(fixture.state.clone()),
+        fixture.headers(),
+        axum::Json(list_request(TicketAttachmentProvider::Linear)),
+    )
+    .await
+    .expect_err("a non-grantee agent should be rejected for Linear");
+
+    assert_eq!(error.into_response().status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn fetch_ticket_attachment_jira_ignores_grantee_list_and_gates_only_by_tier() {
+    // The same non-grantee agent_name that Linear/ClickUp reject must still
+    // reach the Jira provider call: Jira authorization stays purely
+    // tier-driven, independent of the canonical grantee list.
+    let fixture = fixture_with_agent_name(
+        Some(RoutingRole::WorkspaceEdit),
+        Some(enabled_jira_settings()),
+        Some("ralphx-workspace-chat"),
+    )
+    .await;
+
+    let error = fetch_ticket_attachment_http(
+        State(fixture.state.clone()),
+        fixture.headers(),
+        axum::Json(fetch_request(TicketAttachmentProvider::Jira)),
+    )
+    .await
+    .expect_err("the stub provider client should fail closed, not the authorization gate");
+
+    assert_eq!(
+        error.into_response().status(),
+        StatusCode::BAD_GATEWAY,
+        "jira authorization must pass for a Read-tier caller regardless of agent_name"
+    );
+}
+
+#[tokio::test]
+async fn worker_and_coder_runs_pass_authorization_on_both_jira_and_linear() {
+    for grantee in TICKET_ATTACHMENT_CANONICAL_GRANTEES {
+        let jira_fixture = fixture_with_agent_name(
+            Some(RoutingRole::WorkspaceEdit),
+            Some(enabled_jira_settings()),
+            Some(grantee),
+        )
+        .await;
+        let jira_error = fetch_ticket_attachment_http(
+            State(jira_fixture.state.clone()),
+            jira_fixture.headers(),
+            axum::Json(fetch_request(TicketAttachmentProvider::Jira)),
+        )
+        .await
+        .expect_err("stub provider client should fail closed after authorization passes");
+        assert_eq!(
+            jira_error.into_response().status(),
+            StatusCode::BAD_GATEWAY,
+            "grantee {grantee} should pass Jira authorization"
+        );
+
+        let linear_fixture =
+            fixture_with_agent_name(Some(RoutingRole::WorkspaceEdit), None, Some(grantee)).await;
+        let linear_error = list_ticket_attachments_http(
+            State(linear_fixture.state.clone()),
+            linear_fixture.headers(),
+            axum::Json(list_request(TicketAttachmentProvider::Linear)),
+        )
+        .await
+        .expect_err("the memory Linear integration has nothing to return");
+        let linear_status = linear_error.into_response().status();
+        assert_ne!(
+            linear_status,
+            StatusCode::UNAUTHORIZED,
+            "grantee {grantee} should pass Linear authorization"
+        );
+        assert_ne!(linear_status, StatusCode::FORBIDDEN);
+    }
+}
+
+#[tokio::test]
+async fn list_ticket_attachments_linear_rejects_run_with_no_agent_name() {
+    // A live, correctly bound caller run with `agent_name: None` (for
+    // example a pre-persistence run) must fail closed rather than being
+    // treated as trusted by default.
+    let fixture = fixture_with(Some(RoutingRole::WorkspaceEdit), None).await;
+
+    let error = list_ticket_attachments_http(
+        State(fixture.state.clone()),
+        fixture.headers(),
+        axum::Json(list_request(TicketAttachmentProvider::Linear)),
+    )
+    .await
+    .expect_err("a run with no agent_name should be rejected");
+
+    assert_eq!(error.into_response().status(), StatusCode::UNAUTHORIZED);
 }
 
 // ============================================================================

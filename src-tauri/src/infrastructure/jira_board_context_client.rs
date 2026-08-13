@@ -18,6 +18,12 @@ use super::jira_agile_client::{get_jira_board_configuration, list_jira_active_sp
 
 const JIRA_SPRINT_ISSUE_PAGE_SIZE: usize = 100;
 
+/// Caps how many issues a single sprint renders. Mirrors
+/// `jira_agile_client.rs`'s `list_jira_sprint_issues` cap so board-context
+/// expansion never issues unbounded sequential paged calls for a large
+/// sprint.
+const BOARD_SPRINT_ISSUE_LIMIT: usize = 50;
+
 struct SprintIssue {
     key: String,
     summary: String,
@@ -40,8 +46,19 @@ pub(crate) async fn fetch_jira_board_context<C: AtlassianJsonRequester + ?Sized>
         sections.push(render_no_active_sprint());
     } else {
         for sprint in &active_sprints {
-            let issues = list_sprint_issues(client, auth, &sprint.id).await?;
-            sections.push(render_sprint_section(&configuration, sprint, &issues));
+            match list_sprint_issues(client, auth, &sprint.id).await {
+                Ok((issues, total)) => {
+                    sections.push(render_sprint_section(&configuration, sprint, &issues, total));
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        sprint_id = %sprint.id,
+                        error = %error,
+                        "Jira board context: sprint issue lookup failed"
+                    );
+                    sections.push(render_sprint_unavailable(sprint));
+                }
+            }
         }
     }
 
@@ -76,10 +93,28 @@ fn render_no_active_sprint() -> String {
         .to_string()
 }
 
+/// Rendered in place of a sprint's issue table when the secondary
+/// issue-fetch call fails, so one bad sprint never discards the board name
+/// or any other sprint already rendered.
+fn render_sprint_unavailable(sprint: &JiraAgileSprintSummary) -> String {
+    let mut lines = vec![format!("## Sprint: {} (active)", sprint.name)];
+    if let Some(goal) = sprint
+        .goal
+        .as_deref()
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+    {
+        lines.push(format!("Goal: {goal}"));
+    }
+    lines.push("Issues unavailable: fetching this sprint's issues failed.".to_string());
+    lines.join("\n")
+}
+
 fn render_sprint_section(
     configuration: &JiraAgileBoardConfiguration,
     sprint: &JiraAgileSprintSummary,
     issues: &[SprintIssue],
+    total: Option<usize>,
 ) -> String {
     let mut lines = vec![format!("## Sprint: {} (active)", sprint.name)];
     if let Some(goal) = sprint
@@ -89,6 +124,11 @@ fn render_sprint_section(
         .filter(|g| !g.is_empty())
     {
         lines.push(format!("Goal: {goal}"));
+    }
+    if let Some(total) = total {
+        if total > issues.len() {
+            lines.push(format!("({} shown of {total})", issues.len()));
+        }
     }
 
     for column in &configuration.columns {
@@ -152,13 +192,17 @@ fn push_issue_lines(lines: &mut Vec<String>, issues: &[&SprintIssue]) {
     }
 }
 
+/// Fetches a sprint's issues, capped at [`BOARD_SPRINT_ISSUE_LIMIT`]. Returns
+/// the API's own `total` (when Jira reports one) alongside the capped
+/// issues so callers can render a "(N shown of M)" note on truncation.
 async fn list_sprint_issues<C: AtlassianJsonRequester + ?Sized>(
     client: &C,
     auth: &JiraAgileAuthContext,
     sprint_id: &str,
-) -> Result<Vec<SprintIssue>, String> {
+) -> Result<(Vec<SprintIssue>, Option<usize>), String> {
     let mut start_at = 0usize;
     let mut issues = Vec::new();
+    let mut total = None;
 
     loop {
         let value = client
@@ -184,8 +228,16 @@ async fn list_sprint_issues<C: AtlassianJsonRequester + ?Sized>(
         for issue in page {
             issues.push(sprint_issue_from_value(issue)?);
         }
-        if sprint_issue_page_is_last(&value, start_at, count) {
-            return Ok(issues);
+        total = value
+            .get("total")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .or(total);
+        if issues.len() >= BOARD_SPRINT_ISSUE_LIMIT
+            || sprint_issue_page_is_last(&value, start_at, count)
+        {
+            issues.truncate(BOARD_SPRINT_ISSUE_LIMIT);
+            return Ok((issues, total));
         }
         start_at = start_at.saturating_add(count);
     }

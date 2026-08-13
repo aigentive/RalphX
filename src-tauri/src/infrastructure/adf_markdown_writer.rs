@@ -5,6 +5,12 @@
 
 use serde_json::{json, Value};
 
+/// Caps blockquote/list nesting the parser will recurse into. Malformed or
+/// adversarial input (for example thousands of `"> "` markers on one line)
+/// degrades to a flat paragraph/list at the cap instead of overflowing the
+/// stack — the module's existing "never fail, never drop content" contract.
+const MAX_BLOCK_NESTING_DEPTH: usize = 16;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Block {
     Paragraph(String),
@@ -52,6 +58,13 @@ pub(crate) fn markdown_to_storage(text: &str) -> String {
 }
 
 fn parse_blocks(text: &str) -> Vec<Block> {
+    parse_blocks_at_depth(text, 0)
+}
+
+fn parse_blocks_at_depth(text: &str, depth: usize) -> Vec<Block> {
+    if depth >= MAX_BLOCK_NESTING_DEPTH {
+        return degrade_to_paragraph(text);
+    }
     let lines: Vec<&str> = text.lines().collect();
     let mut blocks = Vec::new();
     let mut i = 0;
@@ -68,11 +81,11 @@ fn parse_blocks(text: &str) -> Vec<Block> {
             blocks.push(Block::Heading(level, content.to_string()));
             i += 1;
         } else if line.trim_start().starts_with('>') {
-            let (block, next) = parse_blockquote(&lines, i);
+            let (block, next) = parse_blockquote(&lines, i, depth);
             blocks.push(block);
             i = next;
         } else if list_item_prefix(line).is_some() {
-            let (block, next) = parse_list(&lines, i);
+            let (block, next) = parse_list(&lines, i, depth);
             blocks.push(block);
             i = next;
         } else {
@@ -82,6 +95,18 @@ fn parse_blocks(text: &str) -> Vec<Block> {
         }
     }
     blocks
+}
+
+/// Degradation used once nesting hits [`MAX_BLOCK_NESTING_DEPTH`]: the
+/// remaining text becomes a single literal paragraph rather than recursing
+/// further, so no line of content is dropped.
+fn degrade_to_paragraph(text: &str) -> Vec<Block> {
+    let collected: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
+    if collected.is_empty() {
+        Vec::new()
+    } else {
+        vec![Block::Paragraph(collected.join("\n"))]
+    }
 }
 
 fn fence_marker(line: &str) -> Option<&str> {
@@ -114,7 +139,7 @@ fn parse_heading(line: &str) -> Option<(u8, &str)> {
     Some((hashes as u8, rest.trim()))
 }
 
-fn parse_blockquote(lines: &[&str], start: usize) -> (Block, usize) {
+fn parse_blockquote(lines: &[&str], start: usize, depth: usize) -> (Block, usize) {
     let mut content_lines = Vec::new();
     let mut i = start;
     while i < lines.len() && lines[i].trim_start().starts_with('>') {
@@ -124,7 +149,10 @@ fn parse_blockquote(lines: &[&str], start: usize) -> (Block, usize) {
         i += 1;
     }
     let inner = content_lines.join("\n");
-    (Block::Blockquote(parse_blocks(&inner)), i)
+    (
+        Block::Blockquote(parse_blocks_at_depth(&inner, depth + 1)),
+        i,
+    )
 }
 
 fn list_item_prefix(line: &str) -> Option<(usize, bool, &str)> {
@@ -143,7 +171,7 @@ fn list_item_prefix(line: &str) -> Option<(usize, bool, &str)> {
         .map(|after| (indent, true, after))
 }
 
-fn parse_list(lines: &[&str], start: usize) -> (Block, usize) {
+fn parse_list(lines: &[&str], start: usize, depth: usize) -> (Block, usize) {
     let mut items = Vec::new();
     let mut i = start;
     while i < lines.len() {
@@ -156,7 +184,7 @@ fn parse_list(lines: &[&str], start: usize) -> (Block, usize) {
     }
     let base_indent = items[0].0;
     let ordered = items[0].1;
-    let (list_items, _) = build_list_items(&items, base_indent);
+    let (list_items, _) = build_list_items(&items, base_indent, depth);
     (
         Block::List {
             ordered,
@@ -166,7 +194,24 @@ fn parse_list(lines: &[&str], start: usize) -> (Block, usize) {
     )
 }
 
-fn build_list_items(items: &[(usize, bool, String)], base_indent: usize) -> (Vec<ListItem>, usize) {
+/// Builds nested list items up to [`MAX_BLOCK_NESTING_DEPTH`]. At the cap,
+/// every remaining item (regardless of its indent) flattens into this level
+/// with no further nesting, so deeply-indented input still keeps its text.
+fn build_list_items(
+    items: &[(usize, bool, String)],
+    base_indent: usize,
+    depth: usize,
+) -> (Vec<ListItem>, usize) {
+    if depth >= MAX_BLOCK_NESTING_DEPTH {
+        let result = items
+            .iter()
+            .map(|(_, _, text)| ListItem {
+                text: text.clone(),
+                children: Vec::new(),
+            })
+            .collect();
+        return (result, items.len());
+    }
     let mut result = Vec::new();
     let mut i = 0;
     while i < items.len() && items[i].0 == base_indent {
@@ -176,7 +221,8 @@ fn build_list_items(items: &[(usize, bool, String)], base_indent: usize) -> (Vec
         if i < items.len() && items[i].0 > base_indent {
             let nested_indent = items[i].0;
             let nested_ordered = items[i].1;
-            let (nested_items, consumed) = build_list_items(&items[i..], nested_indent);
+            let (nested_items, consumed) =
+                build_list_items(&items[i..], nested_indent, depth + 1);
             children.push(Block::List {
                 ordered: nested_ordered,
                 items: nested_items,
