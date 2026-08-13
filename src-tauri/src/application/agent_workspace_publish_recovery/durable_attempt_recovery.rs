@@ -28,8 +28,10 @@ use crate::application::agent_workspace_publish_repair_state::{
 };
 use crate::application::chat_service::{ChatService, SendMessageOptions, SendQueuePolicy};
 use crate::application::publish_resilience::{
+    reconcile_blocked_agent_workspace_repair_create_pr_effect,
     reconcile_blocked_agent_workspace_repair_pr_handoff,
-    terminate_orphaned_blocked_repair_pr_handoff_effect, BlockedRepairPrHandoffReconciliation,
+    terminate_orphaned_blocked_repair_pr_handoff_effect, BlockedCreatePrEffectReconciliation,
+    BlockedRepairPrHandoffReconciliation,
 };
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
@@ -546,6 +548,33 @@ async fn reconcile_agent_workspace_repair_attempt(
                         "Blocked PR-handoff reconciliation could not be evaluated; leaving the attempt unsettled"
                     );
                     return Ok(DurableRepairRecoveryOutcome::Noop);
+                }
+            }
+            // Both arms above decline every `create_pr` shape by design: no durable receipt can
+            // prove whether a PR creation landed. That question is only answerable against GitHub,
+            // so evaluate it here. Like the hatch above, a decline performs no write and the next
+            // sweep re-evaluates the same evidence. `current` stays valid across this call because
+            // the reconciler's terminating arm writes the effect row, not the attempt row.
+            match reconcile_blocked_agent_workspace_repair_create_pr_effect(state, &current).await {
+                Ok(BlockedCreatePrEffectReconciliation::Adopted) => {
+                    return Ok(DurableRepairRecoveryOutcome::Continued);
+                }
+                Ok(BlockedCreatePrEffectReconciliation::NotApplied) => {
+                    // The fence is clear. Fall through to the retry evaluation exactly as the
+                    // PR-update hatch does; whether the replay happens in this pass or a later one
+                    // is owned by the continuation, streak, and backoff gates below.
+                }
+                Ok(BlockedCreatePrEffectReconciliation::AmbiguousPrExists)
+                | Ok(BlockedCreatePrEffectReconciliation::Pending) => {}
+                Err(error) => {
+                    // An error here already means no durable write happened, so falling through is
+                    // safe: the retry evaluation finds the still-open effect and returns `Noop`.
+                    tracing::warn!(
+                        conversation_id = current.conversation_id.as_str(),
+                        attempt_id = current.id.as_str(),
+                        %error,
+                        "Blocked create_pr effect reconciliation failed; leaving the attempt fenced"
+                    );
                 }
             }
             release_repair_lease_if_settled_boundary(state, &current).await?;
