@@ -3146,9 +3146,12 @@ async fn background_exit_write_does_not_resurrect_a_cleared_provider_session() {
     );
 }
 
-/// Positive companion to the resurrection regression above: the same exit-path
-/// write must still refresh a provider session ref that is currently present,
-/// proving the refresh-only call is not a silent no-op.
+/// Positive companion to the resurrection regression above: the exit-path write
+/// at `chat_service_send_background.rs:1174` refreshes a present ref without any
+/// `TurnComplete`. Deliberately omits the "result" line (same fixture shape as
+/// the negative test) — a "result" message would drive the unconditional
+/// TurnComplete persist at `chat_service_streaming.rs:2536-2559`, which would
+/// satisfy this test's assertion even if the refresh-only exit write were inert.
 #[tokio::test]
 async fn background_exit_write_refreshes_an_existing_provider_session() {
     use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
@@ -3215,7 +3218,6 @@ async fn background_exit_write_refreshes_an_existing_provider_session() {
 
     let child = spawn_claude_jsonl_fixture(&[
         r#"{"type":"assistant","message":{"content":[{"type":"text","text":"initial turn complete"}]},"session_id":"sess-bg"}"#,
-        r#"{"type":"result","session_id":"sess-bg","is_error":false,"result":"initial turn complete","cost_usd":0.0}"#,
     ])
     .await;
 
