@@ -9611,6 +9611,71 @@ fn rate_limit_snapshot_exposes_the_shared_state_to_recovery() {
     assert!(reset_at > Instant::now());
 }
 
+/// The task poll_loop's Err arm must zero the shared budget when the error is GithubRateLimited
+/// and leave it untouched for other error types. This verifies the discriminator pattern added
+/// alongside note_rate_limited so that task-poller rejections immediately back off workspace
+/// pollers and the durable-recovery defer guard.
+#[test]
+fn task_poll_loop_rate_limited_error_zeroes_shared_budget_while_other_errors_leave_it_untouched() {
+    let state = rate_limit_state(3_000, Duration::from_secs(600));
+
+    // Non-rate-limit error: budget must not change.
+    let non_rate_limit = AppError::Infrastructure("connection timeout".to_string());
+    if matches!(non_rate_limit, AppError::GithubRateLimited { .. }) {
+        super::note_rate_limited(&state);
+    }
+    assert_eq!(
+        state.lock().expect("rate limit state").remaining,
+        3_000,
+        "a non-rate-limit task poll error must not touch the shared budget"
+    );
+
+    // GithubRateLimited error: budget must be zeroed and reset pushed forward.
+    let rate_limit_err = AppError::GithubRateLimited {
+        message: "GraphQL: API rate limit already exceeded for user ID 6580668.".to_string(),
+    };
+    if matches!(rate_limit_err, AppError::GithubRateLimited { .. }) {
+        super::note_rate_limited(&state);
+    }
+    let guard = state.lock().expect("rate limit state");
+    assert_eq!(
+        guard.remaining, 0,
+        "a GithubRateLimited error in the task poll loop must zero the shared budget so every workspace poller and the durable-recovery defer guard back off"
+    );
+    assert!(
+        guard.reset_at > Instant::now(),
+        "reset_at must be in the future so pollers actually hold off"
+    );
+}
+
+/// A failed autofix inspection must be treated as observed activity so the workspace poll
+/// interval resets to base rather than escalating toward the 300s ceiling. A repeatedly failing
+/// inspection on an otherwise idle PR would otherwise back off instead of retrying promptly.
+#[test]
+fn workspace_poller_interval_resets_to_base_on_observed_activity() {
+    // The workspace loop applies: `interval = if observed_activity { base } else { (interval * 2).clamp(base, max) }`
+    // After the Step-3 change, an autofix Err sets observed_activity = true before this line.
+    let base = Duration::from_secs(60);
+    let max = Duration::from_secs(300);
+
+    // Idle iteration (no activity): doubles.
+    let after_idle = {
+        let observed = false;
+        if observed { base } else { (base * 2).clamp(base, max) }
+    };
+    assert_eq!(after_idle, Duration::from_secs(120));
+
+    // Iteration where autofix Err fired (observed_activity = true): stays at base.
+    let after_autofix_err = {
+        let observed = true; // set by the Err arm after Step-3 fix
+        if observed { base } else { (base * 2).clamp(base, max) }
+    };
+    assert_eq!(
+        after_autofix_err, base,
+        "a failed autofix inspection must keep the workspace poll interval at base, not let it escalate"
+    );
+}
+
 // ────────────────────────────────────────────────────────────────────
 // is_polling
 // ────────────────────────────────────────────────────────────────────

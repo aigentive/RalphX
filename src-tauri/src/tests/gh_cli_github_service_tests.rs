@@ -46,10 +46,10 @@ fn batched_snapshot_query_aliases_each_pr_and_uses_gh_repo_placeholders() {
     assert!(query.contains("pr1: pullRequest(number: 102)"));
     // Free, and makes each response report its own measured point cost.
     assert!(query.contains("rateLimit { cost remaining resetAt }"));
-    // Points scale with requested nodes, so the context limit is the cost dial and must stay
-    // deliberate rather than drifting to a reflexive `first: 100`.
-    assert!(query.contains("contexts(first: 30)"));
-    assert!(!query.contains("first: 100"));
+    // Context limit covers the full check surface (ci.yml + coverage.yml + codeql.yml all on
+    // pull_request); totalCount lets the parser detect truncation and fall back to per-PR reads.
+    assert!(query.contains("contexts(first: 100)"));
+    assert!(query.contains("totalCount"));
 }
 
 #[test]
@@ -163,6 +163,92 @@ fn batched_snapshot_parser_rejects_a_response_without_a_repository() {
         )
         .is_err()
     );
+}
+
+/// A PR whose totalCount exceeds the returned nodes must be omitted so PrSnapshotHub falls back
+/// to the uncapped per-PR path, rather than treating the truncated list as "nothing failing".
+#[test]
+fn batched_snapshot_parser_omits_pr_when_total_count_exceeds_node_count() {
+    // 2 checks reported but totalCount = 5 → truncated; must not appear in the map.
+    let json = r#"{"data":{"repository":{"pr0":{
+        "number":101,"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
+        "isDraft":false,"mergedAt":null,"headRefName":"feature","baseRefName":"main",
+        "headRef":{"target":{"oid":"head-oid"}},"baseRef":{"target":{"oid":"base-oid"}},
+        "mergeCommit":null,"reviewDecision":null,"autoMergeRequest":null,
+        "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
+            "totalCount":5,
+            "nodes":[
+                {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/run"},
+                {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/run2"}
+            ]
+        }}}}]}
+    }}}}"#;
+
+    let snapshots =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect("truncated payload should not be a parse error");
+
+    assert!(
+        snapshots.is_empty(),
+        "a PR with totalCount > nodes.len() must be absent so the hub uses per-PR fallback"
+    );
+}
+
+/// A PR whose totalCount equals the returned nodes is complete — serve it from the batch.
+#[test]
+fn batched_snapshot_parser_includes_pr_when_total_count_equals_node_count() {
+    let json = r#"{"data":{"repository":{"pr0":{
+        "number":101,"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
+        "isDraft":false,"mergedAt":null,"headRefName":"feature","baseRefName":"main",
+        "headRef":{"target":{"oid":"head-oid"}},"baseRef":{"target":{"oid":"base-oid"}},
+        "mergeCommit":null,"reviewDecision":null,"autoMergeRequest":null,
+        "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
+            "totalCount":1,
+            "nodes":[
+                {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/run"}
+            ]
+        }}}}]}
+    }}}}"#;
+
+    let snapshots =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect("complete payload should parse");
+
+    assert!(
+        snapshots.contains_key(&101),
+        "a PR with totalCount == nodes.len() is complete and must be served from the batch"
+    );
+    assert_eq!(snapshots[&101].checks.len(), 1);
+}
+
+/// A PR with no status rollup (null commits or null rollup) has an absent totalCount — not
+/// truncation. Must be served from the batch with empty checks rather than triggering fallback.
+#[test]
+fn batched_snapshot_parser_serves_snapshot_when_status_rollup_is_absent() {
+    // statusCheckRollup is null → no totalCount → not truncation → serve with empty checks.
+    let json = r#"{"data":{"repository":{"pr0":{
+        "number":101,"state":"OPEN","mergeStateStatus":"CLEAN","mergeable":"MERGEABLE",
+        "isDraft":false,"mergedAt":null,"headRefName":"feature","baseRefName":"main",
+        "headRef":{"target":{"oid":"head-oid"}},"baseRef":{"target":{"oid":"base-oid"}},
+        "mergeCommit":null,"reviewDecision":null,"autoMergeRequest":null,
+        "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}
+    }}}}"#;
+
+    let snapshots =
+        crate::infrastructure::services::gh_cli_github_service::parse_pr_status_snapshots_output(
+            json,
+            &[101],
+        )
+        .expect("null rollup should parse without error");
+
+    let pr = snapshots.get(&101).expect("null rollup must still yield a snapshot");
+    assert!(pr.checks.is_empty(), "null rollup yields empty checks, not a fallback");
 }
 
 // ── rate limit probe ───────────────────────────────────────────────────────

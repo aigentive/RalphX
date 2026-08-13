@@ -1319,6 +1319,10 @@ async fn poll_loop(
                 drop(_permit);
                 consecutive_errors += 1;
 
+                if matches!(e, AppError::GithubRateLimited { .. }) {
+                    note_rate_limited(&rate_limit);
+                }
+
                 // Exponential backoff: 60s → 120s → 240s → 480s → cap at 600s
                 // Floor: age-based interval (error backoff only increases above floor, AD9)
                 let backoff =
@@ -1756,6 +1760,9 @@ async fn agent_workspace_poll_loop(
                     }
                     Ok(false) => {}
                     Err(error) => {
+                        // A branch that could not complete is a reason to look again soon, not a
+                        // reason to slow down.
+                        observed_activity = true;
                         tracing::warn!(
                             conversation_id = conversation_id.as_str(),
                             pr_number,

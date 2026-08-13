@@ -72,6 +72,39 @@ async fn a_pr_missing_from_the_batch_falls_back_to_a_single_per_pr_read() {
     assert_eq!(state.last_fetch_pr_health_number, Some(999));
 }
 
+/// A PR the batch omitted because its status-check rollup was truncated must still resolve via
+/// the per-PR fallback, which has no context cap. This is the same mechanism as an absent PR —
+/// the parser already omits the PR from the HashMap before the hub sees it.
+#[tokio::test]
+async fn a_pr_omitted_due_to_truncated_contexts_falls_back_to_a_single_per_pr_read() {
+    let hub = PrSnapshotHub::new();
+    let (mock, github) = hub_github();
+    // Mock returns only PR 101; PR 888 is absent from the batch (simulating parser omission
+    // due to totalCount > nodes.len() — the hub mechanism is identical to a brand-new PR).
+    mock.state().fetch_pr_status_snapshots_known = Some(vec![101]);
+    hub.register(REPO, 101);
+    hub.register(REPO, 888);
+
+    let snapshot = hub
+        .get_snapshot(REPO, 888, &github, Path::new(REPO))
+        .await
+        .expect("a truncation-omitted PR must still resolve via per-PR fallback");
+
+    let state = mock.state();
+    assert_eq!(
+        state.fetch_pr_health_calls, 1,
+        "exactly one per-PR fallback read for the truncated PR"
+    );
+    assert_eq!(
+        state.last_fetch_pr_health_number,
+        Some(888),
+        "fallback must target the omitted PR, not a neighbor"
+    );
+    // The fallback returns the per-PR health data (Open by default in the mock); the point is
+    // that it reached per-PR, not the exact field values.
+    assert_eq!(snapshot.sync_state.status, crate::domain::services::github_service::PrStatus::Open);
+}
+
 /// An expired window must refetch. Nothing here serves a knowingly stale snapshot.
 #[tokio::test]
 async fn an_expired_window_triggers_exactly_one_more_batched_read() {

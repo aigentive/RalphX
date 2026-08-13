@@ -1937,9 +1937,14 @@ pub(crate) const PR_SNAPSHOT_CHUNK_SIZE: usize = 30;
 
 /// Status-check contexts requested per PR in the batched query.
 ///
-/// GraphQL points are driven by requested node count, so this is the cost dial. Sized to cover
-/// this repo's observed check counts with headroom rather than the reflexive `first: 100`.
-pub(crate) const PR_SNAPSHOT_CHECK_CONTEXT_LIMIT: usize = 30;
+/// GraphQL points are driven by requested node count, so this is the cost dial. The value must
+/// cover the maximum observed check surface: `ci.yml` (22 jobs + two 2-way shard matrices + a
+/// 2-entry include matrix), `coverage.yml` (8 jobs + matrices), and `codeql.yml` (5 jobs) all
+/// run on `pull_request` against `main`; 100 is the safe ceiling.
+///
+/// At `ceil(100 / 100) = 1` point per aliased PR, this matches the single-PR baseline and
+/// retains the 16× batching win measured before the hub was wired in.
+pub(crate) const PR_SNAPSHOT_CHECK_CONTEXT_LIMIT: usize = 100;
 
 /// Builds one batched PR snapshot request.
 ///
@@ -1967,6 +1972,7 @@ pub(crate) fn build_pr_status_snapshots_args(pr_numbers: &[i64]) -> Vec<String> 
       reviewDecision
       autoMergeRequest {{ mergeMethod enabledBy {{ login }} }}
       commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: {contexts}) {{
+        totalCount
         nodes {{
           __typename
           ... on CheckRun {{ name status conclusion detailsUrl }}
@@ -1993,6 +1999,31 @@ pub(crate) fn build_pr_status_snapshots_args(pr_numbers: &[i64]) -> Vec<String> 
         "-f".to_string(),
         format!("query={query}"),
     ]
+}
+
+/// Returns `true` when the batch response explicitly reports that the status-check rollup was
+/// truncated for this PR.
+///
+/// A missing `totalCount` means the rollup itself is null (no commits or no checks) — not
+/// truncation. Only when `totalCount` is present AND exceeds the returned node count does the
+/// caller know for certain that it received a short read. Absent-rollup PRs are served with
+/// whatever contexts came back rather than falling back, which preserves the pre-change behavior
+/// for PRs with no commit history.
+fn is_contexts_truncated(node: &Value) -> bool {
+    let Some(contexts) =
+        node.pointer("/commits/nodes/0/commit/statusCheckRollup/contexts")
+    else {
+        return false;
+    };
+    let total_count = contexts.get("totalCount").and_then(Value::as_u64);
+    let node_count = contexts
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(|arr| arr.len() as u64);
+    match (total_count, node_count) {
+        (Some(total), Some(count)) => total > count,
+        _ => false,
+    }
 }
 
 /// Reshapes one batched GraphQL PR node into the `gh pr view --json` shape.
@@ -2069,6 +2100,11 @@ pub(crate) fn parse_pr_status_snapshots_output(
         else {
             continue;
         };
+        // Truncated rollup — omit this PR so PrSnapshotHub::get_snapshot routes it to the
+        // uncapped per-PR fallback path, which has no context limit.
+        if is_contexts_truncated(node) {
+            continue;
+        }
         let view = reshape_graphql_pr_node(node);
         let Ok(sync_state) = parse_pr_sync_state_value(&view, "gh PR snapshot") else {
             continue;

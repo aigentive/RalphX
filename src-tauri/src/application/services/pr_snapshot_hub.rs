@@ -9,6 +9,10 @@
 //! this repository before the hub was wired in: one aliased query covering 16 PRs reported
 //! `rateLimit.cost = 1`, versus cost 1 apiece for 16 separate reads. That 16× reduction is what
 //! justifies the subsystem; the request-count and latency wins are secondary.
+//!
+//! The batched query requests up to `PR_SNAPSHOT_CHECK_CONTEXT_LIMIT` (100) status-check
+//! contexts per PR. When a PR's rollup exceeds that limit the parser omits it from the batch
+//! map and `get_snapshot` falls back to the uncapped per-PR `fetch_pr_health` call automatically.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -89,9 +93,10 @@ impl PrSnapshotHub {
     /// Reads one PR, serving the shared batch when it is fresh.
     ///
     /// A stale window triggers exactly one batched refresh covering every registered PR; other
-    /// callers wait on the same lock and then read the result. A PR the batch did not return
-    /// falls back to its own read, which keeps a brand-new PR (registered after the batch was
-    /// built) correct instead of invisible.
+    /// callers wait on the same lock and then read the result. A PR the batch did not return —
+    /// either because it is brand-new (registered after the batch was built) or because its
+    /// status-check rollup exceeded the batched context limit — falls back to its own read, which
+    /// has no context cap.
     pub async fn get_snapshot(
         &self,
         repo_key: &str,
