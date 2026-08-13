@@ -179,6 +179,7 @@ async fn verify_trusted_ticket_attachment_caller(
     let is_canonical_grantee = run
         .agent_name
         .as_deref()
+        .map(crate::infrastructure::agents::claude::canonical_short_agent_name)
         .is_some_and(|name| TICKET_ATTACHMENT_CANONICAL_GRANTEES.contains(&name));
     if !is_canonical_grantee {
         return Err(TicketAttachmentHttpError::CallerUnauthorized(

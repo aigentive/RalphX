@@ -394,6 +394,54 @@ async fn list_ticket_attachments_linear_allows_trusted_canonical_grantee_without
 }
 
 #[tokio::test]
+async fn list_ticket_attachments_linear_allows_plugin_qualified_worker_agent_name() {
+    // A worker's own `TaskExecution` run persists the plugin-qualified
+    // agent name (`AGENT_WORKER` = "ralphx:ralphx-execution-worker"), not
+    // the unqualified canonical id the grantee list stores. Normalization
+    // must strip the "ralphx:" prefix before the membership check.
+    let fixture = fixture_with_agent_name(
+        Some(RoutingRole::WorkspaceEdit),
+        None,
+        Some("ralphx:ralphx-execution-worker"),
+    )
+    .await;
+
+    let error = list_ticket_attachments_http(
+        State(fixture.state.clone()),
+        fixture.headers(),
+        axum::Json(list_request(TicketAttachmentProvider::Linear)),
+    )
+    .await
+    .expect_err("the memory Linear integration has nothing to return");
+
+    let status = error.into_response().status();
+    assert_ne!(status, StatusCode::UNAUTHORIZED);
+    assert_ne!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn list_ticket_attachments_linear_rejects_qualified_non_grantee_agent() {
+    // A plugin-qualified name that normalizes to a non-grantee must still
+    // be rejected; normalization must not widen the grantee set.
+    let fixture = fixture_with_agent_name(
+        Some(RoutingRole::WorkspaceEdit),
+        None,
+        Some("ralphx:ralphx-general-worker"),
+    )
+    .await;
+
+    let error = list_ticket_attachments_http(
+        State(fixture.state.clone()),
+        fixture.headers(),
+        axum::Json(list_request(TicketAttachmentProvider::Linear)),
+    )
+    .await
+    .expect_err("a qualified non-grantee agent should be rejected for Linear");
+
+    assert_eq!(error.into_response().status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn list_ticket_attachments_linear_rejects_non_grantee_read_tier_agent() {
     // A Read-tier role that is not one of the two canonical grantees (for
     // example a workspace chat agent) must not reach Linear attachments,
@@ -446,41 +494,45 @@ async fn fetch_ticket_attachment_jira_ignores_grantee_list_and_gates_only_by_tie
 #[tokio::test]
 async fn worker_and_coder_runs_pass_authorization_on_both_jira_and_linear() {
     for grantee in TICKET_ATTACHMENT_CANONICAL_GRANTEES {
-        let jira_fixture = fixture_with_agent_name(
-            Some(RoutingRole::WorkspaceEdit),
-            Some(enabled_jira_settings()),
-            Some(grantee),
-        )
-        .await;
-        let jira_error = fetch_ticket_attachment_http(
-            State(jira_fixture.state.clone()),
-            jira_fixture.headers(),
-            axum::Json(fetch_request(TicketAttachmentProvider::Jira)),
-        )
-        .await
-        .expect_err("stub provider client should fail closed after authorization passes");
-        assert_eq!(
-            jira_error.into_response().status(),
-            StatusCode::BAD_GATEWAY,
-            "grantee {grantee} should pass Jira authorization"
-        );
+        let qualified = format!("ralphx:{grantee}");
+        for agent_name in [grantee, qualified.as_str()] {
+            let jira_fixture = fixture_with_agent_name(
+                Some(RoutingRole::WorkspaceEdit),
+                Some(enabled_jira_settings()),
+                Some(agent_name),
+            )
+            .await;
+            let jira_error = fetch_ticket_attachment_http(
+                State(jira_fixture.state.clone()),
+                jira_fixture.headers(),
+                axum::Json(fetch_request(TicketAttachmentProvider::Jira)),
+            )
+            .await
+            .expect_err("stub provider client should fail closed after authorization passes");
+            assert_eq!(
+                jira_error.into_response().status(),
+                StatusCode::BAD_GATEWAY,
+                "agent_name {agent_name} should pass Jira authorization"
+            );
 
-        let linear_fixture =
-            fixture_with_agent_name(Some(RoutingRole::WorkspaceEdit), None, Some(grantee)).await;
-        let linear_error = list_ticket_attachments_http(
-            State(linear_fixture.state.clone()),
-            linear_fixture.headers(),
-            axum::Json(list_request(TicketAttachmentProvider::Linear)),
-        )
-        .await
-        .expect_err("the memory Linear integration has nothing to return");
-        let linear_status = linear_error.into_response().status();
-        assert_ne!(
-            linear_status,
-            StatusCode::UNAUTHORIZED,
-            "grantee {grantee} should pass Linear authorization"
-        );
-        assert_ne!(linear_status, StatusCode::FORBIDDEN);
+            let linear_fixture =
+                fixture_with_agent_name(Some(RoutingRole::WorkspaceEdit), None, Some(agent_name))
+                    .await;
+            let linear_error = list_ticket_attachments_http(
+                State(linear_fixture.state.clone()),
+                linear_fixture.headers(),
+                axum::Json(list_request(TicketAttachmentProvider::Linear)),
+            )
+            .await
+            .expect_err("the memory Linear integration has nothing to return");
+            let linear_status = linear_error.into_response().status();
+            assert_ne!(
+                linear_status,
+                StatusCode::UNAUTHORIZED,
+                "agent_name {agent_name} should pass Linear authorization"
+            );
+            assert_ne!(linear_status, StatusCode::FORBIDDEN);
+        }
     }
 }
 
