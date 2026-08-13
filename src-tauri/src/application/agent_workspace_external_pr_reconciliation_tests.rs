@@ -529,7 +529,7 @@ async fn live_reconciliation_routes_pr_conflicts_through_one_durable_repair_atte
 
     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     assert_eq!(
-        github.state().fetch_pr_health_calls,
+        github.state().fetch_pr_status_snapshots_calls.len(),
         1,
         "an unsettled durable repair keeps the repeat poller from re-reading or re-dispatching"
     );

@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::{AppError, AppResult};
@@ -109,6 +110,46 @@ pub struct PrHealth {
     pub checks: Vec<PrHealthCheck>,
     pub issue_comments: Vec<PrIssueCommentSummary>,
     pub auto_merge_request: Option<PrAutoMergeRequest>,
+}
+
+/// Everything one batched PR read can supply.
+///
+/// This is `PrHealth` minus `issue_comments`: comments stay on their own cached REST path because
+/// they are per-PR paginated data that does not batch into the same GraphQL request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrStatusSnapshot {
+    pub sync_state: PrSyncState,
+    pub review_decision: Option<String>,
+    pub checks: Vec<PrHealthCheck>,
+    pub auto_merge_request: Option<PrAutoMergeRequest>,
+}
+
+impl PrHealth {
+    /// Rebuilds full PR health from a batched snapshot plus that PR's own comment read.
+    pub fn from_snapshot_and_comments(
+        snapshot: PrStatusSnapshot,
+        issue_comments: Vec<PrIssueCommentSummary>,
+    ) -> Self {
+        Self {
+            sync_state: snapshot.sync_state,
+            review_decision: snapshot.review_decision,
+            checks: snapshot.checks,
+            issue_comments,
+            auto_merge_request: snapshot.auto_merge_request,
+        }
+    }
+}
+
+/// GitHub API budget remaining in the current window.
+///
+/// `remaining` is the tightest of the pools RalphX actually spends against, so one number can
+/// gate every poller. `reset_epoch_secs` is GitHub's own reset instant in Unix seconds — it is
+/// carried as an absolute epoch rather than a `Duration` so it survives the trip from the `gh`
+/// process without accumulating drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateLimitSnapshot {
+    pub remaining: u32,
+    pub reset_epoch_secs: u64,
 }
 
 /// Pull request found by an exact head-branch lookup.
@@ -588,6 +629,57 @@ pub trait GithubServiceTrait: Send + Sync {
             issue_comments: Vec::new(),
             auto_merge_request: None,
         })
+    }
+
+    /// Read only a pull request's issue comments.
+    ///
+    /// Split out from [`GithubServiceTrait::fetch_pr_health`] so a caller that already holds the
+    /// view half from a batched read can fetch just the comments. The default implementation
+    /// derives them from full health, so runtimes that cannot separate the two stay correct.
+    async fn fetch_pr_issue_comments(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<Vec<PrIssueCommentSummary>> {
+        Ok(self
+            .fetch_pr_health(working_dir, pr_number)
+            .await?
+            .issue_comments)
+    }
+
+    /// Read status and health for several PRs in one request.
+    ///
+    /// The default implementation falls back to one `fetch_pr_health` per PR, so runtimes without
+    /// batching support stay correct and only lose the cost saving. A PR the backend cannot report
+    /// is omitted from the map rather than guessed at.
+    async fn fetch_pr_status_snapshots(
+        &self,
+        working_dir: &Path,
+        pr_numbers: &[i64],
+    ) -> AppResult<HashMap<i64, PrStatusSnapshot>> {
+        let mut out = HashMap::new();
+        for number in pr_numbers {
+            let health = self.fetch_pr_health(working_dir, *number).await?;
+            out.insert(
+                *number,
+                PrStatusSnapshot {
+                    sync_state: health.sync_state,
+                    review_decision: health.review_decision,
+                    checks: health.checks,
+                    auto_merge_request: health.auto_merge_request,
+                },
+            );
+        }
+        Ok(out)
+    }
+
+    /// Read the caller's remaining GitHub API budget.
+    ///
+    /// `Ok(None)` means this runtime cannot report a budget, which callers must treat as "no
+    /// information" rather than "plenty left" — the shared rate-limit state keeps its previous
+    /// value in that case.
+    async fn fetch_rate_limit(&self, _working_dir: &Path) -> AppResult<Option<RateLimitSnapshot>> {
+        Ok(None)
     }
 
     /// Fetch only the current auto-merge request state for a pull request.

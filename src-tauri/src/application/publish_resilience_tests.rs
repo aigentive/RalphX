@@ -4,6 +4,47 @@ use crate::domain::state_machine::transition_handler::SourceUpdateResult;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// ── blocked PR-handoff copy ────────────────────────────────────────────────
+
+/// The 2026-08-11 incident blocker told the user to "Retry the blocked operation" while GitHub's
+/// window was exhausted — advice that could not succeed. A rate limit gets copy that says so.
+#[test]
+fn rate_limited_pr_handoff_blocker_promises_automatic_retry() {
+    let blocker = agent_workspace_repair_pr_handoff_blocker(
+        "Infrastructure error: gh exited with code 1: GraphQL: API rate limit already exceeded for user ID 6580668.",
+    );
+
+    assert!(
+        blocker.starts_with("GitHub API rate limit reached:"),
+        "rate-limit blockers must name the cause first, got: {blocker}"
+    );
+    assert!(
+        blocker.contains("retry automatically after the limit resets"),
+        "the user must be told the retry is automatic, got: {blocker}"
+    );
+    assert!(
+        blocker.contains("retry manually"),
+        "manual Retry still works and must stay offered, got: {blocker}"
+    );
+    assert!(
+        !blocker.contains("Retry the blocked operation"),
+        "the default advice is exactly what does not work here, got: {blocker}"
+    );
+}
+
+/// Every other failure keeps the pre-existing copy verbatim.
+#[test]
+fn non_rate_limited_pr_handoff_blocker_keeps_the_existing_copy() {
+    let blocker = agent_workspace_repair_pr_handoff_blocker(
+        "Infrastructure error: gh exited with code 1: could not resolve to a Repository",
+    );
+
+    assert_eq!(
+        blocker,
+        "Pull-request continuation could not complete: Infrastructure error: gh exited with code 1: could not resolve to a Repository. Retry the blocked operation."
+    );
+}
+
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
