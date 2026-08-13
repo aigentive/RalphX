@@ -1295,6 +1295,7 @@ pub(crate) async fn settle_repair_and_start_retargeted_successor(
         carryover_pr_autofix_evidence: Some(PrAutofixCarryover {
             dispatch_head_commit: reserved.pr_autofix_dispatch_head_commit.clone(),
             health_fingerprint: reserved.pr_autofix_health_fingerprint.clone(),
+            issue_kind: reserved.pr_autofix_issue_kind,
         }),
     };
     let successor = start_attempt_from_workspace(workspace, &request);
