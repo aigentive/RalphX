@@ -13,6 +13,7 @@ use super::publish_resilience::{
     continue_agent_workspace_repair_publish, fail_agent_workspace_repair_effect_for_phase,
     has_observed_agent_workspace_repair_pr_handoff, initialize_agent_workspace_repair_push_effect,
     next_effect_checkpoint_at, observe_agent_workspace_repair_pr_handoff_effect,
+    observe_agent_workspace_repair_pr_handoff_effect_for_phase,
     observe_agent_workspace_repair_push_effect, observed_repair_push_receipt_for_head,
     observed_workspace_repair_push_outcome, prepare_agent_workspace_repair_pr_handoff_effect,
     prepare_agent_workspace_repair_push_attempt, push_agent_workspace_repair_branch,
@@ -5694,6 +5695,94 @@ async fn recovery_sweep_clears_an_orphaned_create_pr_fence_and_admits_the_retry(
     assert!(
         !matches!(current.as_ref(), Some(attempt) if attempt.id == aged.id),
         "a cleared fence must admit the retry instead of leaving the same blocked attempt current"
+    );
+}
+
+#[tokio::test]
+async fn blocked_create_pr_reconciliation_declines_after_the_repair_head_is_retargeted() {
+    let (_fixture, state, blocked, github) = setup_blocked_new_pr_handoff().await;
+    let before = open_create_pr_effect(&state, &blocked)
+        .await
+        .expect("the create_pr effect starts open");
+    // Retarget the repair head so the effect's `intended_head_oid` no longer matches. Without the
+    // guard, a creation begun against an older head could be adopted against the newer head —
+    // a false success under rule 25.
+    let mut retargeted = blocked.clone();
+    let expected_updated_at = retargeted.updated_at;
+    retargeted.repair_head_commit = Some("0000000000000000000000000000000000000000".to_string());
+    retargeted.updated_at += Duration::microseconds(1);
+    let retargeted = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: retargeted,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("retarget the repair head")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("retargeting the repair head must apply, got {outcome:?}"),
+    };
+    let reads_before = github.state().find_latest_pr_by_head_branch_calls;
+
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &retargeted)
+            .await
+            .expect("evaluate the retargeted attempt"),
+        BlockedCreatePrEffectReconciliation::Pending
+    );
+
+    assert_eq!(
+        github.state().find_latest_pr_by_head_branch_calls,
+        reads_before,
+        "a retargeted head must be rejected before any GitHub read"
+    );
+    assert_eq!(
+        open_create_pr_effect(&state, &blocked).await,
+        Some(before),
+        "declining a retargeted head must leave the effect unchanged"
+    );
+}
+
+#[tokio::test]
+async fn an_already_observed_create_pr_effect_is_declined() {
+    let (_fixture, state, blocked, github) = setup_blocked_new_pr_handoff().await;
+    let effect = open_create_pr_effect(&state, &blocked)
+        .await
+        .expect("the create_pr effect starts open");
+    // Drive the effect to Observed through the same writer the adopt arm uses, so this test pins
+    // the `status != InFlight` narrowing that the module comment calls "required, not defensive".
+    observe_agent_workspace_repair_pr_handoff_effect_for_phase(
+        state.agent_workspace_repair_repo.as_ref(),
+        &blocked,
+        effect,
+        AgentWorkspaceRepairPhase::Blocked,
+        9999,
+        Some("https://github.com/example/repo/pull/9999"),
+    )
+    .await
+    .expect("drive the create_pr effect to Observed");
+    assert!(
+        open_create_pr_effect(&state, &blocked).await.is_none(),
+        "an Observed effect is closed and must not appear as open"
+    );
+    let reads_before = github.state().find_latest_pr_by_head_branch_calls;
+
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &blocked)
+            .await
+            .expect("evaluate an already-observed create_pr effect"),
+        BlockedCreatePrEffectReconciliation::Pending
+    );
+
+    assert_eq!(
+        github.state().find_latest_pr_by_head_branch_calls,
+        reads_before,
+        "an Observed effect must be declined without a GitHub read"
     );
 }
 

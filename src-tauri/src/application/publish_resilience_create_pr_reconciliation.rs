@@ -178,10 +178,12 @@ pub(crate) async fn reconcile_blocked_agent_workspace_repair_create_pr_effect(
         return Ok(BlockedCreatePrEffectReconciliation::Pending);
     };
 
-    // The effective branch, not `workspace.branch_name`: a linked-plan workspace publishes from
-    // its plan branch, and querying the wrong head would report "no pull request" for a branch
-    // that never had one — the exact false proof that would authorize a duplicate creation.
-    let head_branch = target.branch_name.as_str();
+    // The head branch must match what `pr_publish_service::create_draft_pr` uses as head
+    // (src-tauri/src/domain/services/pr_publish_service.rs:169-177), which is always
+    // `workspace.branch_name`. Using `target.branch_name` would diverge for linked-plan
+    // workspaces and could report "no pull request" on the plan branch while a PR exists on the
+    // workspace branch — the exact false proof that would authorize a duplicate creation.
+    let head_branch = workspace.branch_name.as_str();
     let found = match github
         .find_latest_pr_by_head_branch(&target.path, head_branch)
         .await
