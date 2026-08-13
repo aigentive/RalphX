@@ -80,6 +80,44 @@ describe("parseComposerReferencesFromMetadata", () => {
     });
   });
 
+  it("preserves persisted Jira board and Confluence link integration references", () => {
+    const parsed = parseComposerReferencesFromMetadata({
+      composer_integration_references: [
+        {
+          provider: "atlassian",
+          kind: "jira_board",
+          id: "12",
+          title: "Board: RX Board",
+          url: "https://example.atlassian.net/jira/software/projects/RX/boards/12",
+        },
+        {
+          provider: "atlassian",
+          kind: "confluence_link",
+          id: "999",
+          title: "Runbook",
+          url: "https://example.atlassian.net/wiki/spaces/OPS/pages/999",
+        },
+      ],
+    });
+
+    expect(parsed?.integrationReferences).toEqual([
+      {
+        provider: "atlassian",
+        kind: "jira_board",
+        id: "12",
+        title: "Board: RX Board",
+        url: "https://example.atlassian.net/jira/software/projects/RX/boards/12",
+      },
+      {
+        provider: "atlassian",
+        kind: "confluence_link",
+        id: "999",
+        title: "Runbook",
+        url: "https://example.atlassian.net/wiki/spaces/OPS/pages/999",
+      },
+    ]);
+  });
+
   it("serializes selected composer references for optimistic messages", () => {
     const metadata = serializeComposerReferencesMetadata({
       folderReferences: [
@@ -414,6 +452,43 @@ describe("MessageReferences", () => {
     expect(screen.getByText("RX-42")).toBeTruthy();
     expect(screen.getByText("Fix composer references")).toBeTruthy();
     expect(screen.getByText("Implementation Notes")).toBeTruthy();
+  });
+
+  it("renders distinct chips for Jira board and Confluence link references", () => {
+    render(
+      <MessageReferences
+        projectReferences={[]}
+        integrationReferences={[
+          {
+            provider: "atlassian",
+            kind: "jira_board",
+            id: "12",
+            title: "Board: RX Board",
+            url: "https://example.atlassian.net/jira/software/projects/RX/boards/12",
+          },
+          {
+            provider: "atlassian",
+            kind: "confluence_link",
+            id: "999",
+            title: "Runbook",
+            url: "https://example.atlassian.net/wiki/spaces/OPS/pages/999",
+          },
+        ]}
+        artifactReferences={[]}
+      />,
+    );
+
+    const boardChip = screen.getByTestId(
+      "message-reference-integration:jira_board:12",
+    );
+    expect(boardChip).toHaveTextContent("Jira Board");
+    expect(boardChip).toHaveTextContent("Board: RX Board");
+
+    const linkChip = screen.getByTestId(
+      "message-reference-integration:confluence_link:999",
+    );
+    expect(linkChip).toHaveTextContent("Confluence Link");
+    expect(linkChip).toHaveTextContent("Runbook");
   });
 
   it("opens a linear ticket chip into the ticketing view", () => {

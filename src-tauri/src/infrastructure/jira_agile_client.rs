@@ -1,6 +1,8 @@
 use hyper::Method;
 use serde_json::Value;
 
+use crate::domain::integrations::AtlassianResourceSummary;
+
 use super::atlassian_client::{
     request_auth, AtlassianJsonRequester, HyperAtlassianApiClient, JiraAgileAuthContext,
     JiraAgileBoardColumn, JiraAgileBoardConfiguration, JiraAgileBoardSummary,
@@ -9,14 +11,64 @@ use super::atlassian_client::{
 
 const JIRA_AGILE_PAGE_SIZE: usize = 50;
 
+/// Lists Jira Software boards, optionally filtered to one project.
+///
+/// A blank `project_key` lists every board visible to the credential, matching
+/// the underlying `/rest/agile/1.0/board` endpoint's optional `projectKeyOrId`.
 pub(crate) async fn list_jira_boards<C: AtlassianJsonRequester + ?Sized>(
     client: &C,
     auth: &JiraAgileAuthContext,
     project_key: &str,
 ) -> Result<Vec<JiraAgileBoardSummary>, String> {
-    let project_key = required_value(project_key, "Jira project key is required")?;
+    let project_key = optional_value(project_key);
     let mut start_at = 0usize;
     let mut boards = Vec::new();
+
+    loop {
+        let project_filter = project_key
+            .map(|key| format!("projectKeyOrId={}&", percent_encode(key)))
+            .unwrap_or_default();
+        let value = client
+            .request_json(
+                Method::GET,
+                HyperAtlassianApiClient::resource_url(
+                    auth,
+                    JiraAgileResourceKind::Jira,
+                    &format!(
+                        "/rest/agile/1.0/board?{project_filter}startAt={start_at}&maxResults={JIRA_AGILE_PAGE_SIZE}"
+                    ),
+                ),
+                request_auth(auth),
+                None,
+            )
+            .await?;
+        let page =
+            required_page_values(&value, "values", "Jira board response was missing values")?;
+        let count = page.len();
+        for board in page {
+            boards.push(jira_board_from_value(board)?);
+        }
+        if page_is_last(&value, start_at, count)? {
+            return Ok(boards);
+        }
+        start_at = next_page_start(&value, start_at, count)?;
+    }
+}
+
+/// Lists issues in a Jira Software sprint as enriched summaries (status, issue
+/// type, assignee, updated timestamp — the same shape [`search_resources_with_mode`]
+/// returns), capped at `limit`.
+///
+/// [`search_resources_with_mode`]: crate::application::AtlassianIntegrationService::search_resources_with_mode
+pub(crate) async fn list_jira_sprint_issues<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &JiraAgileAuthContext,
+    sprint_id: &str,
+    limit: usize,
+) -> Result<Vec<AtlassianResourceSummary>, String> {
+    let sprint_id = required_value(sprint_id, "Jira sprint id is required")?;
+    let mut start_at = 0usize;
+    let mut issues = Vec::new();
 
     loop {
         let value = client
@@ -26,21 +78,29 @@ pub(crate) async fn list_jira_boards<C: AtlassianJsonRequester + ?Sized>(
                     auth,
                     JiraAgileResourceKind::Jira,
                     &format!(
-                        "/rest/agile/1.0/board?projectKeyOrId={}&startAt={start_at}&maxResults={JIRA_AGILE_PAGE_SIZE}",
-                        percent_encode(project_key)
+                        "/rest/agile/1.0/sprint/{}/issue?fields=summary,status,issuetype,assignee,updated&startAt={start_at}&maxResults={JIRA_AGILE_PAGE_SIZE}",
+                        percent_encode(sprint_id)
                     ),
                 ),
                 request_auth(auth),
                 None,
             )
             .await?;
-        let page = required_page_values(&value, "Jira board response was missing values")?;
+        let page = required_page_values(
+            &value,
+            "issues",
+            "Jira sprint issue response was missing issues",
+        )?;
         let count = page.len();
-        for board in page {
-            boards.push(jira_board_from_value(board)?);
+        for issue in page {
+            if let Some(summary) = sprint_issue_summary_from_value(issue, &auth.site_url) {
+                issues.push(summary);
+            }
         }
-        if page_is_last(&value, start_at, count)? {
-            return Ok(boards);
+        let is_last = page_is_last(&value, start_at, count)?;
+        if issues.len() >= limit || is_last {
+            issues.truncate(limit);
+            return Ok(issues);
         }
         start_at = next_page_start(&value, start_at, count)?;
     }
@@ -95,7 +155,8 @@ pub(crate) async fn list_jira_active_sprints<C: AtlassianJsonRequester + ?Sized>
                 None,
             )
             .await?;
-        let page = required_page_values(&value, "Jira sprint response was missing values")?;
+        let page =
+            required_page_values(&value, "values", "Jira sprint response was missing values")?;
         let count = page.len();
         for sprint in page {
             let sprint = jira_sprint_from_value(sprint, board_id)?;
@@ -181,9 +242,13 @@ fn jira_sprint_from_value(
     })
 }
 
-fn required_page_values<'a>(value: &'a Value, message: &str) -> Result<&'a [Value], String> {
+fn required_page_values<'a>(
+    value: &'a Value,
+    field: &str,
+    message: &str,
+) -> Result<&'a [Value], String> {
     value
-        .get("values")
+        .get(field)
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .ok_or_else(|| message.to_string())
@@ -257,6 +322,69 @@ fn required_value<'a>(value: &'a str, message: &str) -> Result<&'a str, String> 
     } else {
         Ok(value)
     }
+}
+
+/// Trims `value`, returning `None` for a blank string instead of rejecting it.
+/// Used by callers where an empty filter means "no filter" rather than an
+/// invalid request.
+fn optional_value(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+/// Converts one `/rest/agile/1.0/sprint/{id}/issue` result entry into the same
+/// enriched summary shape `jira_summary_from_issue_value` builds for
+/// `jira_search_issues` (status/type/assignee/updated), independently
+/// implemented here because `atlassian_client.rs` is owned by a different
+/// in-flight change in this plan.
+fn sprint_issue_summary_from_value(
+    value: &Value,
+    site_url: &str,
+) -> Option<AtlassianResourceSummary> {
+    let key = value.get("key").and_then(Value::as_str)?.to_string();
+    let fields = value.get("fields");
+    let title = fields
+        .and_then(|fields| fields.get("summary"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| key.clone());
+    Some(AtlassianResourceSummary {
+        kind: JiraAgileResourceKind::Jira,
+        id: key.clone(),
+        key: Some(key.clone()),
+        title,
+        url: Some(format!("{site_url}/browse/{key}")),
+        excerpt: None,
+        status: fields
+            .and_then(|fields| fields.get("status"))
+            .and_then(|status| status.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        issue_type: fields
+            .and_then(|fields| fields.get("issuetype"))
+            .and_then(|issue_type| issue_type.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        assignee: fields
+            .and_then(|fields| sprint_issue_user_display_name(fields.get("assignee"))),
+        updated_at: fields
+            .and_then(|fields| fields.get("updated"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+fn sprint_issue_user_display_name(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(|user| user.get("displayName"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn percent_encode(value: &str) -> String {

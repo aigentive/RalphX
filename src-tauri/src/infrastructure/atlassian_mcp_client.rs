@@ -15,6 +15,7 @@ use crate::domain::integrations::{
     JiraIssueCreated, JiraIssueUpdateRequest, ATLASSIAN_RAW_RESPONSE_MAX_BYTES,
 };
 
+use super::adf_markdown_writer::{markdown_to_adf, markdown_to_storage};
 use super::atlassian_client::{
     request_auth, AtlassianAuthContext, AtlassianJsonRequester, AtlassianResourceKind,
     HyperAtlassianApiClient,
@@ -81,7 +82,7 @@ pub(crate) async fn create_jira_issue<C: AtlassianJsonRequester + ?Sized>(
     );
     fields.insert("summary".to_string(), Value::String(summary));
     if let Some(description) = request.description.as_deref() {
-        fields.insert("description".to_string(), plain_text_adf(description));
+        fields.insert("description".to_string(), markdown_to_adf(description));
     }
     if !request.labels.is_empty() {
         fields.insert("labels".to_string(), serde_json::json!(request.labels));
@@ -91,6 +92,26 @@ pub(crate) async fn create_jira_issue<C: AtlassianJsonRequester + ?Sized>(
             "priority".to_string(),
             serde_json::json!({ "name": priority }),
         );
+    }
+    if let Some(parent_key) = request.parent_key.as_deref() {
+        fields.insert(
+            "parent".to_string(),
+            serde_json::json!({ "key": parent_key }),
+        );
+    }
+    if let Some(assignee_account_id) = request.assignee_account_id.as_deref() {
+        fields.insert(
+            "assignee".to_string(),
+            serde_json::json!({ "accountId": assignee_account_id }),
+        );
+    }
+    if !request.components.is_empty() {
+        let components = request
+            .components
+            .iter()
+            .map(|name| serde_json::json!({ "name": name }))
+            .collect::<Vec<_>>();
+        fields.insert("components".to_string(), Value::Array(components));
     }
 
     let value = client
@@ -149,7 +170,7 @@ pub(crate) async fn update_jira_issue<C: AtlassianJsonRequester + ?Sized>(
         fields.insert("summary".to_string(), Value::String(summary.to_string()));
     }
     if let Some(description) = request.description.as_deref() {
-        fields.insert("description".to_string(), plain_text_adf(description));
+        fields.insert("description".to_string(), markdown_to_adf(description));
     }
     if let Some(labels) = request.labels.as_ref() {
         fields.insert("labels".to_string(), serde_json::json!(labels));
@@ -258,7 +279,28 @@ pub(crate) async fn confluence_get_page<C: AtlassianJsonRequester + ?Sized>(
     confluence_page_from_value(&value, &auth.site_url)
 }
 
-/// Create a Confluence page from storage-format content.
+/// Resolve a Confluence page body from the caller-supplied storage/markdown
+/// pair. `Ok(None)` means neither was supplied (only valid for updates, where
+/// it means "leave the current body untouched").
+///
+/// Callers at the HTTP boundary already reject a "both supplied" request with
+/// a typed `InvalidRequest`; this is a defense-in-depth check for any other
+/// caller of these client functions.
+fn resolve_confluence_body_storage(
+    body_storage: Option<&str>,
+    body_markdown: Option<&str>,
+) -> Result<Option<String>, AtlassianApiError> {
+    match (body_storage, body_markdown) {
+        (Some(_), Some(_)) => Err(AtlassianApiError::transport(
+            "Confluence page body must be either bodyStorage or bodyMarkdown, not both",
+        )),
+        (Some(storage), None) => Ok(Some(storage.to_string())),
+        (None, Some(markdown)) => Ok(Some(markdown_to_storage(markdown))),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Create a Confluence page from storage-format or markdown content.
 pub(crate) async fn confluence_create_page<C: AtlassianJsonRequester + ?Sized>(
     client: &C,
     auth: &AtlassianAuthContext,
@@ -266,6 +308,15 @@ pub(crate) async fn confluence_create_page<C: AtlassianJsonRequester + ?Sized>(
 ) -> Result<ConfluencePageContent, AtlassianApiError> {
     let space_id = required(&request.space_id, "Confluence space id is required")?;
     let title = required(&request.title, "Confluence page title is required")?;
+    let body_storage = resolve_confluence_body_storage(
+        request.body_storage.as_deref(),
+        request.body_markdown.as_deref(),
+    )?
+    .ok_or_else(|| {
+        AtlassianApiError::transport(
+            "Confluence page body is required: supply bodyStorage or bodyMarkdown",
+        )
+    })?;
 
     let mut body = serde_json::Map::new();
     body.insert("spaceId".to_string(), Value::String(space_id));
@@ -275,7 +326,7 @@ pub(crate) async fn confluence_create_page<C: AtlassianJsonRequester + ?Sized>(
         "body".to_string(),
         serde_json::json!({
             "representation": "storage",
-            "value": request.body_storage,
+            "value": body_storage,
         }),
     );
     if let Some(parent_id) = request.parent_id.as_deref() {
@@ -311,16 +362,19 @@ pub(crate) async fn confluence_update_page<C: AtlassianJsonRequester + ?Sized>(
             "Confluence page update requires a title or body",
         ));
     }
+    // Validated before any network call: a "both supplied" conflict must not
+    // spend a GET first.
+    let resolved_body_storage = resolve_confluence_body_storage(
+        request.body_storage.as_deref(),
+        request.body_markdown.as_deref(),
+    )?;
 
     let current = confluence_get_page(client, auth, &page_id).await?;
     let title = request
         .title
         .clone()
         .unwrap_or_else(|| current.title.clone());
-    let body_storage = request
-        .body_storage
-        .clone()
-        .unwrap_or_else(|| current.body_storage.clone());
+    let body_storage = resolved_body_storage.unwrap_or_else(|| current.body_storage.clone());
 
     let value = client
         .request_json(

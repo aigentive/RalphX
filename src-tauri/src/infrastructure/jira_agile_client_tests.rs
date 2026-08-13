@@ -12,6 +12,7 @@ use super::atlassian_client::{
 };
 use super::jira_agile_client::{
     get_jira_board_configuration, list_jira_active_sprints, list_jira_boards,
+    list_jira_sprint_issues,
 };
 
 #[derive(Clone, Debug)]
@@ -240,5 +241,128 @@ async fn list_jira_boards_rejects_malformed_page_instead_of_returning_empty_succ
     assert_eq!(
         result,
         Err("Jira board response was missing values".to_string())
+    );
+}
+
+#[tokio::test]
+async fn list_jira_boards_with_a_blank_project_key_lists_every_board() {
+    let requester = FakeRequester::new(vec![Ok(json!({
+        "startAt": 0,
+        "isLast": true,
+        "values": [{
+            "id": 41,
+            "name": "Delivery Scrum",
+            "type": "scrum",
+            "location": { "projectKey": "RX" }
+        }]
+    }))]);
+
+    let boards = list_jira_boards(&requester, &auth_context(), "  ")
+        .await
+        .expect("list Jira boards");
+
+    assert_eq!(boards.len(), 1);
+    assert_eq!(
+        requester.requests()[0].url,
+        "https://example.atlassian.net/rest/agile/1.0/board?startAt=0&maxResults=50"
+    );
+}
+
+#[tokio::test]
+async fn list_jira_sprint_issues_walks_pages_and_returns_enriched_summaries() {
+    let requester = FakeRequester::new(vec![
+        Ok(json!({
+            "startAt": 0,
+            "maxResults": 1,
+            "total": 2,
+            "issues": [{
+                "key": "RX-1",
+                "fields": {
+                    "summary": "Fix the thing",
+                    "status": { "name": "In Progress" },
+                    "issuetype": { "name": "Bug" },
+                    "assignee": { "displayName": "A. Dev" },
+                    "updated": "2026-08-01T10:00:00.000+0000"
+                }
+            }]
+        })),
+        Ok(json!({
+            "startAt": 1,
+            "maxResults": 1,
+            "total": 2,
+            "issues": [{
+                "key": "RX-2",
+                "fields": {
+                    "summary": "Ship the thing",
+                    "status": { "name": "To Do" }
+                }
+            }]
+        })),
+    ]);
+
+    let issues = list_jira_sprint_issues(&requester, &auth_context(), "91", 50)
+        .await
+        .expect("list Jira sprint issues");
+
+    assert_eq!(
+        issues.iter().map(|i| i.key.clone()).collect::<Vec<_>>(),
+        vec![Some("RX-1".to_string()), Some("RX-2".to_string())]
+    );
+    assert_eq!(issues[0].status.as_deref(), Some("In Progress"));
+    assert_eq!(issues[0].issue_type.as_deref(), Some("Bug"));
+    assert_eq!(issues[0].assignee.as_deref(), Some("A. Dev"));
+    assert_eq!(
+        issues[0].updated_at.as_deref(),
+        Some("2026-08-01T10:00:00.000+0000")
+    );
+    assert_eq!(issues[1].status.as_deref(), Some("To Do"));
+    assert_eq!(issues[1].assignee, None);
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].url,
+        "https://example.atlassian.net/rest/agile/1.0/sprint/91/issue?fields=summary,status,issuetype,assignee,updated&startAt=0&maxResults=50"
+    );
+    assert_eq!(
+        requests[1].url,
+        "https://example.atlassian.net/rest/agile/1.0/sprint/91/issue?fields=summary,status,issuetype,assignee,updated&startAt=1&maxResults=50"
+    );
+}
+
+#[tokio::test]
+async fn list_jira_sprint_issues_stops_once_the_requested_limit_is_reached() {
+    let requester = FakeRequester::new(vec![Ok(json!({
+        "startAt": 0,
+        "maxResults": 2,
+        "isLast": false,
+        "issues": [
+            { "key": "RX-1", "fields": { "summary": "One", "status": { "name": "To Do" } } },
+            { "key": "RX-2", "fields": { "summary": "Two", "status": { "name": "To Do" } } }
+        ]
+    }))]);
+
+    let issues = list_jira_sprint_issues(&requester, &auth_context(), "91", 1)
+        .await
+        .expect("list Jira sprint issues");
+
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].key.as_deref(), Some("RX-1"));
+    // Reaching the caller's limit stops pagination without requesting the next page.
+    assert_eq!(requester.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn list_jira_sprint_issues_rejects_malformed_page_instead_of_returning_empty_success() {
+    let requester = FakeRequester::new(vec![Ok(json!({
+        "startAt": 0,
+        "isLast": true
+    }))]);
+
+    let result = list_jira_sprint_issues(&requester, &auth_context(), "91", 50).await;
+
+    assert_eq!(
+        result,
+        Err("Jira sprint issue response was missing issues".to_string())
     );
 }

@@ -85,11 +85,22 @@ pub const ATLASSIAN_READ_TOOLS: &[&str] = &[
     "jira_get_issue",
     "jira_list_projects",
     "jira_list_transitions",
+    "jira_list_boards",
+    "jira_list_sprints",
+    "jira_get_sprint_issues",
+    "jira_list_comments",
+    "jira_search_users",
     "confluence_search_pages",
     "confluence_get_page",
+    "confluence_list_spaces",
     // Method-gated: read tier may issue GET/HEAD only. The backend enforces the
     // method-to-tier mapping per request.
     "atlassian_api_request",
+    // Backend-gated only for the Jira provider (`ticket_attachments.rs`
+    // `authorize_ticket_attachment_access`); Linear/ClickUp calls through
+    // this same tool stay on the canonical worker/coder grant instead.
+    "list_ticket_attachments",
+    "fetch_ticket_attachment",
 ];
 
 /// Mutating Atlassian MCP tools, granted only at [`AtlassianMcpAccess::ReadWrite`].

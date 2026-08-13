@@ -27,6 +27,8 @@ import {
   FolderOpen,
   CircleOff,
   GitFork,
+  Kanban,
+  Link2,
   Loader2,
   Paperclip,
   Plus,
@@ -83,6 +85,7 @@ import {
   type AgentComposerArtifactReference,
   type AgentComposerIntegrationKind,
   type AgentComposerIntegrationReference,
+  type AgentComposerIntegrationReferenceKind,
   type AgentComposerProjectReference,
 } from "./composer/agentComposerCore";
 import {
@@ -132,12 +135,27 @@ function integrationReferenceKey(
   return `${reference.provider}:${reference.kind}:${reference.id}`;
 }
 
+/**
+ * `resource.kind` only distinguishes the Jira/Confluence routing product
+ * (`AtlassianResourceKindSchema`), not composer subtypes like a pasted board
+ * or a smart-link. `referenceKind` carries the exact composer reference kind
+ * that produced the resource so those subtypes render their own chip.
+ */
+function normalizeAtlassianReferenceKind(
+  referenceKind: string | null | undefined,
+): AgentComposerIntegrationReferenceKind | undefined {
+  return referenceKind === "jira_board" || referenceKind === "confluence_link"
+    ? referenceKind
+    : undefined;
+}
+
 function atlassianResourceToIntegrationReference(
   resource: AtlassianResourceSummary,
+  referenceKind?: string | null,
 ): AgentComposerIntegrationReference {
   return {
     provider: "atlassian",
-    kind: resource.kind,
+    kind: normalizeAtlassianReferenceKind(referenceKind) ?? resource.kind,
     id: resource.id,
     ...(resource.key ? { key: resource.key } : {}),
     title: resource.title,
@@ -1784,7 +1802,10 @@ export function AgentComposerSurface({
           }
           resolvedUrls.push(result.inputUrl.trim());
           references.push(
-            atlassianResourceToIntegrationReference(result.resource),
+            atlassianResourceToIntegrationReference(
+              result.resource,
+              result.referenceKind,
+            ),
           );
         }
         if (references.length === 0) {
@@ -2460,8 +2481,10 @@ function ComposerReferencePills({
       })}
       {integrationReferences.map((reference) => {
         const isJira = reference.kind === "jira";
+        const isJiraBoard = reference.kind === "jira_board";
         const isLinear = reference.kind === "linear";
         const isClickUp = reference.kind === "clickup";
+        const isConfluenceLink = reference.kind === "confluence_link";
         const isGranola = reference.provider === "granola" && reference.kind === "note";
         const label =
           isJira || isLinear || isClickUp
@@ -2479,14 +2502,27 @@ function ComposerReferencePills({
             ? "Linear"
             : isJira
               ? "Jira"
-              : isGranola
-                ? "Granola"
-                : "Confluence";
+              : isJiraBoard
+                ? "Jira Board"
+                : isGranola
+                  ? "Granola"
+                  : isConfluenceLink
+                    ? "Confluence Link"
+                    : "Confluence";
+        const icon = isJira || isLinear || isClickUp
+          ? Ticket
+          : isJiraBoard
+            ? Kanban
+            : isGranola
+              ? ScrollText
+              : isConfluenceLink
+                ? Link2
+                : BookOpen;
         return (
           <ComposerReferencePill
             key={`integration:${reference.provider}:${reference.kind}:${reference.id}`}
             testId={`agent-composer-reference-pill-integration:${reference.kind}:${reference.id}`}
-            icon={isJira || isLinear || isClickUp ? Ticket : isGranola ? ScrollText : BookOpen}
+            icon={icon}
             typeLabel={typeLabel}
             label={label}
             removeLabel={`Remove ${typeLabel} reference ${label}`}

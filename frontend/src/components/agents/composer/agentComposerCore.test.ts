@@ -254,6 +254,16 @@ describe("agentComposerCore", () => {
     ]);
   });
 
+  it("extracts plausible pasted Jira board URLs", () => {
+    expect(
+      extractPastedAtlassianResourceUrls(
+        "Board: https://example.atlassian.net/jira/software/projects/RX/boards/12 thanks",
+      ),
+    ).toEqual([
+      "https://example.atlassian.net/jira/software/projects/RX/boards/12",
+    ]);
+  });
+
   it("removes only backend-resolved pasted Atlassian URLs", () => {
     expect(
       removeResolvedAtlassianResourceUrls(
@@ -296,6 +306,42 @@ describe("agentComposerCore", () => {
     ).toEqual([
       { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
       { provider: "atlassian", kind: "confluence", id: "123", title: "Spec" },
+    ]);
+  });
+
+  it("normalizes Jira board and Confluence link integration references without dropping them", () => {
+    expect(
+      normalizeComposerIntegrationReferences([
+        {
+          provider: "atlassian",
+          kind: "jira_board",
+          id: "12",
+          title: "Board: RX Board",
+          url: "https://example.atlassian.net/jira/software/projects/RX/boards/12",
+        },
+        {
+          provider: "atlassian",
+          kind: "confluence_link",
+          id: "999",
+          title: "Runbook",
+          url: "https://example.atlassian.net/wiki/spaces/OPS/pages/999",
+        },
+      ]),
+    ).toEqual([
+      {
+        provider: "atlassian",
+        kind: "jira_board",
+        id: "12",
+        title: "Board: RX Board",
+        url: "https://example.atlassian.net/jira/software/projects/RX/boards/12",
+      },
+      {
+        provider: "atlassian",
+        kind: "confluence_link",
+        id: "999",
+        title: "Runbook",
+        url: "https://example.atlassian.net/wiki/spaces/OPS/pages/999",
+      },
     ]);
   });
 

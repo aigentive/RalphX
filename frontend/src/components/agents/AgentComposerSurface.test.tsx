@@ -2395,6 +2395,71 @@ describe("AgentComposerSurface", () => {
     );
   });
 
+  it("renders a distinct Jira Board chip for a resolved pasted board URL", async () => {
+    const onSend = vi.fn();
+    const pastedText =
+      "Check the sprint on https://example.atlassian.net/jira/software/projects/RX/boards/12";
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "resolve_atlassian_resource_urls") {
+        return Promise.resolve({
+          results: [
+            {
+              inputUrl:
+                "https://example.atlassian.net/jira/software/projects/RX/boards/12",
+              resource: {
+                kind: "jira",
+                id: "12",
+                key: null,
+                title: "Board: RX Board",
+                url: "https://example.atlassian.net/jira/software/projects/RX/boards/12",
+                excerpt: null,
+              },
+              referenceKind: "jira_board",
+            },
+          ],
+        });
+      }
+      if (cmd === "list_agent_composer_skills") {
+        return Promise.resolve({ skills: [] });
+      }
+      return Promise.resolve({ entries: [], truncated: false });
+    });
+    renderComposer({ onSend });
+
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        getData: () => pastedText,
+      },
+    });
+
+    const pill = await screen.findByTestId(
+      "agent-composer-reference-pill-integration:jira_board:12",
+    );
+    expect(pill).toHaveTextContent("Jira Board");
+    expect(pill).toHaveTextContent("Board: RX Board");
+
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith(
+      expect.stringContaining("Check the sprint on"),
+      {
+        integrationReferences: [
+          {
+            provider: "atlassian",
+            kind: "jira_board",
+            id: "12",
+            title: "Board: RX Board",
+            url: "https://example.atlassian.net/jira/software/projects/RX/boards/12",
+          },
+        ],
+      },
+    );
+  });
+
   it("leaves pasted Atlassian URLs intact when no pasted URL resolves", async () => {
     const pastedText =
       "Please check https://example.atlassian.net/browse/RX-404";
