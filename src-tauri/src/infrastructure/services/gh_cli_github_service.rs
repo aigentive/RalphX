@@ -23,8 +23,8 @@ use crate::domain::services::github_service::{
     PrAnnotationSourceUnavailable, PrAutoMergeRequest, PrBranchMatch, PrDetail, PrDiffAnnotation,
     PrDiffAnnotations, PrHealth, PrHealthCheck, PrIssueCommentSummary, PrMergeStateStatus,
     PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback, PrReviewSubmissionEvent,
-    PrReviewThread, PrReviewThreadComment, PrSearchResult, PrStatus, PrSubmittedReview,
-    PrSyncState,
+    PrReviewThread, PrReviewThreadComment, PrSearchResult, PrStatus, PrStatusSnapshot,
+    PrSubmittedReview, PrSyncState, RateLimitSnapshot,
 };
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -56,6 +56,50 @@ pub(crate) const DUPLICATE_PR_FRAGMENTS: [&str; 3] = [
     "a pull request for",
     "already a pull request",
 ];
+
+/// How long `gh` may serve a cached response for the PR comment read paths.
+///
+/// Sits just under the base workspace poll cadence so each poll tick still sees fresh comments,
+/// while duplicate reads for the same PR inside one tick — and the UI freshness path running on
+/// its own schedule — hit `gh`'s on-disk cache instead of GitHub.
+///
+/// Only read paths carry this. Verified against gh 2.75.1 that `--paginate --cache` caches every
+/// page and replays byte-identical multi-page output.
+const GH_COMMENTS_CACHE_TTL: &str = "55s";
+
+/// Message fragments GitHub uses when a primary (REST/GraphQL point) or secondary/abuse rate
+/// limit is exhausted. Owned here so every downstream classifier shares one definition instead of
+/// re-deriving rate-limit detection from free-form error prose.
+pub(crate) const GH_RATE_LIMIT_PATTERNS: [&str; 3] = [
+    "api rate limit exceeded",
+    "api rate limit already exceeded",
+    "secondary rate limit",
+];
+
+/// Reports whether an error message describes an exhausted GitHub API rate limit.
+///
+/// Case-insensitive substring match against [`GH_RATE_LIMIT_PATTERNS`]. Accepts either raw `gh`
+/// stderr or a stringified [`AppError`], so callers holding only a message can classify without
+/// reaching for the typed variant.
+pub fn is_github_rate_limit_message(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    GH_RATE_LIMIT_PATTERNS
+        .iter()
+        .any(|pattern| normalized.contains(pattern))
+}
+
+/// Maps a failed `gh` invocation to its typed error.
+///
+/// Extracted from [`GhCliGithubService::run_gh_process`] because that function is only reachable
+/// through the real process runner: the [`GhCliCommandRunner`] test seam bypasses it entirely, so
+/// classification would otherwise be untestable.
+pub(crate) fn gh_process_failure_error(code: i32, stderr: &str) -> AppError {
+    let message = format!("gh exited with code {code}: {stderr}");
+    if is_github_rate_limit_message(stderr) {
+        return AppError::GithubRateLimited { message };
+    }
+    AppError::Infrastructure(message)
+}
 
 #[async_trait]
 pub(crate) trait GhCliCommandRunner: Send + Sync {
@@ -172,9 +216,7 @@ impl GhCliGithubService {
             let code = status.code().unwrap_or(-1);
             let err_msg = stderr.join("\n");
             debug!(code, %err_msg, "gh command failed");
-            return Err(AppError::Infrastructure(format!(
-                "gh exited with code {code}: {err_msg}"
-            )));
+            return Err(gh_process_failure_error(code, &err_msg));
         }
 
         if !stderr.is_empty() {
@@ -452,6 +494,8 @@ fn build_pr_issue_comments_api_args(pr_number: i64) -> Vec<String> {
         format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments"),
         "--paginate".to_string(),
         "--slurp".to_string(),
+        "--cache".to_string(),
+        GH_COMMENTS_CACHE_TTL.to_string(),
     ]
 }
 
@@ -485,6 +529,8 @@ fn build_pr_review_comments_api_args(pr_number: i64) -> Vec<String> {
         format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments"),
         "--paginate".to_string(),
         "--slurp".to_string(),
+        "--cache".to_string(),
+        GH_COMMENTS_CACHE_TTL.to_string(),
     ]
 }
 
@@ -1004,6 +1050,18 @@ impl GithubServiceTrait for GhCliGithubService {
         parse_pr_health_output(&view_stdout.join("\n"), &comments_stdout.join("\n"))
     }
 
+    async fn fetch_pr_issue_comments(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<Vec<PrIssueCommentSummary>> {
+        let stdout = self
+            .runner
+            .run_gh(working_dir, &build_pr_issue_comments_api_args(pr_number))
+            .await?;
+        parse_pr_issue_comments_output(&stdout.join("\n"))
+    }
+
     async fn fetch_pr_auto_merge_state(
         &self,
         working_dir: &Path,
@@ -1014,6 +1072,30 @@ impl GithubServiceTrait for GhCliGithubService {
             .run_gh(working_dir, &build_pr_auto_merge_state_view_args(pr_number))
             .await?;
         parse_pr_auto_merge_state_output(&stdout.join("\n"))
+    }
+
+    async fn fetch_pr_status_snapshots(
+        &self,
+        working_dir: &Path,
+        pr_numbers: &[i64],
+    ) -> AppResult<HashMap<i64, PrStatusSnapshot>> {
+        let mut out = HashMap::new();
+        for chunk in pr_numbers.chunks(PR_SNAPSHOT_CHUNK_SIZE) {
+            let stdout = self
+                .runner
+                .run_gh(working_dir, &build_pr_status_snapshots_args(chunk))
+                .await?;
+            out.extend(parse_pr_status_snapshots_output(&stdout.join("\n"), chunk)?);
+        }
+        Ok(out)
+    }
+
+    async fn fetch_rate_limit(&self, working_dir: &Path) -> AppResult<Option<RateLimitSnapshot>> {
+        let stdout = self
+            .runner
+            .run_gh(working_dir, &build_rate_limit_args())
+            .await?;
+        parse_rate_limit_output(&stdout.join("\n"))
     }
 
     async fn list_branch_check_conclusions(
@@ -1808,6 +1890,21 @@ fn parse_pr_sync_state_value(v: &Value, context: &str) -> AppResult<PrSyncState>
     })
 }
 
+/// Parses only the PR issue-comments payload.
+///
+/// Shares `parse_pr_issue_comments_value` with [`parse_pr_health_output`], so the split read and
+/// the combined read cannot interpret a comment differently.
+pub(crate) fn parse_pr_issue_comments_output(
+    comments_json: &str,
+) -> AppResult<Vec<PrIssueCommentSummary>> {
+    let comments_value: Value = serde_json::from_str(comments_json).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh PR comments JSON: {e}\nRaw: {comments_json}"
+        ))
+    })?;
+    parse_pr_issue_comments_value(&comments_value)
+}
+
 pub(crate) fn parse_pr_health_output(view_json: &str, comments_json: &str) -> AppResult<PrHealth> {
     let view_value: Value = serde_json::from_str(view_json).map_err(|e| {
         AppError::Infrastructure(format!(
@@ -1830,6 +1927,256 @@ pub(crate) fn parse_pr_health_output(view_json: &str, comments_json: &str) -> Ap
         issue_comments: parse_pr_issue_comments_value(&comments_value)?,
         auto_merge_request: parse_auto_merge_request(&view_value),
     })
+}
+
+/// Maximum PRs aliased into one batched snapshot query.
+///
+/// Keeps a single request well inside GitHub's node-count budget and bounds the blast radius of
+/// one failed request; the hub chunks larger registrations across several calls.
+pub(crate) const PR_SNAPSHOT_CHUNK_SIZE: usize = 30;
+
+/// Status-check contexts requested per PR in the batched query.
+///
+/// GraphQL points are driven by requested node count, so this is the cost dial. The value must
+/// cover the maximum observed check surface: `ci.yml` (22 jobs + two 2-way shard matrices + a
+/// 2-entry include matrix), `coverage.yml` (8 jobs + matrices), and `codeql.yml` (5 jobs) all
+/// run on `pull_request` against `main`; 100 is the safe ceiling.
+///
+/// At `ceil(100 / 100) = 1` point per aliased PR, this matches the single-PR baseline and
+/// retains the 16× batching win measured before the hub was wired in.
+pub(crate) const PR_SNAPSHOT_CHECK_CONTEXT_LIMIT: usize = 100;
+
+/// Builds one batched PR snapshot request.
+///
+/// `{owner}` and `{repo}` are `gh`'s own placeholders, substituted from the repository the command
+/// runs in — so the hub never spends a call resolving the repo itself.
+///
+/// The selections here are raw GraphQL schema paths, not `gh pr view --json` field names: `--json`
+/// output is gh's own flattened shaping and does not exist at the API level. The parser maps this
+/// response back into that flattened shape so every downstream value flows through the exact
+/// parsers `fetch_pr_health` already uses.
+///
+/// `rateLimit { cost remaining resetAt }` is free and rides along so the response reports its own
+/// measured cost.
+pub(crate) fn build_pr_status_snapshots_args(pr_numbers: &[i64]) -> Vec<String> {
+    let contexts = PR_SNAPSHOT_CHECK_CONTEXT_LIMIT;
+    let mut selections = String::new();
+    for (index, number) in pr_numbers.iter().enumerate() {
+        selections.push_str(&format!(
+            r#" pr{index}: pullRequest(number: {number}) {{
+      number state mergeStateStatus mergeable isDraft mergedAt
+      headRefName baseRefName
+      headRefOid baseRefOid
+      mergeCommit {{ oid }}
+      reviewDecision
+      autoMergeRequest {{ mergeMethod enabledBy {{ login }} }}
+      commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: {contexts}) {{
+        totalCount
+        nodes {{
+          __typename
+          ... on CheckRun {{ name status conclusion detailsUrl }}
+          ... on StatusContext {{ context state targetUrl }}
+        }}
+      }} }} }} }} }}
+    }}"#
+        ));
+    }
+    let query = format!(
+        r#"query($owner: String!, $name: String!) {{
+  rateLimit {{ cost remaining resetAt }}
+  repository(owner: $owner, name: $name) {{{selections}
+  }}
+}}"#
+    );
+    vec![
+        "api".to_string(),
+        "graphql".to_string(),
+        "-F".to_string(),
+        "owner={owner}".to_string(),
+        "-F".to_string(),
+        "name={repo}".to_string(),
+        "-f".to_string(),
+        format!("query={query}"),
+    ]
+}
+
+/// Returns `true` when the batch response explicitly reports that the status-check rollup was
+/// truncated for this PR.
+///
+/// A missing `totalCount` means the rollup itself is null (no commits or no checks) — not
+/// truncation. Only when `totalCount` is present AND exceeds the returned node count does the
+/// caller know for certain that it received a short read. Absent-rollup PRs are served with
+/// whatever contexts came back rather than falling back, which preserves the pre-change behavior
+/// for PRs with no commit history.
+fn is_contexts_truncated(node: &Value) -> bool {
+    let Some(contexts) =
+        node.pointer("/commits/nodes/0/commit/statusCheckRollup/contexts")
+    else {
+        return false;
+    };
+    let total_count = contexts.get("totalCount").and_then(Value::as_u64);
+    let node_count = contexts
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(|arr| arr.len() as u64);
+    match (total_count, node_count) {
+        (Some(total), Some(count)) => total > count,
+        _ => false,
+    }
+}
+
+/// Reshapes one batched GraphQL PR node into the `gh pr view --json` shape.
+///
+/// Field equivalence with `parse_pr_health_output` is established by construction here rather
+/// than by a parallel mapper: the reshaped value is handed to the same `parse_pr_sync_state_value`
+/// / `parse_status_check_rollup` / `parse_auto_merge_request` functions, so the two paths cannot
+/// drift in how they interpret a field.
+fn reshape_graphql_pr_node(node: &Value) -> Value {
+    let contexts = node
+        .get("commits")
+        .and_then(|c| c.get("nodes"))
+        .and_then(Value::as_array)
+        .and_then(|nodes| nodes.first())
+        .and_then(|n| n.get("commit"))
+        .and_then(|c| c.get("statusCheckRollup"))
+        .and_then(|r| r.get("contexts"))
+        .and_then(|c| c.get("nodes"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    serde_json::json!({
+        "state": node.get("state"),
+        "mergeStateStatus": node.get("mergeStateStatus"),
+        "mergeable": node.get("mergeable"),
+        "isDraft": node.get("isDraft"),
+        "headRefName": node.get("headRefName"),
+        "baseRefName": node.get("baseRefName"),
+        // `headRefOid` / `baseRefOid` are non-null scalars on `PullRequest` itself, so they survive
+        // the head or base ref object being absent — which is why `gh pr view --json headRefOid`
+        // still returns a SHA in that state and a `headRef { target { oid } }` selection would not.
+        "headRefOid": node.get("headRefOid"),
+        "baseRefOid": node.get("baseRefOid"),
+        "mergedAt": node.get("mergedAt"),
+        "mergeCommit": node.get("mergeCommit"),
+        "reviewDecision": node.get("reviewDecision"),
+        "autoMergeRequest": node.get("autoMergeRequest"),
+        // `parse_status_check_rollup` already accepts both CheckRun (`name`/`status`/`conclusion`/
+        // `detailsUrl`) and StatusContext (`context`/`state`/`targetUrl`) shapes, which is exactly
+        // what the union above returns — so the nodes pass through untouched.
+        "statusCheckRollup": contexts,
+    })
+}
+
+/// Parses a batched snapshot response into per-PR snapshots.
+///
+/// A PR the response omits, nulls, or cannot be parsed is simply absent from the map; the hub
+/// falls back to a per-PR read for it rather than inventing a state.
+pub(crate) fn parse_pr_status_snapshots_output(
+    json: &str,
+    pr_numbers: &[i64],
+) -> AppResult<HashMap<i64, PrStatusSnapshot>> {
+    let value: Value = serde_json::from_str(json).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh PR snapshot JSON: {e}\nRaw: {json}"
+        ))
+    })?;
+    if let Some(errors) = value.get("errors").and_then(Value::as_array) {
+        if !errors.is_empty() && value.pointer("/data/repository").is_none() {
+            // GitHub can report an exhausted rate limit in the response body with a 200 status, so
+            // `gh` exits zero and `gh_process_failure_error` never sees it. Classify through the
+            // same matcher rather than a second pattern list, so the batched query — now the
+            // primary workspace read — still drives `note_rate_limited` and the adaptive backoff.
+            let message = format!("gh PR snapshot query failed: {errors:?}");
+            if is_github_rate_limit_message(&message) {
+                return Err(AppError::GithubRateLimited { message });
+            }
+            return Err(AppError::Infrastructure(message));
+        }
+    }
+    let Some(repository) = value.pointer("/data/repository") else {
+        return Err(AppError::Infrastructure(
+            "gh PR snapshot query returned no repository".to_string(),
+        ));
+    };
+
+    let mut out = HashMap::new();
+    for (index, number) in pr_numbers.iter().enumerate() {
+        let Some(node) = repository
+            .get(format!("pr{index}"))
+            .filter(|n| !n.is_null())
+        else {
+            continue;
+        };
+        // Truncated rollup — omit this PR so PrSnapshotHub::get_snapshot routes it to the
+        // uncapped per-PR fallback path, which has no context limit.
+        if is_contexts_truncated(node) {
+            continue;
+        }
+        let view = reshape_graphql_pr_node(node);
+        let Ok(sync_state) = parse_pr_sync_state_value(&view, "gh PR snapshot") else {
+            continue;
+        };
+        out.insert(
+            *number,
+            PrStatusSnapshot {
+                sync_state,
+                review_decision: view
+                    .get("reviewDecision")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                checks: parse_status_check_rollup(&view),
+                auto_merge_request: parse_auto_merge_request(&view),
+            },
+        );
+    }
+    Ok(out)
+}
+
+/// Args for the rate-limit probe.
+///
+/// `GET /rate_limit` is the one endpoint that does not itself consume quota, which is what makes
+/// it safe to call from a poll loop that is already worried about running out.
+pub(crate) fn build_rate_limit_args() -> Vec<String> {
+    vec!["api".to_string(), "rate_limit".to_string()]
+}
+
+/// Parse `gh api rate_limit` into the tightest budget RalphX actually spends against.
+///
+/// GraphQL and REST have separate pools. PR polling goes through `gh pr view`, which is GraphQL,
+/// but comment polling is REST — so the minimum of the two is the number that governs whether
+/// anything can still make progress. A pool missing from the payload is skipped rather than
+/// treated as zero: a partial response must not fabricate exhaustion.
+pub(crate) fn parse_rate_limit_output(json: &str) -> AppResult<Option<RateLimitSnapshot>> {
+    let value: Value = serde_json::from_str(json).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh rate limit JSON: {e}\nRaw: {json}"
+        ))
+    })?;
+    let resources = value.get("resources").unwrap_or(&value);
+
+    let mut tightest: Option<RateLimitSnapshot> = None;
+    for pool in ["graphql", "core"] {
+        let Some(entry) = resources.get(pool) else {
+            continue;
+        };
+        let (Some(remaining), Some(reset)) = (
+            entry.get("remaining").and_then(Value::as_u64),
+            entry.get("reset").and_then(Value::as_u64),
+        ) else {
+            continue;
+        };
+        let candidate = RateLimitSnapshot {
+            remaining: u32::try_from(remaining).unwrap_or(u32::MAX),
+            reset_epoch_secs: reset,
+        };
+        tightest = match tightest {
+            Some(current) if current.remaining <= candidate.remaining => Some(current),
+            _ => Some(candidate),
+        };
+    }
+
+    Ok(tightest)
 }
 
 pub(crate) fn parse_pr_auto_merge_state_output(

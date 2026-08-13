@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::{Duration, Utc};
 
@@ -1031,6 +1032,24 @@ async fn retry_safe_blocked_agent_workspace_repair(
         .is_some()
     {
         return Ok(DurableRepairRecoveryOutcome::Noop);
+    }
+    // The retry ladder is 60s → 120s → 240s with a cap of three, so all three successors land
+    // inside the same hourly GraphQL window. Retrying against a still-exhausted limit spends the
+    // whole budget and terminalizes the attempt for a cause that resolves itself. Defer instead:
+    // the streak marker is only written when a successor is actually dispatched, so waiting here
+    // costs nothing and the cap plus every other guard stays untouched.
+    //
+    // The signal is the structured shared `RateLimitState`, never the blocker text — see the
+    // doctrine below on why free-form agent prose is not evidence.
+    if let Some((remaining, reset_at)) = state.pr_poller_registry.rate_limit_snapshot() {
+        if remaining == 0 && reset_at > Instant::now() {
+            tracing::info!(
+                conversation_id = current.conversation_id.as_str(),
+                attempt_id = current.id.as_str(),
+                "Deferring blocked workspace repair retry until the GitHub rate limit resets"
+            );
+            return Ok(DurableRepairRecoveryOutcome::Noop);
+        }
     }
     let streak = automatic_blocked_repair_streak(&current);
     if streak >= MAX_AUTO_RETRY_BLOCKED_REPAIR_STREAK {

@@ -5,5 +5,7 @@
 
 pub mod pr_auto_merge_status;
 pub mod pr_merge_poller;
+pub mod pr_snapshot_hub;
 
 pub use pr_merge_poller::PrPollerRegistry;
+pub use pr_snapshot_hub::PrSnapshotHub;
