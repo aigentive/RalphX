@@ -21,26 +21,6 @@ use super::atlassian_client::{
     HyperAtlassianApiClient,
 };
 
-/// Wrap plain text into the minimal Atlassian Document Format document Jira
-/// Cloud v3 accepts for rich-text fields.
-pub(crate) fn plain_text_adf(text: &str) -> Value {
-    serde_json::json!({
-        "type": "doc",
-        "version": 1,
-        "content": [
-            {
-                "type": "paragraph",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": text,
-                    }
-                ]
-            }
-        ]
-    })
-}
-
 fn required(value: &str, message: &str) -> Result<String, AtlassianApiError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {

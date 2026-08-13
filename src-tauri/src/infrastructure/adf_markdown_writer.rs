@@ -13,7 +13,7 @@ enum Block {
         ordered: bool,
         items: Vec<ListItem>,
     },
-    CodeBlock {
+    Code {
         language: Option<String>,
         content: String,
     },
@@ -100,7 +100,7 @@ fn parse_code_block(lines: &[&str], start: usize, lang: &str) -> (Block, usize) 
     } else {
         Some(lang.trim().to_string())
     };
-    (Block::CodeBlock { language, content }, end + 1)
+    (Block::Code { language, content }, end + 1)
 }
 
 fn parse_heading(line: &str) -> Option<(u8, &str)> {
@@ -352,7 +352,7 @@ fn block_to_adf(block: &Block) -> Value {
                 "content": items.iter().map(list_item_to_adf).collect::<Vec<_>>(),
             })
         }
-        Block::CodeBlock { language, content } => {
+        Block::Code { language, content } => {
             let mut node = json!({
                 "type": "codeBlock",
                 "content": if content.is_empty() {
@@ -449,7 +449,7 @@ fn block_to_storage(block: &Block, out: &mut String) {
             }
             out.push_str(&format!("</{tag}>"));
         }
-        Block::CodeBlock { language, content } => {
+        Block::Code { language, content } => {
             out.push_str(r#"<ac:structured-macro ac:name="code">"#);
             if let Some(lang) = language {
                 out.push_str(r#"<ac:parameter ac:name="language">"#);

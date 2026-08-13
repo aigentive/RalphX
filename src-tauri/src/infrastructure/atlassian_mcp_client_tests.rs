@@ -18,8 +18,20 @@ use crate::domain::integrations::validate_atlassian_raw_path as validate_raw_pat
 
 use super::atlassian_mcp_client::{
     confluence_create_page, confluence_get_page, confluence_update_page, create_jira_issue,
-    plain_text_adf, raw_api_request, update_jira_issue,
+    raw_api_request, update_jira_issue,
 };
+
+/// Expected ADF document for a description with no markdown structure.
+fn plain_text_adf(text: &str) -> Value {
+    json!({
+        "type": "doc",
+        "version": 1,
+        "content": [{
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": text }]
+        }]
+    })
+}
 
 #[derive(Clone, Debug)]
 struct RecordedRequest {
@@ -183,21 +195,6 @@ async fn create_jira_issue_omits_parent_assignee_and_components_when_absent() {
     assert!(fields.get("parent").is_none());
     assert!(fields.get("assignee").is_none());
     assert!(fields.get("components").is_none());
-}
-
-#[test]
-fn plain_text_adf_builds_a_minimal_document() {
-    assert_eq!(
-        plain_text_adf("hello"),
-        json!({
-            "type": "doc",
-            "version": 1,
-            "content": [{
-                "type": "paragraph",
-                "content": [{ "type": "text", "text": "hello" }]
-            }]
-        })
-    );
 }
 
 #[tokio::test]

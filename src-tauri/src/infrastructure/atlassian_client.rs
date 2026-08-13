@@ -30,6 +30,7 @@ use super::atlassian_mcp_client;
 use super::confluence_secondary;
 use super::jira_agile_client::{
     get_jira_board_configuration, list_jira_active_sprints, list_jira_boards,
+    list_jira_sprint_issues,
 };
 use super::jira_board_context_client;
 
@@ -395,6 +396,15 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
         board_id: &str,
     ) -> Result<Vec<JiraSprintSummary>, String> {
         list_jira_active_sprints(self, auth, board_id).await
+    }
+
+    async fn list_jira_sprint_issues(
+        &self,
+        auth: &AtlassianAuthContext,
+        sprint_id: &str,
+        limit: usize,
+    ) -> Result<Vec<AtlassianResourceSummary>, String> {
+        list_jira_sprint_issues(self, auth, sprint_id, limit).await
     }
 
     async fn list_jira_comments(
