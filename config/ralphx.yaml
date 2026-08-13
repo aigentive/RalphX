@@ -44,6 +44,8 @@ shutdown:
 # Env: RALPHX_DB_AUTO_COMPACT_ENABLED, RALPHX_DB_AUTO_COMPACT_MAX_DB_BYTES, RALPHX_DB_AUTO_COMPACT_MIN_FREELIST_PERCENT
 database_maintenance:
   db_auto_compact_enabled: true
+  # Deprecated and ignored: this used to skip auto-compaction above the limit, which meant a
+  # bloated database could never self-heal. Disk headroom and freelist share are the real guards.
   db_auto_compact_max_db_bytes: 2147483648
   db_auto_compact_min_freelist_percent: 20
 
