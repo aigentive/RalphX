@@ -23,12 +23,12 @@ use crate::application::{AppState, GitService};
 use crate::domain::entities::AgentRun;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentRunId, AgentWorkspaceRepairAttempt,
-    AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairOperationHoldReason,
-    AgentWorkspaceRepairOperationRecoveryAction, AgentWorkspaceRepairOutcome,
-    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
-    ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
+    AgentConversationWorkspacePublicationEvent, AgentRunId, AgentWorkspacePrAutofixIssueKind,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairCompletionAuthority,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffectKind,
+    AgentWorkspaceRepairOperationHoldReason, AgentWorkspaceRepairOperationRecoveryAction,
+    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    AgentWorkspaceReviewGateStatus, ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -172,6 +172,9 @@ pub(crate) enum PublishAuthority {
 pub(crate) struct PrAutofixCarryover {
     pub dispatch_head_commit: Option<String>,
     pub health_fingerprint: Option<String>,
+    /// Blocker category the successor is being dispatched for. Carried because the fingerprint
+    /// hashes it away, so a successor would otherwise lose the completion guard's typed input.
+    pub issue_kind: Option<AgentWorkspacePrAutofixIssueKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -454,7 +457,10 @@ fn start_attempt_from_workspace(
     if let Some(carryover) = request.carryover_pr_autofix_evidence.as_ref() {
         attempt.pr_autofix_dispatch_head_commit = carryover.dispatch_head_commit.clone();
         attempt.pr_autofix_health_fingerprint = carryover.health_fingerprint.clone();
+        attempt.pr_autofix_issue_kind = carryover.issue_kind;
     }
+    // `base_update_head_commit` is deliberately never carried: each generation must earn its own
+    // unpublished-head evidence, or a settled generation's stale head would authorize a redrive.
     attempt
 }
 
@@ -810,18 +816,21 @@ pub(crate) fn agent_workspace_repair_hold_reason(
 ///
 /// Whitespace-only values never grant a re-drive; nonempty head values are compared exactly. A
 /// missing remote head also withholds the effect, because it is not proof that the local repair is
-/// unpublished.
+/// unpublished. The head may come from a validated completion or from a base update this attempt
+/// ran itself — both are local work GitHub has not seen.
 pub(crate) fn held_repair_has_unpublished_head(
     attempt: &AgentWorkspaceRepairAttempt,
     remote_head: Option<&str>,
 ) -> bool {
-    let Some(local_head) = attempt.repair_head_commit.as_deref() else {
+    // Raw on both sides: the comparison stays byte-exact, exactly as before this predicate learned
+    // about base-update evidence.
+    let Some(local_head) = attempt.unpublished_local_head_raw() else {
         return false;
     };
     let Some(remote_head) = remote_head else {
         return false;
     };
-    !local_head.trim().is_empty() && !remote_head.trim().is_empty() && local_head != remote_head
+    !remote_head.trim().is_empty() && local_head != remote_head
 }
 
 /// Holds a PR autofix generation at a backend-derived health fingerprint without pretending the
@@ -953,6 +962,43 @@ pub(crate) async fn mark_agent_workspace_base_update_target(
             expected_updated_at,
             next_phase: AgentWorkspaceRepairPhase::Ready,
             compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// Record the local branch head produced by a base update the agent ran inside an active
+/// `pr_autofix` attempt.
+///
+/// This is unpublished-head evidence only, so it deliberately preserves the current phase: the
+/// fixer run is normally still mid-flight and must not be moved. It also stays out of
+/// `target_base_commit` / `base_update_target_commit`, which
+/// `classify_health_hold_disposition` reads to route base-staleness dispositions — writing either
+/// here would re-route the hold instead of letting the existing redrive publish it.
+///
+/// # Errors
+///
+/// Returns the repository error when the durable transition cannot be attempted.
+pub(crate) async fn record_agent_workspace_pr_autofix_base_update_head(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    observed_head_commit: &str,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if observed_head_commit.trim().is_empty() {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.base_update_head_commit = Some(observed_head_commit.trim().to_string());
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: None,
             events: Vec::new(),
         })
         .await
@@ -1167,6 +1213,7 @@ pub(crate) async fn retry_agent_workspace_pr_autofix_hold_override(
         carryover_pr_autofix_evidence: Some(PrAutofixCarryover {
             dispatch_head_commit: current.pr_autofix_dispatch_head_commit.clone(),
             health_fingerprint: current.pr_autofix_health_fingerprint.clone(),
+            issue_kind: current.pr_autofix_issue_kind,
         }),
     };
     let successor = start_attempt_from_workspace(&workspace, &request);

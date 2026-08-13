@@ -5820,6 +5820,123 @@ async fn ready_health_hold_with_unpublished_head_marks_one_durable_redrive_witho
     );
 }
 
+/// End-to-end shape of the PR #1018 deadlock: a base update ran inside the attempt (advancing the
+/// workspace base past the attempt's dispatch target and producing a local merge commit), the
+/// fixer then misclassified its completion, and the workspace parked on a health hold. The
+/// recorded base-update head alone must authorize exactly one durable publish redrive.
+#[tokio::test]
+async fn ready_health_hold_with_only_base_update_head_marks_one_durable_redrive() {
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(130).await;
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+    let health = failing_check_pr_health("remote-ready-head", "Rust Tests");
+    let fingerprint = health_fingerprint(684, &health);
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    state.github_service =
+        Some(Arc::clone(&github) as Arc<dyn crate::domain::services::GithubServiceTrait>);
+    block_pr_autofix_attempt_with_fingerprint(&state, &conversation_id, Some(fingerprint)).await;
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("park unchanged health");
+    let held = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load health-held attempt")
+        .expect("health-held attempt exists");
+    assert_eq!(held.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(held.repair_head_commit.is_none());
+
+    // The base update the fixer ran itself: workspace base moves, attempt keeps its dispatch
+    // target, and the only local head is the resulting merge commit.
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load base-update workspace")
+        .expect("base-update workspace exists");
+    workspace.base_commit = Some("base-after-in-attempt-update".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("advance the workspace base like a completed base update");
+
+    let expected_updated_at = held.updated_at;
+    let mut with_base_update = held.clone();
+    with_base_update.target_base_commit = Some("dispatch-time-base".to_string());
+    with_base_update.base_update_head_commit = Some("base-update-merge-head".to_string());
+    with_base_update.updated_at += chrono::Duration::microseconds(1);
+    let with_base_update = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: with_base_update,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist in-attempt base-update evidence")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("base-update evidence must apply, got {outcome:?}"),
+    };
+
+    github.state().fetch_pr_health_result = Some(Ok(health.clone()));
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("authorize one base-update redrive");
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload base-update redrive")
+        .expect("redriven attempt remains current");
+    assert_eq!(current.id, with_base_update.id);
+    assert_eq!(current.generation, with_base_update.generation);
+    assert!(
+        current
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == "pr_autofix_head_redrive:base-update-merge-head"),
+        "the base-update head must authorize the redrive on its own"
+    );
+    assert!(
+        state
+            .agent_run_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("list repair runs")
+            .is_empty(),
+        "a publish re-drive must not start a fixer generation"
+    );
+
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("repeat base-update recovery is idempotent");
+    let repeated = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload repeat base-update redrive")
+        .expect("repeat attempt remains current");
+    assert_eq!(
+        repeated
+            .pending_reasons
+            .iter()
+            .filter(|reason| reason.as_str() == "pr_autofix_head_redrive:base-update-merge-head")
+            .count(),
+        1,
+        "the exact-head marker prevents duplicate re-drives"
+    );
+}
+
 /// Retry caps count attempts, not cost. A conversation that has already burned its agent-minutes
 /// budget on one failure identity must hand the failure to a human instead of buying another
 /// generation, and the handover must be visible rather than a silent stop.
@@ -6291,6 +6408,128 @@ async fn changed_pr_health_still_authorizes_a_successor_when_local_output_exists
         evaluate_successor_with_heads(79, Some("remote-head"), Some("local-head"), false).await,
         PrAutofixSuccessorDecision::Proceed(Some(_))
     ));
+}
+
+/// The base-update shape the deadlock actually takes: the attempt still targets its dispatch-time
+/// base, the workspace base has moved because a base update ran *inside* this attempt, and the
+/// only local head is that update's merge commit. Every other fixture leaves `target_base_commit`
+/// at `None`, which makes `repair_base_advanced` false vacuously.
+async fn evaluate_successor_after_in_attempt_base_update(
+    suffix: u8,
+    preserve_fingerprint: bool,
+) -> PrAutofixSuccessorDecision {
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(suffix).await;
+    let health = failing_check_pr_health("remote-head", "Rust Tests");
+    let fingerprint = health_fingerprint(684, &health);
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    state.github_service = Some(github as Arc<dyn crate::domain::services::GithubServiceTrait>);
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load base-advanced successor workspace")
+        .expect("base-advanced successor workspace exists");
+
+    let mut attempt = blocked_pr_autofix_attempt(
+        &conversation_id,
+        if preserve_fingerprint {
+            &fingerprint
+        } else {
+            "github_pr_autofix:684:checks:different"
+        },
+    );
+    attempt.target_base_commit = Some("dispatch-time-base".to_string());
+    // No validated completion — only the head the backend recorded for the in-attempt update.
+    attempt.base_update_head_commit = Some("base-update-merge-head".to_string());
+    workspace.base_commit = Some("base-after-in-attempt-update".to_string());
+    assert_ne!(attempt.target_base_commit, workspace.base_commit);
+
+    evaluate_pr_autofix_successor(&state, &attempt, &workspace).await
+}
+
+#[tokio::test]
+async fn in_attempt_base_update_still_redrives_publish_when_health_is_unchanged() {
+    // Falsifying test for the narrowed `repair_base_advanced` guard: before it, the self-inflicted
+    // base advance short-circuited to `Proceed(None)` and the recorded head was never published.
+    assert_eq!(
+        evaluate_successor_after_in_attempt_base_update(126, true).await,
+        PrAutofixSuccessorDecision::RedrivePublish
+    );
+}
+
+#[tokio::test]
+async fn in_attempt_base_update_with_changed_health_still_takes_the_successor_path() {
+    assert!(matches!(
+        evaluate_successor_after_in_attempt_base_update(127, false).await,
+        PrAutofixSuccessorDecision::Proceed(Some(_))
+    ));
+}
+
+#[test]
+fn unpublished_local_head_prefers_validated_completion_then_base_update_evidence() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(128),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+
+    assert_eq!(attempt.unpublished_local_head(), None);
+
+    attempt.base_update_head_commit = Some("  base-update-head  ".to_string());
+    assert_eq!(attempt.unpublished_local_head(), Some("base-update-head"));
+
+    attempt.repair_head_commit = Some("   ".to_string());
+    assert_eq!(
+        attempt.unpublished_local_head(),
+        Some("base-update-head"),
+        "a whitespace-only completion head must fall through, not shadow real evidence"
+    );
+
+    attempt.repair_head_commit = Some(" validated-head ".to_string());
+    assert_eq!(attempt.unpublished_local_head(), Some("validated-head"));
+
+    attempt.base_update_head_commit = Some("   ".to_string());
+    attempt.repair_head_commit = None;
+    assert_eq!(attempt.unpublished_local_head(), None);
+}
+
+#[test]
+fn base_update_head_alone_counts_as_an_unpublished_head() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        conversation_id(129),
+        AgentWorkspaceRepairSource::PrAutofix,
+        AgentWorkspaceRepairContinuation::Publish,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+
+    attempt.base_update_head_commit = Some("base-update-head".to_string());
+    assert!(held_repair_has_unpublished_head(
+        &attempt,
+        Some("remote-head")
+    ));
+    assert!(!held_repair_has_unpublished_head(
+        &attempt,
+        Some("base-update-head")
+    ));
+    assert!(!held_repair_has_unpublished_head(&attempt, Some("   ")));
+    assert!(!held_repair_has_unpublished_head(&attempt, None));
+
+    // The marker the durable redrive writes must key on the same value.
+    attempt.pending_reasons = vec!["pr_autofix_head_redrive:base-update-head".to_string()];
+    assert!(agent_workspace_repair_owns_unpublished_publish_continuation(&attempt));
 }
 
 async fn mark_blocked_pr_autofix_as_unpublished(

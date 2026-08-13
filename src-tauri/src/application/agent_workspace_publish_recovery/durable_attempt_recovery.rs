@@ -102,12 +102,9 @@ const MAX_CONTINUATION_RECOVERY_FAILURE_STREAK: u32 = 3;
 pub(crate) fn agent_workspace_repair_owns_unpublished_publish_continuation(
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> bool {
-    let Some(head) = attempt.repair_head_commit.as_deref().map(str::trim) else {
+    let Some(head) = attempt.unpublished_local_head() else {
         return false;
     };
-    if head.is_empty() {
-        return false;
-    }
     let marker = format!("{PR_AUTOFIX_HEAD_REDRIVE_REASON_PREFIX}{head}");
     attempt
         .pending_reasons
@@ -663,12 +660,9 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
                 ) {
                     return Ok(DurableRepairRecoveryOutcome::Noop);
                 }
-                let Some(head) = current.repair_head_commit.as_deref().map(str::trim) else {
+                let Some(head) = current.unpublished_local_head() else {
                     return Ok(DurableRepairRecoveryOutcome::Noop);
                 };
-                if head.is_empty() {
-                    return Ok(DurableRepairRecoveryOutcome::Noop);
-                }
                 let marker = format!("{PR_AUTOFIX_HEAD_REDRIVE_REASON_PREFIX}{head}");
                 (
                     true,
@@ -1058,12 +1052,7 @@ async fn retry_safe_blocked_agent_workspace_repair(
         // publish-vs-health hold livelock. Evaluate only the durable-head shape here so the
         // pre-existing cap behavior remains unchanged for ordinary successors and holds.
         if current.source == AgentWorkspaceRepairSource::PrAutofix {
-            let repair_head = current
-                .repair_head_commit
-                .as_deref()
-                .map(str::trim)
-                .filter(|head| !head.is_empty())
-                .map(str::to_string);
+            let repair_head = current.unpublished_local_head().map(str::to_string);
             if let Some(repair_head) =
                 repair_head.filter(|head| !exhausted_publish_redrive_was_checked(&current, head))
             {
@@ -1102,11 +1091,9 @@ async fn retry_safe_blocked_agent_workspace_repair(
         // A repair head still awaiting publication is a bounded, already-owned gap: the redrive
         // check above owns it for exactly one GitHub read per head. Re-arming here as well would
         // add a second, unbounded health read for the same generation on every later pass.
-        let has_unpublished_repair_head = current
-            .repair_head_commit
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|head| !head.is_empty());
+        // Must stay keyed on the same accessor as the redrive check above, or an attempt carrying
+        // only base-update evidence would both skip the redrive and re-arm the streak.
+        let has_unpublished_repair_head = current.unpublished_local_head().is_some();
         if current.source == AgentWorkspaceRepairSource::PrAutofix && !has_unpublished_repair_head {
             if let Some(outcome) = rearm_blocked_pr_autofix_streak(state, &current).await? {
                 return Ok(outcome);

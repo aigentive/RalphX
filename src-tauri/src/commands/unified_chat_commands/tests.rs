@@ -5995,6 +5995,148 @@ fn setup_publish_repo(repo_path: &Path) -> String {
     git(repo_path, &["rev-parse", "HEAD"])
 }
 
+/// Seeds one unsettled repair attempt of the requested source and returns the branch head the
+/// base-update evidence recorder should observe.
+async fn seed_base_update_evidence_attempt(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    source: AgentWorkspaceRepairSource,
+) {
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            ProjectId::from_string("project-base-update-evidence".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-before-update".to_string()),
+            "ralphx/test/base-update-evidence".to_string(),
+            "/tmp/base-update-evidence-workspace".to_string(),
+        ))
+        .await
+        .expect("seed workspace for the repair attempt");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(
+            crate::domain::repositories::StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: crate::domain::entities::AgentWorkspaceRepairAttempt::new(
+                    conversation_id.clone(),
+                    source,
+                    AgentWorkspaceRepairContinuation::ResumePrSupervision,
+                    "main",
+                    false,
+                    true,
+                    false,
+                    None,
+                    chrono::Utc::now(),
+                ),
+                reason: "base update evidence fixture".to_string(),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("seed repair attempt");
+    assert!(matches!(
+        started,
+        crate::domain::repositories::StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+}
+
+async fn recorded_base_update_head(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Option<String> {
+    state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load attempt")
+        .and_then(|attempt| attempt.base_update_head_commit)
+}
+
+/// The base update already succeeded by the time this runs, so every failure mode must degrade to
+/// a warning rather than failing the update or writing evidence it cannot prove.
+#[tokio::test]
+async fn base_update_head_evidence_is_recorded_only_for_an_active_pr_autofix_attempt() {
+    let repository = tempfile::tempdir().expect("base update evidence repository");
+    let repo_path = repository.path().join("base-update-evidence");
+    let head = setup_publish_repo(&repo_path);
+
+    // No attempt at all: the recorder must be a silent no-op, not a panic or an error.
+    let empty_state = AppState::new_test();
+    let empty_conversation = ChatConversationId::from_string("base-update-evidence-none");
+    super::record_pr_autofix_base_update_head_evidence(
+        &empty_state,
+        &empty_conversation,
+        &repo_path,
+        "main",
+    )
+    .await;
+    assert_eq!(
+        recorded_base_update_head(&empty_state, &empty_conversation).await,
+        None
+    );
+
+    // A non-PrAutofix repair owns its own evidence contract; this route must not touch it.
+    let publish_state = AppState::new_test();
+    let publish_conversation = ChatConversationId::from_string("base-update-evidence-publish");
+    seed_base_update_evidence_attempt(
+        &publish_state,
+        &publish_conversation,
+        AgentWorkspaceRepairSource::Publish,
+    )
+    .await;
+    super::record_pr_autofix_base_update_head_evidence(
+        &publish_state,
+        &publish_conversation,
+        &repo_path,
+        "main",
+    )
+    .await;
+    assert_eq!(
+        recorded_base_update_head(&publish_state, &publish_conversation).await,
+        None
+    );
+
+    // An unreadable branch cannot produce evidence, but must still not fail.
+    let autofix_state = AppState::new_test();
+    let autofix_conversation = ChatConversationId::from_string("base-update-evidence-autofix");
+    seed_base_update_evidence_attempt(
+        &autofix_state,
+        &autofix_conversation,
+        AgentWorkspaceRepairSource::PrAutofix,
+    )
+    .await;
+    super::record_pr_autofix_base_update_head_evidence(
+        &autofix_state,
+        &autofix_conversation,
+        &repo_path,
+        "branch-that-does-not-exist",
+    )
+    .await;
+    assert_eq!(
+        recorded_base_update_head(&autofix_state, &autofix_conversation).await,
+        None
+    );
+
+    super::record_pr_autofix_base_update_head_evidence(
+        &autofix_state,
+        &autofix_conversation,
+        &repo_path,
+        "main",
+    )
+    .await;
+    assert_eq!(
+        recorded_base_update_head(&autofix_state, &autofix_conversation).await,
+        Some(head),
+        "the active PR autofix attempt records the exact branch head the update produced"
+    );
+}
+
 async fn setup_publish_command_state(
     suffix: &str,
     capture_base_commit: bool,
