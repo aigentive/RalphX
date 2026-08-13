@@ -46,6 +46,7 @@ jobs:
           filters: |
             plugins:
               - added|modified|deleted:
+                  - '.github/workflows/coverage.yml'
                   - 'scripts/summarize-coverage.mjs'
                   - 'plugins/app/ralphx-external-mcp/**'
                   - 'plugins/app/ralphx-mcp-server/**'
@@ -54,6 +55,7 @@ jobs:
               - added|modified|deleted:
                   - '.cargo/**'
                   - '.github/actions/**'
+                  - '.github/workflows/coverage.yml'
                   - 'scripts/summarize-coverage.mjs'
                   - 'scripts/bench-rust-build.sh'
                   - 'scripts/check-rust-test-features.py'
@@ -65,6 +67,7 @@ jobs:
               - '!**/CLAUDE.md'
             frontend:
               - added|modified|deleted:
+                  - '.github/workflows/coverage.yml'
                   - 'scripts/summarize-coverage.mjs'
                   - 'frontend/**'
               - '!**/CLAUDE.md'
