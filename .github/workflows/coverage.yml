@@ -257,7 +257,7 @@ jobs:
           cargo llvm-cov nextest \
             --archive-file ../rust-lib-coverage.tar.zst \
             --workspace-remap "${GITHUB_WORKSPACE}/src-tauri" \
-            --profile ci \
+            --profile ci-coverage \
             --partition hash:${{ matrix.partition }} \
             --remap-path-prefix \
             | tee "../${RUST_LIB_COVERAGE_ROOT}/summary.txt"
