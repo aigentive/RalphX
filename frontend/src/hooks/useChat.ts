@@ -424,18 +424,28 @@ export function upsertFinalizedMessageIntoConversationCache(
         return oldData;
       }
 
-      const retainedItems = newestPage.items.filter(
-        (item) => item.messageId !== message.id && item.asMessage.parentMessageId !== message.id
-      );
-      const baseSequence =
+      const belongsToMessage = (item: ConversationTimelinePageResponse["items"][number]) =>
+        item.messageId === message.id || item.asMessage.parentMessageId === message.id;
+      const removedItems = newestPage.items.filter(belongsToMessage);
+      const retainedItems = newestPage.items.filter((item) => !belongsToMessage(item));
+      // Blocks already in the cache keep the position they were durably
+      // written at; re-homing them to the tail would push them above items
+      // that legitimately follow them (e.g. a user message sent mid-run).
+      const previousSequences = new Map(removedItems.map((item) => [item.id, item.sequence]));
+      let nextAppendSequence =
         Math.max(
           newestPage.newestLoadedSequence ?? 0,
           ...retainedItems.map((item) => item.sequence),
-        );
-      const insertedItems = contentBlocks.map((block, index) =>
-        createFinalizedTimelineItem(message, block, index, baseSequence + index + 1)
+          ...previousSequences.values(),
+        ) + 1;
+      const insertedItems = contentBlocks.map((block, index) => {
+        const reusedSequence = previousSequences.get(`block:${message.id}:${index}`);
+        const sequence = reusedSequence ?? nextAppendSequence++;
+        return createFinalizedTimelineItem(message, block, index, sequence);
+      });
+      const items = [...retainedItems, ...insertedItems].sort(
+        (left, right) => left.sequence - right.sequence
       );
-      const items = [...retainedItems, ...insertedItems];
       const totalItemCount = Math.max(
         insertedItems.length,
         newestPage.totalItemCount - (newestPage.items.length - retainedItems.length) + insertedItems.length

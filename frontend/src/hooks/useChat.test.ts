@@ -996,6 +996,79 @@ describe("useConversationTimelineWindow", () => {
     ).toBe(true);
   });
 
+  it("keeps already-cached block sequences when finalizing around a mid-run user message", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [
+          timelinePage([
+            {
+              ...mockMessage1,
+              id: "block:assistant-final:0",
+              parentMessageId: "assistant-final",
+              role: "assistant",
+              content: "Streamed before the send",
+              contentBlocks: [{ type: "text", text: "Streamed before the send" }],
+              timelineSequence: 3,
+            },
+            {
+              ...mockMessage1,
+              id: "block:user-mid-run:0",
+              parentMessageId: "user-mid-run",
+              content: "Mid-run question",
+              contentBlocks: [{ type: "text", text: "Mid-run question" }],
+              timelineSequence: 84,
+            },
+          ], {
+            totalItemCount: 84,
+            oldestLoadedSequence: 3,
+            newestLoadedSequence: 84,
+          }),
+        ],
+        pageParams: [null],
+      },
+    );
+
+    const finalized: ChatMessageResponse = {
+      ...mockMessage1,
+      id: "assistant-final",
+      role: "assistant",
+      parentMessageId: null,
+      content: "Streamed before the send",
+      contentBlocks: [
+        { type: "text", text: "Streamed before the send" },
+        { type: "text", text: "Streamed after the send" },
+      ],
+      createdAt: "2026-01-24T10:01:00Z",
+    };
+
+    expect(upsertFinalizedMessageIntoConversationCache(queryClient, "conv-1", finalized)).toBe(true);
+
+    const page = queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1")
+    )?.pages[0];
+
+    // The already-durable block keeps sequence 3 and stays below the user
+    // message; only the genuinely new block appends past the tail.
+    expect(page?.items.map((item) => [item.id, item.sequence])).toEqual([
+      ["block:assistant-final:0", 3],
+      ["block:user-mid-run:0", 84],
+      ["block:assistant-final:1", 85],
+    ]);
+    expect(page?.messages.map((message) => message.id)).toEqual([
+      "block:assistant-final:0",
+      "block:user-mid-run:0",
+      "block:assistant-final:1",
+    ]);
+    expect(page?.oldestLoadedSequence).toBe(3);
+    expect(page?.newestLoadedSequence).toBe(85);
+  });
+
   it("does not upsert finalized messages when the active timeline cache is absent", () => {
     const { queryClient } = createWrapperWithClient();
     const finalized: ChatMessageResponse = {
