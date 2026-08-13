@@ -9064,6 +9064,7 @@ async fn continue_repair_into_a_blocking_publish_with_open_effect(
         .expect("load delivered attempt")
         .expect("delivered attempt exists");
     assert!(attempt.target_lease_epoch.is_some());
+    let expected_phase = attempt.phase;
     let expected_updated_at = attempt.updated_at;
     attempt.phase = AgentWorkspaceRepairPhase::Continuing;
     attempt.continuation = AgentWorkspaceRepairContinuation::Publish;
@@ -9074,7 +9075,7 @@ async fn continue_repair_into_a_blocking_publish_with_open_effect(
         .agent_workspace_repair_repo
         .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
             attempt,
-            expected_phase: AgentWorkspaceRepairPhase::Repairing,
+            expected_phase,
             expected_updated_at,
             next_phase: AgentWorkspaceRepairPhase::Continuing,
             compatibility_projection: None,
