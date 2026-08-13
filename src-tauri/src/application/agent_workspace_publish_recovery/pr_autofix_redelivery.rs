@@ -124,7 +124,7 @@ async fn resolve_pr_autofix_pr_number(
 /// True when the workspace's base has moved since this generation was targeted. That is new input
 /// for the repair independent of anything GitHub reports about the PR, so it authorizes a
 /// successor on its own.
-fn repair_base_advanced(
+pub(super) fn repair_base_advanced(
     current: &AgentWorkspaceRepairAttempt,
     workspace: &AgentConversationWorkspace,
 ) -> bool {

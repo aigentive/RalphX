@@ -33,11 +33,13 @@ use crate::application::agent_workspace_publish_recovery::{
     STALE_TRANSIENT_CLASSIFICATION, STALE_TRANSIENT_RECOVERED_STEP, WORKSPACE_MISSING_SETTLED_STEP,
 };
 use crate::application::agent_workspace_publish_repair_state::{
+    block_agent_workspace_repair_completion, explicit_agent_workspace_repair_retry_allowed,
     held_repair_has_unpublished_head, reserve_agent_workspace_repair_dispatch,
     start_or_join_agent_workspace_repair, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
-    BASE_STALE_AFTER_UPDATE_REPAIR_REASON, MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES,
-    NEEDS_HUMAN_REPAIR_REASON, PRE_EXISTING_ON_BASE_REPAIR_REASON, UNCHANGED_HEALTH_REPAIR_REASON,
+    AgentWorkspaceRepairTransitionOutcome, BASE_STALE_AFTER_UPDATE_REPAIR_REASON,
+    MAX_AGENT_WORKSPACE_REPAIR_DISPATCH_RETRIES, NEEDS_HUMAN_REPAIR_REASON,
+    PRE_EXISTING_ON_BASE_REPAIR_REASON, UNCHANGED_HEALTH_REPAIR_REASON,
 };
 use crate::application::agent_workspace_review::{
     resolve_review_target, AgentWorkspaceReviewPacket, AgentWorkspaceReviewTarget,
@@ -8800,5 +8802,379 @@ async fn one_orphaned_worktree_no_longer_aborts_the_whole_recovery_pass() {
     assert_eq!(
         recovered, 1,
         "only the healthy attempt counts as recovered; the orphan is a settled no-op"
+    );
+}
+
+/// Reproduces the production sequence that strands an open effect on a blocked repair: the effect
+/// is created in `Continuing` (the only phase production creates repair effects in), and then the
+/// claim-recovery blocker fires while it is still in flight. That is exactly what
+/// `git_mutation_recovery::block_repair_claim_recovery` does when a push mutation loses its lease,
+/// target, or fencing-epoch proof — after which claim recovery declines forever on
+/// `phase == Continuing`.
+#[cfg(unix)]
+async fn block_repair_with_orphaned_open_effect(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    kind: AgentWorkspaceRepairEffectKind,
+    intended_head_oid: Option<&str>,
+) -> (AgentWorkspaceRepairAttempt, String) {
+    let repair_head = "2222222222222222222222222222222222222222".to_string();
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load repair attempt to continue")
+        .expect("repair attempt exists to continue");
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Continuing;
+    attempt.repair_head_commit = Some(repair_head.clone());
+    attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+    let continuing = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("move the repair into its continuation")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("continuing the repair must apply, got {outcome:?}"),
+    };
+
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        continuing.id.clone(),
+        kind,
+        format!(
+            "agent_workspace_repair:{}:{}:{}",
+            continuing.id, continuing.generation, kind
+        ),
+        continuing.updated_at,
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    effect.intended_head_oid = intended_head_oid.map(str::to_string);
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+                attempt_id: continuing.id.clone(),
+                generation: continuing.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Continuing,
+                expected_attempt_updated_at: continuing.updated_at,
+                effect,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("seed the in-flight effect the owning process abandoned"),
+        CreateAgentWorkspaceRepairEffectOutcome::Created(_)
+    ));
+
+    let blocked = match block_agent_workspace_repair_completion(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        continuing,
+        "Workspace repair recovery is blocked.",
+        "repair mutation lease proof failed",
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("block the continuation while its effect is still in flight")
+    {
+        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("blocking the continuation must apply, got {outcome:?}"),
+    };
+    assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    (blocked, repair_head)
+}
+
+#[cfg(unix)]
+async fn open_effect_after_sweep(
+    state: &AppState,
+    attempt_id: &crate::domain::entities::AgentWorkspaceRepairAttemptId,
+) -> Option<AgentWorkspaceRepairEffect> {
+    state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(attempt_id)
+        .await
+        .expect("read the open effect after the sweep")
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn blocked_sweep_terminates_an_orphaned_branch_push_effect() {
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_orphaned_repair_dispatch(153, "#!/bin/sh\nexit 1\n").await;
+    let (blocked, repair_head) = block_repair_with_orphaned_open_effect(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        Some("2222222222222222222222222222222222222222"),
+    )
+    .await;
+    assert!(open_effect_after_sweep(&state, &blocked.id).await.is_some());
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("sweep the blocked repair attempt");
+
+    assert!(
+        open_effect_after_sweep(&state, &blocked.id).await.is_none(),
+        "the abandoned push must stop fencing the attempt"
+    );
+    let terminated = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&format!(
+            "agent_workspace_repair:{}:{}:{}",
+            blocked.id,
+            blocked.generation,
+            AgentWorkspaceRepairEffectKind::PushBranch
+        ))
+        .await
+        .expect("read the terminated push effect")
+        .expect("the terminated push effect is retained");
+    assert_eq!(
+        terminated.status,
+        AgentWorkspaceRepairEffectStatus::Failed,
+        "the fence is cleared by failing the effect, never by deleting its history"
+    );
+    assert!(terminated.completed_at.is_some());
+    assert_eq!(
+        terminated.intended_head_oid.as_deref(),
+        Some(repair_head.as_str())
+    );
+
+    // A second pass has nothing left to clear.
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("re-sweep the blocked repair attempt");
+    assert!(open_effect_after_sweep(&state, &blocked.id).await.is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn blocked_sweep_leaves_a_pull_request_creation_effect_fenced() {
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_orphaned_repair_dispatch(154, "#!/bin/sh\nexit 1\n").await;
+    let (blocked, _repair_head) = block_repair_with_orphaned_open_effect(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairEffectKind::CreatePr,
+        Some("2222222222222222222222222222222222222222"),
+    )
+    .await;
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("sweep the blocked repair attempt");
+
+    let open = open_effect_after_sweep(&state, &blocked.id)
+        .await
+        .expect("an unproven pull-request creation stays fenced");
+    assert_eq!(open.kind, AgentWorkspaceRepairEffectKind::CreatePr);
+    assert_eq!(open.status, AgentWorkspaceRepairEffectStatus::InFlight);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn blocked_sweep_leaves_a_push_effect_whose_head_disagrees_with_the_attempt() {
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_orphaned_repair_dispatch(155, "#!/bin/sh\nexit 1\n").await;
+    let (blocked, _repair_head) = block_repair_with_orphaned_open_effect(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        Some("3333333333333333333333333333333333333333"),
+    )
+    .await;
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("sweep the blocked repair attempt");
+
+    let open = open_effect_after_sweep(&state, &blocked.id)
+        .await
+        .expect("a push for a head the attempt cannot vouch for stays fenced");
+    assert_eq!(open.status, AgentWorkspaceRepairEffectStatus::InFlight);
+}
+
+/// Drives the seeded orphan through a real delivery (which acquires the canonical target lease),
+/// then parks it in `Continuing` holding an abandoned in-flight effect. With no GitHub service the
+/// continuation blocks the attempt and returns an error, which is the production route into the
+/// blocked-with-open-effect escalation gap.
+#[cfg(unix)]
+async fn continue_repair_into_a_blocking_publish_with_open_effect(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    kind: AgentWorkspaceRepairEffectKind,
+) -> AgentWorkspaceRepairAttempt {
+    let repair_head = "4444444444444444444444444444444444444444".to_string();
+    age_requested_pr_autofix_orphan(state, conversation_id, None).await;
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(state)
+            .await
+            .expect("deliver the seeded repair so it acquires its target lease"),
+        1
+    );
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load delivered attempt")
+        .expect("delivered attempt exists");
+    assert!(attempt.target_lease_epoch.is_some());
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Continuing;
+    attempt.continuation = AgentWorkspaceRepairContinuation::Publish;
+    attempt.repair_head_commit = Some(repair_head.clone());
+    attempt.reserved_agent_run_id = None;
+    attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+    let continuing = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::Repairing,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("move the delivered repair into its continuation")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("continuing the delivered repair must apply, got {outcome:?}"),
+    };
+
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        continuing.id.clone(),
+        kind,
+        format!(
+            "agent_workspace_repair:{}:{}:{}",
+            continuing.id, continuing.generation, kind
+        ),
+        continuing.updated_at,
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    effect.intended_head_oid = Some(repair_head);
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+                attempt_id: continuing.id.clone(),
+                generation: continuing.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Continuing,
+                expected_attempt_updated_at: continuing.updated_at,
+                effect,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("seed the in-flight effect the owning process abandoned"),
+        CreateAgentWorkspaceRepairEffectOutcome::Created(_)
+    ));
+    continuing
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn blocked_repair_with_an_open_push_effect_regains_a_live_user_retry() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_orphaned_repair_dispatch(156, PR_FIXER_RESCUE_CLI).await;
+    // No GitHub service, so the continuation blocks the attempt and returns an error.
+    assert!(state.github_service.is_none());
+    let continuing = continue_repair_into_a_blocking_publish_with_open_effect(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairEffectKind::UpdatePr,
+    )
+    .await;
+    assert!(
+        !explicit_agent_workspace_repair_retry_allowed(
+            state.agent_workspace_repair_repo.as_ref(),
+            &continuing
+        )
+        .await
+        .expect("read the retry admission before recovery"),
+        "a continuing attempt has no retry action to begin with"
+    );
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("let the continuation block behind its open effect");
+
+    let blocked = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load the blocked attempt")
+        .expect("the blocked attempt remains current");
+    assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(
+        blocked
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON),
+        "a blocked attempt fenced by its own effect must record why it needs attention, got: {:?}",
+        blocked.pending_reasons
+    );
+    assert!(
+        explicit_agent_workspace_repair_retry_allowed(
+            state.agent_workspace_repair_repo.as_ref(),
+            &blocked
+        )
+        .await
+        .expect("read the retry admission after recovery"),
+        "an idempotent pull-request update replay must leave the user a live Retry action"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn blocked_repair_with_an_open_pull_request_creation_keeps_its_retry_withheld() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_orphaned_repair_dispatch(157, PR_FIXER_RESCUE_CLI).await;
+    continue_repair_into_a_blocking_publish_with_open_effect(
+        &state,
+        &conversation_id,
+        AgentWorkspaceRepairEffectKind::CreatePr,
+    )
+    .await;
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("let the continuation block behind its open effect");
+
+    let blocked = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load the blocked attempt")
+        .expect("the blocked attempt remains current");
+    assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(
+        !explicit_agent_workspace_repair_retry_allowed(
+            state.agent_workspace_repair_repo.as_ref(),
+            &blocked
+        )
+        .await
+        .expect("read the retry admission after recovery"),
+        "an unproven pull-request creation must never be re-admitted for replay"
     );
 }

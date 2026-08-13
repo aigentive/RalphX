@@ -532,7 +532,14 @@ fn is_uninitialized_repair_push_preflight(effect: &AgentWorkspaceRepairEffect) -
         && !effect.expected_remote_absent
 }
 
-async fn read_repair_origin_branch_oid(
+/// Reads the exact commit `origin` currently publishes for a workspace branch, fetching first so
+/// the answer is not a stale tracking ref. `Ok(None)` means the branch has never been pushed.
+///
+/// # Errors
+///
+/// Returns an error when the fetch or either ref read fails; callers that only need best-effort
+/// evidence must degrade on that error rather than propagate it.
+pub(crate) async fn read_repair_origin_branch_oid(
     workspace_path: &std::path::Path,
     branch_name: &str,
 ) -> AppResult<Option<String>> {
