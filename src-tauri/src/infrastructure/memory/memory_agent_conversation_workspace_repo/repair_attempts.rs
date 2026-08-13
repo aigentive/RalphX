@@ -75,7 +75,9 @@ fn apply_compatibility_projection(
     if let Some(pr_auto_merge_desired) = projection.pr_auto_merge_desired {
         workspace.pr_auto_merge_desired = pr_auto_merge_desired;
     }
-    workspace.base_commit = projection.base_commit.clone();
+    if let Some(base_commit) = projection.base_commit.as_ref() {
+        workspace.base_commit = Some(base_commit.clone());
+    }
     workspace.updated_at = updated_at;
 }
 
@@ -596,6 +598,10 @@ impl AgentWorkspaceRepairRepository for MemoryAgentConversationWorkspaceReposito
         &self,
         idempotency_key: &str,
     ) -> AppResult<Option<AgentWorkspaceRepairEffect>> {
+        #[cfg(test)]
+        if let Some(message) = self.next_repair_effect_read_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
         Ok(self
             .repair_effects
             .read()

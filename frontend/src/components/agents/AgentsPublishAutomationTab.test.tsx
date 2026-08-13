@@ -3,11 +3,12 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 
-import { chatApi, type AgentConversationWorkspacePublicationEvent } from "@/api/chat";
+import { chatApi } from "@/api/chat";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { createTestQueryClient } from "@/test/store-utils";
 import { conversationWorkspaceFixture } from "./agentsTestFixtures";
 import { AgentsPublishAutomationTab } from "./AgentsPublishAutomationTab";
+import { hasReportableAutofixSpend } from "./agentWorkspacePublishState";
 import {
   deriveAgentsPublishAutomationSnapshot,
   hasActiveAgentsPublishAutomation,
@@ -33,7 +34,6 @@ function renderAutomationTab(
     mode: "edit",
     autoPublishInitialPrEnabled: false,
   }),
-  publicationEvents: AgentConversationWorkspacePublicationEvent[] = [],
 ) {
   const onSnapshotChange = vi.fn();
   render(
@@ -46,7 +46,6 @@ function renderAutomationTab(
           canConfigurePrSupervision
           hasUncommittedChanges={false}
           terminalPrLabel="This pull request"
-          publicationEvents={publicationEvents}
           onSnapshotChange={onSnapshotChange}
         />
       </TooltipProvider>
@@ -276,7 +275,7 @@ describe("AgentsPublishAutomationTab", () => {
     );
   });
 
-  it("shows the current repair budget and durable repair-generation ledger", () => {
+  it("shows the current repair budget spend line and never renders a raw event ledger", () => {
     const workspace = conversationWorkspaceFixture({
       prAutofixFingerprintSpend: {
         generations: 2,
@@ -285,37 +284,144 @@ describe("AgentsPublishAutomationTab", () => {
         isExhausted: false,
       },
     });
-    renderAutomationTab(workspace, [
-      {
-        id: "repair-1",
-        conversationId: workspace.conversationId,
-        step: "repair_sent",
-        status: "succeeded",
-        summary: "Repair generation 2 sent",
-        classification: null,
-        attemptId: null,
-        createdAt: "2026-08-02T10:00:00Z",
-      },
-      {
-        id: "repair-held",
-        conversationId: workspace.conversationId,
-        step: "repair_fingerprint_hold",
-        status: "held",
-        summary: "Repair paused for unchanged CI evidence",
-        classification: null,
-        attemptId: null,
-        createdAt: "2026-08-02T10:01:00Z",
-      },
-    ]);
+    renderAutomationTab(workspace);
 
     expect(screen.getByTestId("agents-pr-autofix-budget")).toHaveTextContent(
       "18 / 45 min",
     );
-    expect(screen.getByTestId("agents-pr-autofix-ledger")).toHaveTextContent(
-      "Repair generation 2 sent",
+    expect(screen.getByTestId("agents-pr-autofix-budget")).toHaveTextContent(
+      "2 generations",
     );
-    expect(screen.getByTestId("agents-pr-autofix-ledger")).toHaveTextContent(
-      "Repair paused for unchanged CI evidence",
+    expect(
+      screen.queryByTestId("agents-pr-autofix-ledger"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the budget card when spend is null", () => {
+    const workspace = conversationWorkspaceFixture({
+      prAutofixFingerprintSpend: null,
+    });
+    renderAutomationTab(workspace);
+
+    expect(
+      screen.queryByTestId("agents-pr-autofix-budget"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-pr-autofix-ledger"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the budget card when spend is present but zero and not exhausted, even though repair publication events exist for this backend state", () => {
+    // Backend returns Some({ generations: 0, minutes: 0, isExhausted: false }) for any
+    // workspace with a pr_autofix_fingerprint, even one that never spent anything and has
+    // repair-related publication events on record. A null gate would render this permanently.
+    const workspace = conversationWorkspaceFixture({
+      prAutofixFingerprintSpend: {
+        generations: 0,
+        minutes: 0,
+        budgetMinutes: 45,
+        isExhausted: false,
+      },
+    });
+    renderAutomationTab(workspace);
+
+    expect(
+      screen.queryByTestId("agents-pr-autofix-budget"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-pr-autofix-ledger"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the spend line once generations are non-zero", () => {
+    const workspace = conversationWorkspaceFixture({
+      prAutofixFingerprintSpend: {
+        generations: 1,
+        minutes: 0,
+        budgetMinutes: 45,
+        isExhausted: false,
+      },
+    });
+    renderAutomationTab(workspace);
+
+    expect(screen.getByTestId("agents-pr-autofix-budget")).toHaveTextContent(
+      "0 / 45 min",
     );
+  });
+
+  it("shows the spend line once minutes are non-zero", () => {
+    const workspace = conversationWorkspaceFixture({
+      prAutofixFingerprintSpend: {
+        generations: 0,
+        minutes: 5,
+        budgetMinutes: 45,
+        isExhausted: false,
+      },
+    });
+    renderAutomationTab(workspace);
+
+    expect(screen.getByTestId("agents-pr-autofix-budget")).toHaveTextContent(
+      "5 / 45 min",
+    );
+  });
+
+  it("shows the exhausted treatment even at zero minutes and generations", () => {
+    const workspace = conversationWorkspaceFixture({
+      prAutofixFingerprintSpend: {
+        generations: 0,
+        minutes: 0,
+        budgetMinutes: 45,
+        isExhausted: true,
+      },
+    });
+    renderAutomationTab(workspace);
+
+    expect(screen.getByTestId("agents-pr-autofix-budget")).toHaveTextContent(
+      "Repair budget exhausted",
+    );
+  });
+
+  describe("hasReportableAutofixSpend", () => {
+    it("is false for null spend", () => {
+      expect(hasReportableAutofixSpend(null)).toBe(false);
+    });
+
+    it("is false for zeroed, non-exhausted spend", () => {
+      expect(
+        hasReportableAutofixSpend({
+          generations: 0,
+          minutes: 0,
+          budgetMinutes: 45,
+          isExhausted: false,
+        }),
+      ).toBe(false);
+    });
+
+    it("is true when generations, minutes, or exhaustion are reportable", () => {
+      expect(
+        hasReportableAutofixSpend({
+          generations: 1,
+          minutes: 0,
+          budgetMinutes: 45,
+          isExhausted: false,
+        }),
+      ).toBe(true);
+      expect(
+        hasReportableAutofixSpend({
+          generations: 0,
+          minutes: 1,
+          budgetMinutes: 45,
+          isExhausted: false,
+        }),
+      ).toBe(true);
+      expect(
+        hasReportableAutofixSpend({
+          generations: 0,
+          minutes: 0,
+          budgetMinutes: 45,
+          isExhausted: true,
+        }),
+      ).toBe(true);
+    });
   });
 });
