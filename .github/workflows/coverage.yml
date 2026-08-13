@@ -269,7 +269,6 @@ jobs:
           # report must read object files from the nextest archive itself.
           cargo llvm-cov report --nextest-archive-file ../rust-lib-coverage.tar.zst --lcov --output-path "../${RUST_LIB_COVERAGE_ROOT}/lcov.info"
           cargo llvm-cov report --nextest-archive-file ../rust-lib-coverage.tar.zst --json --output-path "../${RUST_LIB_COVERAGE_ROOT}/coverage.json"
-          cargo llvm-cov report --nextest-archive-file ../rust-lib-coverage.tar.zst --html --output-dir "../${RUST_LIB_COVERAGE_ROOT}/html"
 
       - name: Filter Rust coverage noise
         shell: bash
