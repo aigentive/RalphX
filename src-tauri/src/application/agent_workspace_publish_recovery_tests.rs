@@ -9014,37 +9014,541 @@ kill "$stdin_drain_pid" 2>/dev/null || true
 wait "$stdin_drain_pid" 2>/dev/null || true
 "#;
 
+/// Converts the seeded orphan into an aged PR autofix generation so the recovery sweep rescues it
+/// through the delivery lane.
+#[cfg(unix)]
 async fn age_requested_pr_autofix_orphan(
     state: &AppState,
     conversation_id: &ChatConversationId,
-    dispatch_head: Option<String>,
-) -> AgentWorkspaceRepairAttempt {
+    dispatch_head_commit: Option<&str>,
+) {
     let mut attempt = state
         .agent_workspace_repair_repo
         .get_current_repair_attempt(conversation_id)
         .await
-        .expect("load requested orphan")
-        .expect("requested orphan exists");
+        .expect("load seeded attempt")
+        .expect("seeded attempt exists");
     let expected_updated_at = attempt.updated_at;
     attempt.source = AgentWorkspaceRepairSource::PrAutofix;
-    attempt.pr_autofix_dispatch_head_commit = dispatch_head;
+    attempt.pr_autofix_health_fingerprint = Some("github_pr_autofix:684:checks:rust".to_string());
+    attempt.pr_autofix_dispatch_head_commit = dispatch_head_commit.map(str::to_string);
+    attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(61);
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt,
+                expected_phase: AgentWorkspaceRepairPhase::Requested,
+                expected_updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Requested,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("age PR autofix orphan"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+}
+
+#[cfg(unix)]
+async fn seeded_workspace_worktree_path(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> PathBuf {
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .expect("load seeded workspace")
+        .expect("seeded workspace exists");
+    PathBuf::from(workspace.worktree_path)
+}
+
+#[cfg(unix)]
+async fn rescued_dispatch_head(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Option<String> {
+    let recovered = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load rescued attempt")
+        .expect("rescued attempt remains current");
+    assert_eq!(recovered.phase, AgentWorkspaceRepairPhase::Repairing);
+    assert!(recovered.reserved_agent_run_id.is_some());
+    recovered.pr_autofix_dispatch_head_commit
+}
+
+/// Gives the seeded fixture a bare `origin` and pushes both refs, so freshness inspection (which
+/// always fetches) has a real remote to read.
+#[cfg(unix)]
+fn attach_bare_origin(
+    project_dir: &std::path::Path,
+    workspace_path: &std::path::Path,
+    origin: &std::path::Path,
+) {
+    recovery_git(origin, &["init", "--bare", "-b", "main"]);
+    recovery_git(
+        project_dir,
+        &[
+            "remote",
+            "add",
+            "origin",
+            origin.to_str().expect("origin path"),
+        ],
+    );
+    recovery_git(project_dir, &["push", "origin", "main"]);
+    recovery_git(
+        workspace_path,
+        &["push", "origin", "ralphx/test/publish-recovery"],
+    );
+}
+
+/// Drives the seeded orphan through a real rescue delivery so it holds a canonical target lease,
+/// then parks it in `Repairing` with no live run. That is exactly the interrupted shape
+/// `recover_clean_interrupted_repair` owns, and the lease is a hard precondition of that path.
+#[cfg(unix)]
+async fn interrupt_repair_at_target_base(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    target_base_commit: &str,
+) -> AgentWorkspaceRepairAttempt {
+    age_requested_pr_autofix_orphan(state, conversation_id, None).await;
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(state)
+            .await
+            .expect("deliver the seeded repair so it acquires its target lease"),
+        1
+    );
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load delivered attempt")
+        .expect("delivered attempt exists");
+    assert_eq!(attempt.phase, AgentWorkspaceRepairPhase::Repairing);
+    assert!(
+        attempt.target_lease_epoch.is_some(),
+        "the delivery must leave a canonical target lease behind"
+    );
+    let expected_updated_at = attempt.updated_at;
+    attempt.target_base_commit = Some(target_base_commit.to_string());
+    // No live run means the owning process is gone: the interrupted shape, not an active repair.
+    attempt.reserved_agent_run_id = None;
     attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(61);
     match state
         .agent_workspace_repair_repo
         .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
             attempt,
-            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_phase: AgentWorkspaceRepairPhase::Repairing,
             expected_updated_at,
-            next_phase: AgentWorkspaceRepairPhase::Requested,
+            next_phase: AgentWorkspaceRepairPhase::Repairing,
             compatibility_projection: None,
             events: Vec::new(),
         })
         .await
-        .expect("age requested pr_autofix orphan")
+        .expect("interrupt the delivered repair")
     {
         AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
-        outcome => panic!("requested pr_autofix orphan aging must apply, got {outcome:?}"),
+        outcome => panic!("interrupting the delivered repair must apply, got {outcome:?}"),
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn interrupted_repair_behind_an_advanced_base_retargets_instead_of_blocking() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, project_dir) =
+        seed_orphaned_repair_dispatch(124, PR_FIXER_RESCUE_CLI).await;
+    let workspace_path = seeded_workspace_worktree_path(&state, &conversation_id).await;
+    let origin = tempfile::tempdir().expect("create bare origin for retarget");
+    attach_bare_origin(project_dir.path(), &workspace_path, origin.path());
+    let old_base = recovery_git(project_dir.path(), &["rev-parse", "HEAD"]);
+    // main moves on while the repair is interrupted, exactly the PR #1023 shape.
+    std::fs::write(project_dir.path().join("advanced.md"), "advanced\n")
+        .expect("write advanced base file");
+    recovery_git(project_dir.path(), &["add", "advanced.md"]);
+    recovery_git(project_dir.path(), &["commit", "-m", "advance main"]);
+    recovery_git(project_dir.path(), &["push", "origin", "main"]);
+    let new_base = recovery_git(project_dir.path(), &["rev-parse", "HEAD"]);
+    assert_ne!(old_base, new_base);
+    let interrupted = interrupt_repair_at_target_base(&state, &conversation_id, &old_base).await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("recover the interrupted repair"),
+        1
+    );
+
+    let successor = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load the retargeted successor")
+        .expect("a successor generation exists");
+    assert_ne!(
+        successor.id, interrupted.id,
+        "retargeting must supersede the interrupted generation, not mutate it"
+    );
+    assert_eq!(
+        successor.target_base_commit.as_deref(),
+        Some(new_base.as_str()),
+        "the successor must target the tip the classifier actually read"
+    );
+    assert_ne!(
+        successor.phase,
+        AgentWorkspaceRepairPhase::Blocked,
+        "a settled tree behind a newer base must never produce a blocked banner"
+    );
+    let settled = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&interrupted.id)
+        .await
+        .expect("load the superseded generation")
+        .expect("the superseded generation is still readable");
+    assert_eq!(
+        settled.outcome,
+        Some(AgentWorkspaceRepairOutcome::Superseded)
+    );
+}
+
+/// Which of the three post-settlement reads the retarget path performs should fail.
+#[cfg(unix)]
+enum PostSettlementFailure {
+    /// The worktree is gone, so `resolve_effective_agent_conversation_workspace_path` fails.
+    MissingWorktree,
+    /// The worktree and its `.git` entry survive path resolution, so the failure lands on
+    /// `GitService::canonical_target_identity` instead.
+    UnreadableRepository,
+    /// The project row is gone, so the retarget's own project lookup fails.
+    MissingProjectRow,
+}
+
+/// The classifier and the retarget read the same facts, so a single-threaded test cannot make the
+/// second read fail on its own. Both reads pass through `project_repo.get_by_id`, and on the
+/// interrupted-repair path the classifier's is read 1 while the retarget's is read 2 — firing on
+/// read 2 reproduces the real race (a worktree or project row disappearing mid-recovery) through
+/// the production route instead of a hand-built durable row.
+#[cfg(unix)]
+const POST_SETTLEMENT_PROJECT_READ: usize = 2;
+
+#[cfg(unix)]
+struct SabotagedProjectRepository {
+    inner: Arc<dyn ProjectRepository>,
+    workspace_path: PathBuf,
+    failure: PostSettlementFailure,
+    reads: AtomicUsize,
+}
+
+#[cfg(unix)]
+#[async_trait]
+impl ProjectRepository for SabotagedProjectRepository {
+    async fn create(&self, project: Project) -> crate::error::AppResult<Project> {
+        self.inner.create(project).await
+    }
+
+    async fn get_by_id(&self, id: &ProjectId) -> crate::error::AppResult<Option<Project>> {
+        if self.reads.fetch_add(1, Ordering::SeqCst) + 1 == POST_SETTLEMENT_PROJECT_READ {
+            match self.failure {
+                PostSettlementFailure::MissingWorktree => {
+                    std::fs::remove_dir_all(&self.workspace_path)
+                        .expect("remove the workspace worktree mid-recovery");
+                }
+                PostSettlementFailure::UnreadableRepository => {
+                    std::fs::write(self.workspace_path.join(".git"), "gitdir: /nonexistent\n")
+                        .expect("break the workspace git link mid-recovery");
+                }
+                PostSettlementFailure::MissingProjectRow => return Ok(None),
+            }
+        }
+        self.inner.get_by_id(id).await
+    }
+
+    async fn get_all(&self) -> crate::error::AppResult<Vec<Project>> {
+        self.inner.get_all().await
+    }
+
+    async fn update(&self, project: &Project) -> crate::error::AppResult<()> {
+        self.inner.update(project).await
+    }
+
+    async fn delete(&self, id: &ProjectId) -> crate::error::AppResult<()> {
+        self.inner.delete(id).await
+    }
+
+    async fn get_by_working_directory(
+        &self,
+        path: &str,
+    ) -> crate::error::AppResult<Option<Project>> {
+        self.inner.get_by_working_directory(path).await
+    }
+
+    async fn archive(&self, id: &ProjectId) -> crate::error::AppResult<Project> {
+        self.inner.archive(id).await
+    }
+}
+
+/// Drives the same retarget fixture as
+/// `interrupted_repair_behind_an_advanced_base_retargets_instead_of_blocking`, then fails exactly
+/// the resolution the retarget performs after its successor is already durable. The sweep iterates
+/// every recoverable attempt with `?`, so propagating here would stop recovery for every other
+/// workspace in the pass.
+#[cfg(unix)]
+#[allow(clippy::await_holding_lock)]
+async fn assert_retarget_degrades_when_post_settlement_resolution_fails(
+    suffix: u8,
+    failure: PostSettlementFailure,
+) {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (mut state, conversation_id, _worktree_parent, project_dir) =
+        seed_orphaned_repair_dispatch(suffix, PR_FIXER_RESCUE_CLI).await;
+    let workspace_path = seeded_workspace_worktree_path(&state, &conversation_id).await;
+    let origin = tempfile::tempdir().expect("create bare origin for the degraded retarget");
+    attach_bare_origin(project_dir.path(), &workspace_path, origin.path());
+    let old_base = recovery_git(project_dir.path(), &["rev-parse", "HEAD"]);
+    std::fs::write(project_dir.path().join("advanced.md"), "advanced\n")
+        .expect("write advanced base file");
+    recovery_git(project_dir.path(), &["add", "advanced.md"]);
+    recovery_git(project_dir.path(), &["commit", "-m", "advance main"]);
+    recovery_git(project_dir.path(), &["push", "origin", "main"]);
+    let new_base = recovery_git(project_dir.path(), &["rev-parse", "HEAD"]);
+    let interrupted = interrupt_repair_at_target_base(&state, &conversation_id, &old_base).await;
+    let inner = Arc::clone(&state.project_repo);
+    state.project_repo = Arc::new(SabotagedProjectRepository {
+        inner,
+        workspace_path: workspace_path.clone(),
+        failure,
+        reads: AtomicUsize::new(0),
+    });
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("a failure after the successor is durable must not fail the recovery pass"),
+        1
+    );
+
+    let successor = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load the retargeted successor")
+        .expect("a successor generation exists");
+    assert_ne!(
+        successor.id, interrupted.id,
+        "the successor must still exist after the degraded return"
+    );
+    assert_eq!(
+        successor.target_base_commit.as_deref(),
+        Some(new_base.as_str()),
+        "the successor must still target the tip the classifier read"
+    );
+    assert_ne!(
+        successor.phase,
+        AgentWorkspaceRepairPhase::Blocked,
+        "an undelivered successor belongs to the rescue lane, not a blocked banner"
+    );
+    let settled = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&interrupted.id)
+        .await
+        .expect("load the superseded generation")
+        .expect("the superseded generation is still readable");
+    assert_eq!(
+        settled.outcome,
+        Some(AgentWorkspaceRepairOutcome::Superseded),
+        "the settlement that already happened must not be rolled back"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retarget_degrades_when_the_workspace_worktree_disappears_after_settlement() {
+    assert_retarget_degrades_when_post_settlement_resolution_fails(
+        126,
+        PostSettlementFailure::MissingWorktree,
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retarget_degrades_when_the_workspace_repository_is_unreadable_after_settlement() {
+    assert_retarget_degrades_when_post_settlement_resolution_fails(
+        127,
+        PostSettlementFailure::UnreadableRepository,
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retarget_degrades_when_the_project_row_disappears_after_settlement() {
+    assert_retarget_degrades_when_post_settlement_resolution_fails(
+        128,
+        PostSettlementFailure::MissingProjectRow,
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn interrupted_repair_with_a_dirty_tree_blocks_without_leaking_the_error_variant() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, project_dir) =
+        seed_orphaned_repair_dispatch(125, PR_FIXER_RESCUE_CLI).await;
+    let workspace_path = seeded_workspace_worktree_path(&state, &conversation_id).await;
+    let origin = tempfile::tempdir().expect("create bare origin for dirty-tree block");
+    attach_bare_origin(project_dir.path(), &workspace_path, origin.path());
+    // The base stays exactly where the attempt targeted it, so only the dirty tree can fail.
+    let base = recovery_git(project_dir.path(), &["rev-parse", "HEAD"]);
+    interrupt_repair_at_target_base(&state, &conversation_id, &base).await;
+    std::fs::write(workspace_path.join("unstaged.md"), "half-finished\n")
+        .expect("write uncommitted repair file");
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("recover the dirty interrupted repair"),
+        1
+    );
+
+    let blocked = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load the blocked attempt")
+        .expect("the blocked attempt remains current");
+    assert_eq!(blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    let blocker = blocked.blocker.expect("a blocked repair records why");
+    assert!(
+        blocker.contains("uncommitted"),
+        "the banner must name the actual condition, got: {blocker}"
+    );
+    assert!(
+        !blocker.contains("Conflict:"),
+        "the banner must not leak an AppError variant name, got: {blocker}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn rescued_pr_autofix_dispatch_backfills_the_dispatch_head_from_the_remote_branch() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, project_dir) =
+        seed_orphaned_repair_dispatch(121, PR_FIXER_RESCUE_CLI).await;
+    let workspace_path = seeded_workspace_worktree_path(&state, &conversation_id).await;
+    let origin = tempfile::tempdir().expect("create bare origin for dispatch-head backfill");
+    recovery_git(origin.path(), &["init", "--bare", "-b", "main"]);
+    recovery_git(
+        project_dir.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            origin.path().to_str().expect("origin path"),
+        ],
+    );
+    recovery_git(
+        &workspace_path,
+        &["push", "origin", "ralphx/test/publish-recovery"],
+    );
+    let remote_head = recovery_git(&workspace_path, &["rev-parse", "HEAD"]);
+    // The stranded-unpushed shape: the fixer's local commit is ahead of what the PR can see.
+    std::fs::write(workspace_path.join("local-fix.txt"), "fix\n").expect("write local repair file");
+    recovery_git(&workspace_path, &["add", "local-fix.txt"]);
+    recovery_git(&workspace_path, &["commit", "-m", "local repair commit"]);
+    let local_head = recovery_git(&workspace_path, &["rev-parse", "HEAD"]);
+    assert_ne!(
+        remote_head, local_head,
+        "the fixture must leave the local head ahead of the remote head"
+    );
+    age_requested_pr_autofix_orphan(&state, &conversation_id, None).await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("rescue orphaned PR autofix dispatch"),
+        1
+    );
+
+    assert_eq!(
+        rescued_dispatch_head(&state, &conversation_id).await,
+        Some(remote_head),
+        "a rescued PR autofix dispatch must record the remote head the PR is running against"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn rescued_pr_autofix_dispatch_falls_back_to_the_local_branch_head_without_a_remote() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_orphaned_repair_dispatch(122, PR_FIXER_RESCUE_CLI).await;
+    // No `origin` remote exists, so both the fetch and the remote-ref read must degrade quietly.
+    let workspace_path = seeded_workspace_worktree_path(&state, &conversation_id).await;
+    let local_head = recovery_git(&workspace_path, &["rev-parse", "HEAD"]);
+    age_requested_pr_autofix_orphan(&state, &conversation_id, None).await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("rescue orphaned PR autofix dispatch without a remote"),
+        1
+    );
+
+    assert_eq!(
+        rescued_dispatch_head(&state, &conversation_id).await,
+        Some(local_head),
+        "an unreachable remote must fall back to the local branch head, never to NULL"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn rescued_pr_autofix_dispatch_preserves_an_existing_dispatch_head() {
+    let _environment_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("lock test environment");
+    let _spawn_permission = TestEnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_orphaned_repair_dispatch(123, PR_FIXER_RESCUE_CLI).await;
+    age_requested_pr_autofix_orphan(&state, &conversation_id, Some("poller-dispatch-head")).await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("rescue orphaned PR autofix dispatch with recorded evidence"),
+        1
+    );
+
+    assert_eq!(
+        rescued_dispatch_head(&state, &conversation_id).await,
+        Some("poller-dispatch-head".to_string()),
+        "backfill must never overwrite dispatch evidence the poller already proved"
+    );
 }
 
 /// Drives the seeded orphan through a real delivery (which acquires the canonical target lease),
