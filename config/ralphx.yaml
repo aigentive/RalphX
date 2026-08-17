@@ -23,11 +23,15 @@ defer_merge_enabled: false
 # Env override: RALPHX_FILE_LOGGING=true|false
 file_logging: true
 
-# Maximum bytes retained in each per-launch log (including the cap marker).
+# Total bytes a single launch may keep on disk. The cap is split into two
+# chunks: when the active log fills its half it rotates into
+# ralphx_<timestamp>_rolled.log and a fresh active log takes over, so the newest
+# output is always in the newest .log and at least half the cap is retained.
 # Env override: RALPHX_FILE_LOGGING_MAX_BYTES (default: 1073741824 / 1 GiB)
 file_logging_max_bytes: 1073741824
 
-# Number of prior per-launch ralphx_*.log files to retain on startup.
+# Number of prior launches to retain on startup. A launch that rotated owns both
+# its active log and its _rolled chunk; they are kept or deleted together.
 # Env override: RALPHX_FILE_LOGGING_KEEP_FILES (default: 5)
 file_logging_keep_files: 5
 
@@ -137,6 +141,14 @@ timeouts:
     launch_reservation_lease_secs: 30 # Env: RALPHX_STREAM_LAUNCH_RESERVATION_LEASE_SECS
     # notification_service.rs — batch eligible desktop notifications before delivery
     desktop_notification_coalesce_window_secs: 5 # Env: RALPHX_STREAM_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS
+    # desktop_notification.rs — cap concurrent native click-waits; each outstanding wait costs a
+    # repeating 0.5s main-thread timer inside mac-notification-sys. Over budget, notifications are
+    # still delivered but only activate the app (no in-app deep navigation).
+    desktop_notification_max_click_waits: 3 # Env: RALPHX_STREAM_DESKTOP_NOTIFICATION_MAX_CLICK_WAITS
+    # desktop_notification_reaper.rs — remove RalphX notifications older than this from Notification
+    # Center, which releases the click-wait slot they were holding.
+    desktop_notification_click_wait_ttl_secs: 900 # Env: RALPHX_STREAM_DESKTOP_NOTIFICATION_CLICK_WAIT_TTL_SECS
+    desktop_notification_reap_interval_secs: 60 # Env: RALPHX_STREAM_DESKTOP_NOTIFICATION_REAP_INTERVAL_SECS
     # startup_jobs.rs — durable notification history retention (read rows only)
     notification_retention_read_days: 30 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS
     notification_retention_max_rows: 1000 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS
@@ -255,8 +267,18 @@ git:
   index_lock_stale_secs: 5 # Env: RALPHX_GIT_INDEX_LOCK_STALE_SECS
   # harness_runtime_registry.rs — TTL for unchanged provider CLI availability probes
   provider_probe_cache_ttl_secs: 300 # Env: RALPHX_GIT_PROVIDER_PROBE_CACHE_TTL_SECS
-  # unified_chat_commands.rs — short backend TTL for repeated workspace freshness checks
+  # unified_chat_commands.rs — short backend TTL for repeated local-scope workspace freshness checks
   workspace_freshness_cache_ttl_ms: 2000 # Env: RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS
+  # unified_chat_commands.rs — longer TTL for full-scope freshness (fetches origin + reads PR status per PR-as-base workspace)
+  workspace_freshness_full_scope_cache_ttl_ms: 30000 # Env: RALPHX_GIT_WORKSPACE_FRESHNESS_FULL_SCOPE_CACHE_TTL_MS
+  # pr_merge_poller.rs — base interval between agent workspace PR poll iterations
+  workspace_pr_poll_base_secs: 60 # Env: RALPHX_GIT_WORKSPACE_PR_POLL_BASE_SECS
+  # pr_merge_poller.rs — ceiling for the adaptive workspace PR poll interval (also bounds terminal-PR detection latency)
+  workspace_pr_poll_max_secs: 300 # Env: RALPHX_GIT_WORKSPACE_PR_POLL_MAX_SECS
+  # pr_merge_poller.rs — minimum seconds between shared `gh api rate_limit` probes (endpoint is quota-free)
+  github_rate_limit_probe_interval_secs: 300 # Env: RALPHX_GIT_GITHUB_RATE_LIMIT_PROBE_INTERVAL_SECS
+  # pr_snapshot_hub.rs — TTL for a repository's batched PR snapshot shared by every workspace poller on that repo
+  pr_snapshot_hub_ttl_secs: 55 # Env: RALPHX_GIT_PR_SNAPSHOT_HUB_TTL_SECS
   # diff_commands.rs — short backend TTL for workspace review context/payload reuse
   workspace_review_cache_ttl_ms: 2000 # Env: RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS
   # agent_workspace_pr_description.rs — short backend TTL for precomputed publish PR descriptions

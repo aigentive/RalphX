@@ -1,6 +1,6 @@
 [package]
 name = "ralphx"
-version = "0.98.0"
+version = "0.100.0"
 description = "RalphX - Autonomous AI-driven development GUI"
 authors = ["RalphX Team"]
 edition = "2021"
@@ -103,7 +103,7 @@ test-utils = ["tauri/test"]
 mac-notification-sys = "0.6.15"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSControl", "NSView", "NSResponder", "NSDockTile"] }
-objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSUserNotification", "NSDate", "NSString", "NSArray"] }
 security-framework = "3.7"
 
 [dev-dependencies]

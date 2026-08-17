@@ -28,6 +28,15 @@ const ORPHANED_PR_HANDOFF_TERMINATION_REASON: &str =
     "terminated an orphaned in-flight PR-update handoff on a blocked repair; the durable push \
      receipt proves the branch head already reached the remote, so the handoff is safely replayable";
 
+/// Publication step recorded when an orphaned in-flight branch push is terminated.
+pub(crate) const REPAIR_PUSH_EFFECT_TERMINATED_STEP: &str = "repair_push_effect_terminated";
+
+/// Durable reason stored on the terminated effect. It states the exact proof that authorized the
+/// termination so the effect history explains why the fence cleared.
+const ORPHANED_PUSH_TERMINATION_REASON: &str =
+    "terminated an orphaned in-flight branch push on a blocked repair; the owning process already \
+     returned and a branch push is idempotent, so the existing publish re-drive can replay it";
+
 /// Bounds the ordinal retry identity space of a single effect kind on one attempt.
 const MAX_RETRY_ORDINAL: u32 = 50;
 
@@ -160,6 +169,116 @@ pub(crate) async fn observed_repair_push_receipt_for_head(
     Ok(None)
 }
 
+/// Terminates an orphaned in-flight branch push on a blocked repair attempt.
+///
+/// How the shape arises: `block_repair_claim_recovery` (`git_mutation_recovery.rs`) blocks a
+/// `Continuing` attempt when its mutation claim loses lease, target, or fencing-epoch proof, and it
+/// leaves the initialized `push_branch` effect `InFlight`. Every later pass then declines — claim
+/// recovery requires `phase == Continuing`, the open-push reconciler is only reachable from the
+/// continuation arm, and the existing PR-handoff hatch matches `update_pr` only — so the attempt is
+/// fenced behind its own effect forever.
+///
+/// A `Blocked` phase proves the process that owned the effect already returned, so the effect can
+/// never complete on its own. Unlike `create_pr`, re-driving a branch push is idempotent: the
+/// subsequent publish pass re-resolves the effect through `AgentWorkspaceRepairPushEffectResolution`
+/// and records a real remote-OID receipt. This helper therefore only *clears the fence*; it writes
+/// no new effect and performs no push. Failing the base key is also what lets the next publish pass
+/// mint the next ordinal identity.
+///
+/// The decision reads durable state only — never GitHub — so a `gh` outage cannot re-deadlock this
+/// escape hatch. An effect whose `intended_head_oid` disagrees with the durable repair head is left
+/// alone: a fence must never be cleared for a head this attempt cannot vouch for. `create_pr`
+/// effects are never terminated: replaying an unproven PR creation risks a duplicate pull request.
+///
+/// Returns true when the fence was cleared.
+///
+/// # Errors
+/// Returns an error when a repository read fails or the effect loses attempt authority mid-write.
+pub(crate) async fn terminate_orphaned_blocked_repair_push_effect(
+    state: &AppState,
+    observed: &AgentWorkspaceRepairAttempt,
+) -> AppResult<bool> {
+    let Some(current) = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&observed.id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if current.id != observed.id
+        || current.generation != observed.generation
+        || current.phase != AgentWorkspaceRepairPhase::Blocked
+        || current.updated_at != observed.updated_at
+        || current.settled_at.is_some()
+    {
+        return Ok(false);
+    }
+    let Some(repair_head) = current
+        .repair_head_commit
+        .as_deref()
+        .filter(|head| !head.trim().is_empty())
+    else {
+        return Ok(false);
+    };
+    let Some(effect) = state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&current.id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if effect.attempt_id != current.id
+        || effect.kind != AgentWorkspaceRepairEffectKind::PushBranch
+        || effect.status != AgentWorkspaceRepairEffectStatus::InFlight
+        || effect.intended_head_oid.as_deref() != Some(repair_head)
+    {
+        return Ok(false);
+    }
+    // A receipt already proving this head reached the remote means the push landed and the normal
+    // reconciler owns the effect. That is not the orphan shape.
+    if observed_repair_push_receipt_for_head(
+        state.agent_workspace_repair_repo.as_ref(),
+        &current,
+        repair_head,
+    )
+    .await?
+    .is_some()
+    {
+        return Ok(false);
+    }
+
+    fail_agent_workspace_repair_effect_for_phase(
+        state.agent_workspace_repair_repo.as_ref(),
+        &current,
+        effect,
+        AgentWorkspaceRepairPhase::Blocked,
+        ORPHANED_PUSH_TERMINATION_REASON,
+    )
+    .await?;
+
+    // The termination itself is the recovery write. A timeline append that fails afterwards must
+    // not undo it, so the event is best-effort and only logged.
+    if let Err(error) = state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            current.conversation_id.clone(),
+            REPAIR_PUSH_EFFECT_TERMINATED_STEP,
+            "completed",
+            "Cleared an abandoned branch push from the blocked repair so it can be retried.",
+            Some(repair_head.to_string()),
+        ))
+        .await
+    {
+        tracing::warn!(
+            conversation_id = current.conversation_id.as_str(),
+            attempt_id = current.id.as_str(),
+            %error,
+            "Terminated an orphaned repair branch push but could not append its publication event"
+        );
+    }
+    Ok(true)
+}
+
 /// Terminates an orphaned in-flight PR-update handoff on a blocked repair attempt.
 ///
 /// A `Blocked` phase proves the publish continuation already returned with an error, so the
@@ -170,8 +289,10 @@ pub(crate) async fn observed_repair_push_receipt_for_head(
 /// stop being fenced.
 ///
 /// The decision reads durable receipts only — never GitHub — so a `gh` outage cannot re-deadlock
-/// this escape hatch. `create_pr` effects are never terminated: replaying an unproven PR creation
-/// risks a duplicate pull request.
+/// this escape hatch. `create_pr` effects are out of scope here for the same reason: no durable
+/// receipt can prove whether a PR creation landed, so replaying one from receipts alone risks a
+/// duplicate pull request. Their settlement is owned by
+/// `publish_resilience_create_pr_reconciliation`, which proves absence against GitHub first.
 ///
 /// Returns true when the fence was cleared.
 ///

@@ -3,6 +3,8 @@
 
 #[cfg(any(test, feature = "test-utils"))]
 mod get_by_id_failing_agent_run_repository;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod repair_push_receipt;
 pub mod sqlite_test_db;
 pub mod team_fixtures;
 pub mod test_prompts;
@@ -11,6 +13,8 @@ pub mod test_prompts;
 pub use get_by_id_failing_agent_run_repository::{
     GetByIdFailingAgentRunRepository, AGENT_RUN_GET_BY_ID_FAILURE,
 };
+#[cfg(any(test, feature = "test-utils"))]
+pub use repair_push_receipt::record_observed_agent_workspace_repair_push_receipt;
 
 // Re-export commonly used items
 pub use sqlite_test_db::{SqliteStateFixture, SqliteTestDb};

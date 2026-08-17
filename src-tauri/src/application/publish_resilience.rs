@@ -39,7 +39,13 @@ use tauri::Manager;
 pub(crate) use crate::application::publish_resilience_repair_effects::{
     next_agent_workspace_repair_retry_idempotency_key, observed_repair_push_receipt_for_head,
     repair_effect_base_idempotency_key, resolve_repair_effect_identity,
-    terminate_orphaned_blocked_repair_pr_handoff_effect, RepairEffectIdentity,
+    terminate_orphaned_blocked_repair_pr_handoff_effect,
+    terminate_orphaned_blocked_repair_push_effect, RepairEffectIdentity,
+};
+// Settling an orphaned `create_pr` effect needs GitHub evidence rather than durable receipts, so
+// it lives in its own sibling module and is re-exported alongside the receipts-only helpers.
+pub(crate) use crate::application::publish_resilience_create_pr_reconciliation::{
+    reconcile_blocked_agent_workspace_repair_create_pr_effect, BlockedCreatePrEffectReconciliation,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +81,13 @@ pub struct PublishBranchFreshnessStatus {
     pub captured_base_commit: Option<String>,
     pub target_base_commit: String,
     pub is_base_ahead: bool,
+    /// Whether the source branch provably contains `target_base_commit`.
+    ///
+    /// This is a positive ancestry proof, not the inverse of `is_base_ahead`: a conflict-routed
+    /// attempt can record the freshly observed origin tip as its captured base, which makes
+    /// `is_base_ahead` false while the branch has never merged that tip. Constructors with no
+    /// ancestry evidence must report `false`, so an unknown state fails closed.
+    pub source_contains_target_base: bool,
 }
 
 /// The exact local/remote postconditions established by a repair-owned push. The normal
@@ -701,7 +714,10 @@ pub(crate) async fn observe_agent_workspace_repair_pr_handoff_effect(
     .await
 }
 
-async fn observe_agent_workspace_repair_pr_handoff_effect_for_phase(
+/// Records the PR-handoff receipt for a caller that has already proved which phase the attempt is
+/// in. The `Continuing` wrapper above owns the normal publish path; blocked-arm reconcilers in
+/// sibling modules own `Blocked`.
+pub(crate) async fn observe_agent_workspace_repair_pr_handoff_effect_for_phase(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     attempt: &AgentWorkspaceRepairAttempt,
     mut effect: AgentWorkspaceRepairEffect,
@@ -929,6 +945,23 @@ pub(crate) async fn reconcile_blocked_agent_workspace_repair_pr_handoff(
     }
 }
 
+/// User-facing blocker text for a failed pull-request continuation.
+///
+/// A rate limit gets its own wording because the default copy ("Retry the blocked operation")
+/// tells the user to do the one thing that cannot work while GitHub's window is exhausted.
+///
+/// This is copy only. Retry *eligibility* stays structural: the automatic ladder in
+/// `durable_attempt_recovery` defers on the shared `RateLimitState`, never on this text. The
+/// module deliberately treats blocker prose as unusable as evidence, and that stays true.
+pub(crate) fn agent_workspace_repair_pr_handoff_blocker(error: &str) -> String {
+    if crate::infrastructure::services::gh_cli_github_service::is_github_rate_limit_message(error) {
+        return format!(
+            "GitHub API rate limit reached: {error}. RalphX will retry automatically after the limit resets; you can also retry manually."
+        );
+    }
+    format!("Pull-request continuation could not complete: {error}. Retry the blocked operation.")
+}
+
 async fn block_agent_workspace_repair_pr_handoff(
     state: &AppState,
     attempt: AgentWorkspaceRepairAttempt,
@@ -941,9 +974,7 @@ async fn block_agent_workspace_repair_pr_handoff(
         .get_by_conversation_id(&attempt.conversation_id)
         .await?
         .and_then(|workspace| workspace.pr_auto_merge_current);
-    let blocker = format!(
-        "Pull-request continuation could not complete: {error}. Retry the blocked operation."
-    );
+    let blocker = agent_workspace_repair_pr_handoff_blocker(error);
     let what_happened = attempt.what_happened.clone();
     let what_i_did = attempt.what_i_did.clone();
     let _ = crate::application::agent_workspace_publish_repair_state::block_agent_workspace_repair_completion_with_projection(
@@ -961,7 +992,7 @@ async fn block_agent_workspace_repair_pr_handoff(
     Ok(())
 }
 
-async fn has_authoritative_observed_agent_workspace_repair_push(
+pub(crate) async fn has_authoritative_observed_agent_workspace_repair_push(
     state: &AppState,
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> AppResult<bool> {
@@ -1071,7 +1102,7 @@ async fn settle_agent_workspace_repair_after_pr_handoff(
 
 /// A post-PR receipt proves the repair branch no longer owns a Git mutation. Release only the
 /// exact canonical lease persisted by that attempt; mismatched/newer owners are untouched.
-async fn release_agent_workspace_repair_lease_after_pr_handoff(
+pub(crate) async fn release_agent_workspace_repair_lease_after_pr_handoff(
     state: &AppState,
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> AppResult<()> {
@@ -2056,6 +2087,8 @@ pub(crate) async fn verify_agent_workspace_repair_pr_handoff(
             captured_base_commit: Some(handoff.target_base_commit.clone()),
             target_base_commit,
             is_base_ahead: false,
+            // The verified push receipt above is the ancestry evidence for this path.
+            source_contains_target_base: true,
         },
     ))
 }
@@ -2102,6 +2135,8 @@ pub fn publish_branch_freshness_status_from_commits(
         captured_base_commit,
         target_base_commit: target_base_commit.to_string(),
         is_base_ahead,
+        // This constructor has no ancestry input, so it must never assert integration.
+        source_contains_target_base: false,
     }
 }
 
@@ -2117,6 +2152,7 @@ pub fn publish_branch_freshness_status_from_commits_and_branch(
             captured_base_commit: Some(target_base_commit.to_string()),
             target_base_commit: target_base_commit.to_string(),
             is_base_ahead: false,
+            source_contains_target_base: true,
         };
     }
 
@@ -2178,33 +2214,55 @@ pub fn verify_agent_workspace_settled_current_head(
     Ok(())
 }
 
-pub fn verify_agent_workspace_repair_completion(
-    check: AgentWorkspaceRepairCompletionCheck<'_>,
-) -> Result<(), String> {
-    let target_ref = check.freshness_status.target_ref.as_str();
-    if check.resolved_base_ref != check.workspace_base_ref && check.resolved_base_ref != target_ref
-    {
-        return Err(format!(
-            "resolved_base_ref '{}' does not match workspace base '{}' or target '{}'",
-            check.resolved_base_ref, check.workspace_base_ref, target_ref
-        ));
-    }
+/// The three independent reasons a repair completion can fail to verify, evaluated without
+/// short-circuiting so callers can tell an integrity failure apart from a base that merely moved.
+struct AgentWorkspaceRepairCompletionFailures {
+    /// The reported base ref is not the workspace or target base at all.
+    identity: Option<String>,
+    /// The tree is fine as far as this check knows, but the base it was proven against is not the
+    /// current target base.
+    base: Option<String>,
+    /// The working tree is not a settled commit of the reported head.
+    settled: Option<String>,
+}
 
-    if check.resolved_base_commit != check.freshness_status.target_base_commit {
-        return Err(format!(
+fn agent_workspace_repair_completion_failures(
+    check: &AgentWorkspaceRepairCompletionCheck<'_>,
+) -> AgentWorkspaceRepairCompletionFailures {
+    let target_ref = check.freshness_status.target_ref.as_str();
+    let identity = (check.resolved_base_ref != check.workspace_base_ref
+        && check.resolved_base_ref != target_ref)
+        .then(|| {
+            format!(
+                "resolved_base_ref '{}' does not match workspace base '{}' or target '{}'",
+                check.resolved_base_ref, check.workspace_base_ref, target_ref
+            )
+        });
+
+    let base = if check.resolved_base_commit != check.freshness_status.target_base_commit {
+        Some(format!(
             "resolved_base_commit '{}' does not match current target base '{}'",
             check.resolved_base_commit, check.freshness_status.target_base_commit
-        ));
-    }
-
-    if check.freshness_status.is_base_ahead {
-        return Err(format!(
+        ))
+    } else if check.freshness_status.is_base_ahead {
+        Some(format!(
             "workspace branch is still behind {} at {}",
             check.freshness_status.target_ref, check.freshness_status.target_base_commit
-        ));
-    }
+        ))
+    } else if !check.freshness_status.source_contains_target_base {
+        // `is_base_ahead` compares captured against target, so it cannot see a conflict-routed
+        // attempt whose captured base is the observed tip the branch never merged. Require the
+        // positive ancestry proof, which is absent by default whenever the status carried no
+        // ancestry evidence.
+        Some(format!(
+            "workspace branch does not contain base {} at {}",
+            check.freshness_status.target_ref, check.freshness_status.target_base_commit
+        ))
+    } else {
+        None
+    };
 
-    verify_agent_workspace_settled_current_head(AgentWorkspaceSettledHeadCheck {
+    let settled = verify_agent_workspace_settled_current_head(AgentWorkspaceSettledHeadCheck {
         reported_head_sha: check.repair_commit_sha,
         workspace_head_sha: check.workspace_head_sha,
         has_uncommitted_changes: check.has_uncommitted_changes,
@@ -2213,6 +2271,64 @@ pub fn verify_agent_workspace_repair_completion(
         has_conflict_files: check.has_conflict_files,
         has_conflict_markers: check.has_conflict_markers,
     })
+    .err();
+
+    AgentWorkspaceRepairCompletionFailures {
+        identity,
+        base,
+        settled,
+    }
+}
+
+/// Why a repair-completion inspection did or did not prove a clean committed repair.
+///
+/// The distinction this type exists for: a workspace whose tree is fully settled but whose base
+/// moved on is not an integrity failure, it is ordinary new input a recovery pass can retarget.
+/// Only tree and identity failures are genuinely unprovable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentWorkspaceRepairCompletionClassification {
+    Proven,
+    BehindNewBase {
+        target_ref: String,
+        target_base_commit: String,
+    },
+    /// Carries a human sentence describing the exact condition, never an `AppError` Display.
+    Unprovable(String),
+}
+
+/// Classifies a repair completion for callers that can act on a moved base.
+///
+/// Precedence here is deliberately *not* the adapter's: a tree that is both dirty and behind is
+/// unprovable, because retargeting an unsettled tree would carry the mess onto the new base.
+pub(crate) fn classify_agent_workspace_repair_completion(
+    check: AgentWorkspaceRepairCompletionCheck<'_>,
+) -> AgentWorkspaceRepairCompletionClassification {
+    let failures = agent_workspace_repair_completion_failures(&check);
+    if let Some(failure) = failures.identity.or(failures.settled) {
+        return AgentWorkspaceRepairCompletionClassification::Unprovable(failure);
+    }
+    if failures.base.is_some() {
+        return AgentWorkspaceRepairCompletionClassification::BehindNewBase {
+            target_ref: check.freshness_status.target_ref.clone(),
+            target_base_commit: check.freshness_status.target_base_commit.clone(),
+        };
+    }
+    AgentWorkspaceRepairCompletionClassification::Proven
+}
+
+/// Pass/fail adapter for the trusted-completion path.
+///
+/// The `identity → base → settled` order is load-bearing: it is the order the handler's error text
+/// and HTTP status have always been derived from, so it must not follow the classifier's own
+/// precedence.
+pub fn verify_agent_workspace_repair_completion(
+    check: AgentWorkspaceRepairCompletionCheck<'_>,
+) -> Result<(), String> {
+    let failures = agent_workspace_repair_completion_failures(&check);
+    match failures.identity.or(failures.base).or(failures.settled) {
+        Some(message) => Err(message),
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn publish_branch_freshness_outcome_from_source_update(

@@ -15,8 +15,9 @@ use crate::application::agent_workspace_review_auto_merge::{
 };
 use crate::application::chat_service::{ChatServiceError, SendResult};
 use crate::application::publish_resilience::{
-    inspect_publish_branch_freshness_for_source, verify_agent_workspace_repair_completion,
-    AgentWorkspaceRepairCompletionCheck,
+    classify_agent_workspace_repair_completion, inspect_publish_branch_freshness_for_source,
+    verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
+    AgentWorkspaceRepairCompletionClassification, PublishBranchFreshnessStatus,
 };
 use crate::application::{AppState, GitService};
 #[cfg(any(test, feature = "test-utils"))]
@@ -78,10 +79,10 @@ pub(crate) const PRE_EXISTING_ON_BASE_REPAIR_REASON: &str = "pr_autofix_pre_exis
 /// Distinct from `PRE_EXISTING_ON_BASE_REPAIR_REASON`: RalphX has not proven anything about the
 /// base branch, only that spending another agent generation on identical evidence is waste.
 pub(crate) const UNCHANGED_HEALTH_REPAIR_REASON: &str = "pr_autofix_unchanged_health";
-pub(crate) use crate::domain::entities::PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON as BASE_STALE_AFTER_UPDATE_REPAIR_REASON;
 /// Held because the PR's failing checks share a transient/timeout shape with the identical
 /// checks on the base branch — a rerun might clear this, unlike `PRE_EXISTING_ON_BASE_REPAIR_REASON`.
 pub(crate) use crate::domain::entities::PR_AUTOFIX_BASE_PARITY_TRANSIENT_PENDING_REASON as BASE_PARITY_TRANSIENT_REPAIR_REASON;
+pub(crate) use crate::domain::entities::PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON as BASE_STALE_AFTER_UPDATE_REPAIR_REASON;
 /// Held because the workflow run RalphX intends to rerun has not finished yet.
 pub(crate) const AWAITING_CI_REPAIR_REASON: &str = "pr_autofix_awaiting_ci";
 pub(crate) const REPAIR_FINGERPRINT_HOLD_STEP: &str = "repair_fingerprint_hold";
@@ -314,6 +315,19 @@ pub(crate) fn repair_attempt_projection(
     summary: &str,
     auto_merge_current: Option<bool>,
 ) -> AgentWorkspaceRepairCompatibilityProjection {
+    repair_attempt_projection_with_base_commit(attempt, summary, auto_merge_current, None)
+}
+
+/// Same projection, plus an explicit integrated-base advance. `base_commit: None` means "leave
+/// the workspace's integrated base as it is" — the attempt records the base tip it *targets*,
+/// the workspace row records the base tip it has *integrated*, and only a verified
+/// update/publish (the only legitimate callers of this seam) may advance the latter.
+pub(crate) fn repair_attempt_projection_with_base_commit(
+    attempt: &AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+    base_commit: Option<String>,
+) -> AgentWorkspaceRepairCompatibilityProjection {
     let (publication_push_status, pr_supervision_status) = match attempt.phase {
         AgentWorkspaceRepairPhase::Requested
         | AgentWorkspaceRepairPhase::Dispatching
@@ -349,10 +363,7 @@ pub(crate) fn repair_attempt_projection(
         pr_auto_merge_current: auto_merge_current,
         pr_autofix_enabled: None,
         pr_auto_merge_desired: None,
-        // Compatibility projection must retain the Git-verified repair base. Clearing it while
-        // a continuation is still active makes the shared PR publisher fail closed before its
-        // create/update handoff can run.
-        base_commit: attempt.target_base_commit.clone(),
+        base_commit,
     }
 }
 
@@ -1194,6 +1205,84 @@ pub(crate) async fn retry_agent_workspace_pr_autofix_hold_override(
     }
 }
 
+/// Outcome of superseding a reserved repair with a generation aimed at a newer base.
+pub(crate) enum AgentWorkspaceRepairRetargetOutcome {
+    Started(Box<AgentWorkspaceRepairAttempt>),
+    /// Another pass already moved this lineage; the caller must not write anything further.
+    Stale,
+}
+
+/// Settles the reserved generation as `Superseded` and atomically starts a successor aimed at
+/// `new_target_base_commit`, carrying the observed PR autofix evidence forward.
+///
+/// Attempt construction stays in this module so every repair generation in the system is built by
+/// one function. The CAS fences the exact attempt id, generation, phase, and observed timestamp, so
+/// a concurrent recovery pass cannot spend a second generation on the same lineage.
+///
+/// `verified_newer_base` is set because the caller derived `new_target_base_commit` from a real Git
+/// read of the current target, which is the only evidence that authorizes moving the target
+/// forward.
+///
+/// # Errors
+///
+/// Returns an error when the repository write fails.
+pub(crate) async fn settle_repair_and_start_retargeted_successor(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    reserved: &AgentWorkspaceRepairAttempt,
+    workspace: &AgentConversationWorkspace,
+    new_target_base_commit: &str,
+    summary: &str,
+) -> AppResult<AgentWorkspaceRepairRetargetOutcome> {
+    let request = AgentWorkspaceRepairStartRequest {
+        conversation_id: reserved.conversation_id.clone(),
+        source: reserved.source,
+        continuation: reserved.continuation,
+        target_base_ref: reserved.target_base_ref.clone(),
+        target_base_commit: Some(new_target_base_commit.to_string()),
+        verified_newer_base: true,
+        reason: summary.to_string(),
+        summary: summary.to_string(),
+        auto_merge_current: workspace.pr_auto_merge_current,
+        explicit_publish_requested: reserved.explicit_publish_requested,
+        retry_blocked: false,
+        carryover_pr_autofix_evidence: Some(PrAutofixCarryover {
+            dispatch_head_commit: reserved.pr_autofix_dispatch_head_commit.clone(),
+            health_fingerprint: reserved.pr_autofix_health_fingerprint.clone(),
+        }),
+    };
+    let successor = start_attempt_from_workspace(workspace, &request);
+    let projection =
+        repair_attempt_projection(&successor, summary, workspace.pr_auto_merge_current);
+    match repair_repo
+        .settle_and_start_repair_successor(SettleAndStartAgentWorkspaceRepairSuccessor {
+            attempt_id: reserved.id.clone(),
+            generation: reserved.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Validating,
+            expected_updated_at: reserved.updated_at,
+            outcome: AgentWorkspaceRepairOutcome::Superseded,
+            settled_at: next_transition_at(Some(reserved.updated_at)),
+            successor: StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: successor,
+                reason: request.reason.clone(),
+                verified_newer_base: request.verified_newer_base,
+                compatibility_projection: Some(projection),
+                events: Vec::new(),
+            },
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Started(attempt) => {
+            Ok(AgentWorkspaceRepairRetargetOutcome::Started(Box::new(attempt)))
+        }
+        SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Stale(_)
+        | SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Missing => {
+            Ok(AgentWorkspaceRepairRetargetOutcome::Stale)
+        }
+    }
+}
+
 /// Settles exactly the held generation while atomically disabling PR automation. A stale Stop
 /// action therefore cannot turn automation off for a newer attempt.
 pub(crate) async fn stop_agent_workspace_pr_autofix_for_hold(
@@ -1227,7 +1316,9 @@ pub(crate) async fn stop_agent_workspace_pr_autofix_for_hold(
         pr_auto_merge_current: Some(false),
         pr_autofix_enabled: Some(false),
         pr_auto_merge_desired: Some(false),
-        base_commit: current.target_base_commit.clone(),
+        // This settles without a verified base update: preserve the workspace's own integrated
+        // base rather than republishing the attempt's targeted (possibly unmerged) base tip.
+        base_commit: None,
     };
     match repair_repo
         .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
@@ -1550,7 +1641,14 @@ pub(crate) async fn record_agent_workspace_repair_validation(
     // blocked generation state (for example a resurrected exact-run completion).
     attempt.blocker = None;
     attempt.updated_at = next_transition_at(Some(attempt.updated_at));
-    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    // The Git-verified completion base is trusted evidence of an integrated base: this is one of
+    // the two seams allowed to advance the workspace's compatibility base_commit.
+    let projection = repair_attempt_projection_with_base_commit(
+        &attempt,
+        summary,
+        auto_merge_current,
+        Some(base_commit.to_string()),
+    );
     repair_repo
         .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
             attempt,
@@ -1574,12 +1672,127 @@ pub(crate) struct AgentWorkspaceRepairValidationFacts {
     pub(crate) auto_merge_current: Option<bool>,
 }
 
+/// Raw backend-derived Git facts for one repair-completion inspection, gathered once and then
+/// interpreted either as pass/fail (trusted completion) or as a classification (recovery).
+struct AgentWorkspaceRepairCompletionObservation {
+    freshness: PublishBranchFreshnessStatus,
+    workspace_head_sha: String,
+    has_uncommitted_changes: bool,
+    has_conflict_files: bool,
+    has_conflict_markers: bool,
+    auto_merge_current: Option<bool>,
+}
+
+impl AgentWorkspaceRepairCompletionObservation {
+    fn check<'a>(&'a self, target_base_ref: &'a str) -> AgentWorkspaceRepairCompletionCheck<'a> {
+        AgentWorkspaceRepairCompletionCheck {
+            freshness_status: &self.freshness,
+            workspace_base_ref: target_base_ref,
+            resolved_base_ref: target_base_ref,
+            resolved_base_commit: &self.freshness.target_base_commit,
+            repair_commit_sha: &self.workspace_head_sha,
+            workspace_head_sha: &self.workspace_head_sha,
+            has_uncommitted_changes: self.has_uncommitted_changes,
+            is_merge_in_progress: false,
+            is_rebase_in_progress: false,
+            has_conflict_files: self.has_conflict_files,
+            has_conflict_markers: self.has_conflict_markers,
+        }
+    }
+
+    fn into_validation_facts(self, target_base_ref: &str) -> AgentWorkspaceRepairValidationFacts {
+        AgentWorkspaceRepairValidationFacts {
+            base_ref: target_base_ref.to_string(),
+            base_commit: self.freshness.target_base_commit,
+            repair_head_commit: self.workspace_head_sha,
+            auto_merge_current: self.auto_merge_current,
+        }
+    }
+}
+
+/// Classified result of the canonical repair-completion inspection.
+///
+/// `Err` from the producing function stays reserved for infrastructure failures — a missing
+/// project, an unusable workspace mode, a checked-out branch mismatch, an empty base ref, or an
+/// unfinished Git operation. Those are not classifications and must never be retargeted.
+pub(crate) enum AgentWorkspaceRepairCompletionInspection {
+    Proven(AgentWorkspaceRepairValidationFacts),
+    BehindNewBase {
+        target_ref: String,
+        target_base_commit: String,
+        repair_head_commit: String,
+    },
+    /// A human sentence describing the exact integrity failure, safe to show a user verbatim.
+    Unprovable(String),
+}
+
+/// Inspects a repair completion and reports whether the base merely moved on.
+///
+/// # Errors
+///
+/// Returns an error for infrastructure failures only; verification failures come back as
+/// `BehindNewBase` or `Unprovable`.
+pub(crate) async fn inspect_agent_workspace_repair_completion_classified(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    target_base_ref: &str,
+    target_base_commit: Option<&str>,
+) -> AppResult<AgentWorkspaceRepairCompletionInspection> {
+    let observation = observe_agent_workspace_repair_completion(
+        state,
+        workspace,
+        target_base_ref,
+        target_base_commit,
+    )
+    .await?;
+    Ok(
+        match classify_agent_workspace_repair_completion(observation.check(target_base_ref)) {
+            AgentWorkspaceRepairCompletionClassification::Proven => {
+                AgentWorkspaceRepairCompletionInspection::Proven(
+                    observation.into_validation_facts(target_base_ref),
+                )
+            }
+            AgentWorkspaceRepairCompletionClassification::BehindNewBase {
+                target_ref,
+                target_base_commit,
+            } => AgentWorkspaceRepairCompletionInspection::BehindNewBase {
+                target_ref,
+                target_base_commit,
+                repair_head_commit: observation.workspace_head_sha,
+            },
+            AgentWorkspaceRepairCompletionClassification::Unprovable(detail) => {
+                AgentWorkspaceRepairCompletionInspection::Unprovable(detail)
+            }
+        },
+    )
+}
+
+/// Pass/fail inspection used by the trusted-completion path, where any failure is a hard
+/// `Conflict` and the reported message follows the adapter's check precedence.
 pub(crate) async fn inspect_agent_workspace_repair_completion(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     target_base_ref: &str,
     target_base_commit: Option<&str>,
 ) -> AppResult<AgentWorkspaceRepairValidationFacts> {
+    let observation = observe_agent_workspace_repair_completion(
+        state,
+        workspace,
+        target_base_ref,
+        target_base_commit,
+    )
+    .await?;
+    verify_agent_workspace_repair_completion(observation.check(target_base_ref))
+        .map_err(AppError::Conflict)?;
+    Ok(observation.into_validation_facts(target_base_ref))
+}
+
+async fn observe_agent_workspace_repair_completion(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    target_base_ref: &str,
+    target_base_commit: Option<&str>,
+) -> AppResult<AgentWorkspaceRepairCompletionObservation> {
     let project = state
         .project_repo
         .get_by_id(&workspace.project_id)
@@ -1640,25 +1853,13 @@ pub(crate) async fn inspect_agent_workspace_repair_completion(
             "workspace repair has an unfinished merge, rebase, cherry-pick, or revert".to_string(),
         ));
     }
-    verify_agent_workspace_repair_completion(AgentWorkspaceRepairCompletionCheck {
-        freshness_status: &freshness,
-        workspace_base_ref: target_base_ref,
-        resolved_base_ref: target_base_ref,
-        resolved_base_commit: &freshness.target_base_commit,
-        repair_commit_sha: &workspace_head_sha,
-        workspace_head_sha: &workspace_head_sha,
+
+    Ok(AgentWorkspaceRepairCompletionObservation {
+        freshness,
+        workspace_head_sha,
         has_uncommitted_changes,
-        is_merge_in_progress: false,
-        is_rebase_in_progress: false,
         has_conflict_files,
         has_conflict_markers,
-    })
-    .map_err(AppError::Conflict)?;
-
-    Ok(AgentWorkspaceRepairValidationFacts {
-        base_ref: target_base_ref.to_string(),
-        base_commit: freshness.target_base_commit,
-        repair_head_commit: workspace_head_sha,
         auto_merge_current: workspace.pr_auto_merge_current,
     })
 }

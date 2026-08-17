@@ -51,10 +51,12 @@ pub(crate) const AGENT_WORKSPACE_PUBLISH_REDRIVE_REQUESTED: &str =
     "agent-workspace:publish-redrive-requested";
 pub(crate) const AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS: &str = "redrive_pending";
 pub(crate) const AGENT_WORKSPACE_PUBLISH_REDRIVE_DELIVERING_STATUS: &str = "redrive_delivering";
+mod base_advance_retarget;
 mod durable_attempt_recovery;
 mod pr_autofix_redelivery;
 
 pub(crate) use durable_attempt_recovery::agent_workspace_repair_owns_unpublished_publish_continuation;
+pub(crate) use durable_attempt_recovery::blocked_repair_fences_new_base_work;
 
 #[cfg(test)]
 pub(crate) use durable_attempt_recovery::due_repair_dispatch_message;

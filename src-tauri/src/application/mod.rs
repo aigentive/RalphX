@@ -145,6 +145,16 @@ mod data_retention_service_tests;
 pub mod dependency_service;
 #[cfg(target_os = "macos")]
 pub(crate) mod desktop_notification;
+#[cfg(target_os = "macos")]
+pub(crate) mod desktop_notification_budget;
+#[cfg(all(test, target_os = "macos"))]
+mod desktop_notification_budget_tests;
+#[cfg(target_os = "macos")]
+pub(crate) mod desktop_notification_reaper;
+#[cfg(all(test, target_os = "macos"))]
+mod desktop_notification_reaper_tests;
+#[cfg(all(test, target_os = "macos"))]
+mod desktop_notification_tests;
 pub mod diff_service;
 pub mod event_cleanup_service;
 pub mod execution_settings_bootstrap;
@@ -221,6 +231,7 @@ mod provider_onboarding_gate_tests;
 pub mod provider_session_fork;
 pub mod prune_engine;
 pub mod publish_resilience;
+pub mod publish_resilience_create_pr_reconciliation;
 pub mod publish_resilience_repair_effects;
 pub mod pull_request_detail;
 pub mod qa_service;

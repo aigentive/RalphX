@@ -13,6 +13,7 @@ use crate::domain::repositories::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::git_auth::{apply_git_subprocess_env, is_git_auth_failure_text};
+use crate::infrastructure::services::gh_cli_github_service::is_github_rate_limit_message;
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use std::panic::Location;
 use std::path::Path;
@@ -238,6 +239,14 @@ pub(crate) fn classify_git_failure_text(text: &str) -> MergeFailureSource {
     if is_disk_full_git_stderr(&normalized) {
         return MergeFailureSource::DiskFull;
     }
+    // `AppError::GithubRateLimited` renders as "GitHub rate limit exceeded: …", which matches none
+    // of the git patterns below and would otherwise fall through to `Unknown`. Reuses `TransientGit`
+    // rather than adding a variant: `merge_failure_source` is serialized into task metadata, so a
+    // new variant would be a persisted-compat change. Classified before the lock/transient git
+    // checks and after auth so auth precedence is preserved.
+    if is_github_rate_limit_message(&normalized) {
+        return MergeFailureSource::TransientGit;
+    }
     if normalized.contains(ENOENT_MARKER) {
         return MergeFailureSource::WorktreeMissing;
     }
@@ -263,6 +272,9 @@ pub(crate) fn classify_git_failure_source(error: &AppError) -> MergeFailureSourc
             MergeFailureSource::DeterministicInfra
         }
         AppError::GitAuth(_) => MergeFailureSource::AuthFailure,
+        // Retryable once GitHub's window resets; see the rate-limit branch in
+        // `classify_git_failure_text` for why this reuses `TransientGit`.
+        AppError::GithubRateLimited { .. } => MergeFailureSource::TransientGit,
         AppError::GitOperation(message) => classify_git_failure_text(message),
         _ => classify_git_failure_text(&error.to_string()),
     }
