@@ -184,13 +184,13 @@ fn parse_list(lines: &[&str], start: usize, depth: usize) -> (Block, usize) {
     }
     let base_indent = items[0].0;
     let ordered = items[0].1;
-    let (list_items, _) = build_list_items(&items, base_indent, depth);
+    let (list_items, consumed) = build_list_items(&items, base_indent, depth);
     (
         Block::List {
             ordered,
             items: list_items,
         },
-        i,
+        start + consumed,
     )
 }
 

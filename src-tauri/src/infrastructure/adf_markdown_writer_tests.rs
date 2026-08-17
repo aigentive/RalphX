@@ -121,6 +121,31 @@ fn markdown_to_adf_bullet_list_with_nesting() {
 }
 
 #[test]
+fn markdown_to_adf_leading_indented_list_keeps_later_top_level_items() {
+    let input = "  - indented first bullet\n- normal bullet\n- another";
+    let doc = markdown_to_adf(input);
+    let serialized = doc.to_string();
+    for text in ["indented first bullet", "normal bullet", "another"] {
+        assert!(
+            serialized.contains(&format!("\"text\":\"{text}\"")),
+            "expected {serialized} to contain text {text}"
+        );
+    }
+}
+
+#[test]
+fn markdown_to_adf_dedent_to_unopened_level_keeps_item() {
+    let doc = markdown_to_adf("- a\n    - b\n  - c");
+    let serialized = doc.to_string();
+    for text in ["a", "b", "c"] {
+        assert!(
+            serialized.contains(&format!("\"text\":\"{text}\"")),
+            "expected {serialized} to contain text {text}"
+        );
+    }
+}
+
+#[test]
 fn markdown_to_adf_ordered_list_simple() {
     let doc = markdown_to_adf("1. first\n2. second\n3. third");
     assert_eq!(
@@ -334,6 +359,29 @@ fn markdown_to_storage_bullet_list_with_nesting() {
         html,
         "<ul><li>item one<ul><li>nested a</li><li>nested b</li></ul></li><li>item two</li></ul>"
     );
+}
+
+#[test]
+fn markdown_to_storage_leading_indented_list_keeps_later_top_level_items() {
+    let input = "  - indented first bullet\n- normal bullet\n- another";
+    let html = markdown_to_storage(input);
+    for text in ["indented first bullet", "normal bullet", "another"] {
+        assert!(
+            html.contains(&format!("<li>{text}")),
+            "expected {html} to contain <li>{text}"
+        );
+    }
+}
+
+#[test]
+fn markdown_to_storage_dedent_to_unopened_level_keeps_item() {
+    let html = markdown_to_storage("- a\n    - b\n  - c");
+    for text in ["a", "b", "c"] {
+        assert!(
+            html.contains(&format!("<li>{text}")),
+            "expected {html} to contain <li>{text}"
+        );
+    }
 }
 
 #[test]
