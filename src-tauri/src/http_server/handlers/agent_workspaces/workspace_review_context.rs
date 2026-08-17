@@ -16,6 +16,7 @@ use crate::application::agent_workspace_review::{
 use crate::application::agent_workspace_review_context::{
     load_agent_workspace_review_presentation_context, AgentWorkspaceReviewContextReadMode,
 };
+use crate::application::AppState;
 
 /// GET /api/agent-workspaces/{conversation_id}/workspace-review-context
 pub async fn get_agent_workspace_review_context(
@@ -153,6 +154,27 @@ pub async fn get_agent_workspace_review_context(
         files_changed_since_previous_review,
         previous_review_delta_complete,
     }))
+}
+
+/// Populates `monitor.automation_attempt_count` with the total number of automation cycles that
+/// have touched this workspace: fixer review cycles plus durable repair-attempt generations.
+///
+/// The repair count is read from the durable repo because it includes publish-repair attempts that
+/// the in-memory `review_fixer_cycle_count` counter cannot see.
+async fn apply_automation_attempt_count(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    monitor: &mut AgentWorkspaceReviewMonitorResponse,
+    review_fixer_cycle_count: i64,
+) -> Result<(), JsonError> {
+    let repair_attempts = state
+        .agent_workspace_repair_repo
+        .list_repair_attempts_for_conversation(conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    monitor.automation_attempt_count =
+        Some(review_fixer_cycle_count + repair_attempts.len() as i64);
+    Ok(())
 }
 
 /// Current changed-file statuses from the already-materialized packet.
