@@ -70,8 +70,6 @@ pub struct AllRuntimeConfig {
     pub child_session_activity_threshold_secs: Option<u64>,
     /// UI feature flags (page visibility). Defaults to all enabled.
     pub ui_feature_flags: super::ui_config::UiFeatureFlagsConfig,
-    /// Wrapper deadlines for the local Workspace Review reviewer/annotator agents.
-    pub workspace_review: WorkspaceReviewRuntimeConfig,
 }
 
 /// Backend-held delegation waiting: bounded `delegate_wait` blocks and durable park/wake.
@@ -1062,39 +1060,6 @@ impl Default for LimitsConfig {
     }
 }
 
-/// Wrapper deadlines for the local Workspace Review pipeline agents.
-///
-/// These bound how long the backend waits on a reviewer/annotator child chat before
-/// settling the review gate from durable evidence. They live here (not as Rust consts)
-/// per the "No Inline Timeout Consts" pattern.
-#[derive(Debug, Clone, Deserialize)]
-pub struct WorkspaceReviewRuntimeConfig {
-    /// Max wall-clock seconds the backend waits for `ralphx-workspace-reviewer`.
-    #[serde(default = "default_workspace_reviewer_timeout_secs")]
-    pub reviewer_timeout_secs: u64,
-    /// Max wall-clock seconds the backend waits for the post-settlement
-    /// `ralphx-workspace-annotator` run. Expiry terminates the run and mutates no gate state.
-    #[serde(default = "default_workspace_annotator_timeout_secs")]
-    pub annotator_timeout_secs: u64,
-}
-
-fn default_workspace_reviewer_timeout_secs() -> u64 {
-    900
-}
-
-fn default_workspace_annotator_timeout_secs() -> u64 {
-    600
-}
-
-impl Default for WorkspaceReviewRuntimeConfig {
-    fn default() -> Self {
-        Self {
-            reviewer_timeout_secs: default_workspace_reviewer_timeout_secs(),
-            annotator_timeout_secs: default_workspace_annotator_timeout_secs(),
-        }
-    }
-}
-
 // ── Env overrides ────────────────────────────────────────────────────────
 
 pub fn apply_env_overrides(cfg: &mut AllRuntimeConfig) {
@@ -1791,12 +1756,16 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
 
     // Workspace Review
     env_u64!(
-        cfg.workspace_review.reviewer_timeout_secs,
-        "RALPHX_WORKSPACE_REVIEW_REVIEWER_TIMEOUT_SECS"
+        cfg.workspace_review.reviewer_idle_timeout_secs,
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_IDLE_TIMEOUT_SECS"
     );
     env_u64!(
-        cfg.workspace_review.annotator_timeout_secs,
-        "RALPHX_WORKSPACE_REVIEW_ANNOTATOR_TIMEOUT_SECS"
+        cfg.workspace_review.reviewer_max_wall_clock_secs,
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_MAX_WALL_CLOCK_SECS"
+    );
+    env_u64!(
+        cfg.workspace_review.reviewer_completion_grace_secs,
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_COMPLETION_GRACE_SECS"
     );
 
     // Ideation

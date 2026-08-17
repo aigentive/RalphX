@@ -283,7 +283,7 @@ fn spawn_annotator_deadline(
     annotator_run_id: String,
 ) {
     let timeout_secs =
-        crate::infrastructure::agents::workspace_review_config().annotator_timeout_secs;
+        crate::infrastructure::agents::workspace_review_config().reviewer_idle_timeout_secs;
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(timeout_secs)).await;
         let key = RunningAgentKey::new("project", annotator_conversation_id.clone());

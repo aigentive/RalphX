@@ -1420,12 +1420,13 @@ fn test_ui_ticketing_dashboard_env_missing_keeps_default() {
 
 // ── Workspace Review durations ───────────────────────────────────────────
 
-/// The reviewer/annotator wrapper deadlines are runtime config, not Rust consts.
+/// The reviewer wrapper deadlines are runtime config, not Rust consts.
 #[test]
 fn test_workspace_review_timeout_defaults() {
     let cfg = WorkspaceReviewRuntimeConfig::default();
-    assert_eq!(cfg.reviewer_timeout_secs, 900);
-    assert_eq!(cfg.annotator_timeout_secs, 600);
+    assert_eq!(cfg.reviewer_idle_timeout_secs, 600);
+    assert_eq!(cfg.reviewer_max_wall_clock_secs, 3600);
+    assert_eq!(cfg.reviewer_completion_grace_secs, 120);
 }
 
 #[test]
@@ -1447,11 +1448,13 @@ fn test_workspace_review_timeout_env_overrides() {
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
-        "RALPHX_WORKSPACE_REVIEW_REVIEWER_TIMEOUT_SECS" => Some("1200".to_string()),
-        "RALPHX_WORKSPACE_REVIEW_ANNOTATOR_TIMEOUT_SECS" => Some("300".to_string()),
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_IDLE_TIMEOUT_SECS" => Some("300".to_string()),
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_MAX_WALL_CLOCK_SECS" => Some("1800".to_string()),
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_COMPLETION_GRACE_SECS" => Some("60".to_string()),
         _ => None,
     });
 
-    assert_eq!(cfg.workspace_review.reviewer_timeout_secs, 1200);
-    assert_eq!(cfg.workspace_review.annotator_timeout_secs, 300);
+    assert_eq!(cfg.workspace_review.reviewer_idle_timeout_secs, 300);
+    assert_eq!(cfg.workspace_review.reviewer_max_wall_clock_secs, 1800);
+    assert_eq!(cfg.workspace_review.reviewer_completion_grace_secs, 60);
 }

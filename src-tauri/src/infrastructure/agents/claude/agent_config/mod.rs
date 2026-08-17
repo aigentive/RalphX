@@ -1267,7 +1267,6 @@ fn resolve_loaded_config_with_lookup(
             .ideation
             .child_session_activity_threshold_secs,
         ui_feature_flags,
-        workspace_review: parsed.workspace_review,
     };
     let mut automations = parsed.automations;
     if runtime.external_mcp.max_external_ideation_sessions != 1 {
@@ -1729,7 +1728,6 @@ fn load_config() -> LoadedConfig {
                 workspace_review: runtime_config::WorkspaceReviewRuntimeConfig::default(),
                 child_session_activity_threshold_secs: None,
                 ui_feature_flags: UiFeatureFlagsConfig::default(),
-                workspace_review: runtime_config::WorkspaceReviewRuntimeConfig::default(),
             };
             runtime_config::apply_env_overrides(&mut runtime);
             let mut automations = AutomationsRuntimeConfig::default();
@@ -1962,14 +1960,6 @@ pub fn supervisor_runtime_config() -> &'static SupervisorRuntimeConfig {
 
 pub fn limits_config() -> &'static LimitsConfig {
     &LOADED_CONFIG_CELL.get_or_init(load_config).runtime.limits
-}
-
-/// Wrapper deadlines for the local Workspace Review reviewer/annotator agents.
-pub fn workspace_review_config() -> &'static runtime_config::WorkspaceReviewRuntimeConfig {
-    &LOADED_CONFIG_CELL
-        .get_or_init(load_config)
-        .runtime
-        .workspace_review
 }
 
 pub fn verification_config() -> &'static VerificationConfig {
