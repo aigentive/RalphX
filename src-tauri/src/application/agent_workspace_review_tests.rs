@@ -10,14 +10,16 @@ use crate::domain::entities::{
     AgentConversationJiraIssueLink, AgentConversationWorkspaceMode, AgentRun,
     AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
-    ArtifactType, ChatConversation, ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind,
-    IdeationSession, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, ProjectId,
-    RuntimeSource, TaskId,
+    ArtifactType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
+    ChatTimelineItem, ChatTimelineItemKind, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, ProjectId, RuntimeSource,
+    TaskId,
 };
 use crate::domain::repositories::{AgentProviderSettingsRepository, ReviewSettingsRepository};
 use crate::domain::review::ReviewSettings;
 use crate::domain::services::{QueueKey, QueuedMessage};
 use crate::infrastructure::MockAgenticClient;
+use chrono::DateTime;
 use std::collections::BTreeSet;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -25,6 +27,16 @@ use std::sync::{Arc as StdArc, Mutex as StdMutex};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Layer;
+
+/// Deadlines generous enough that terminal-run waiter tests never trip a bound.
+/// Tests that assert deadline behavior inject their own millisecond-scale values.
+fn test_waiter_deadlines() -> WorkspaceReviewWaiterDeadlines {
+    WorkspaceReviewWaiterDeadlines {
+        idle_timeout: Duration::from_secs(60),
+        max_wall_clock: Duration::from_secs(60),
+        completion_grace: Duration::from_secs(1),
+    }
+}
 
 #[derive(Clone, Debug)]
 struct WorkspaceReviewTimingEvent {
@@ -2872,6 +2884,7 @@ async fn workspace_review_waiter_handles_failed_and_completed_child_runs() {
         workspace.clone(),
         target.clone(),
         failed_run_id.clone(),
+        test_waiter_deadlines(),
     );
 
     let blocked = wait_for_monitor_status(
@@ -2920,6 +2933,7 @@ async fn workspace_review_waiter_handles_failed_and_completed_child_runs() {
         workspace.clone(),
         target.clone(),
         late_failed_run_id.clone(),
+        test_waiter_deadlines(),
     );
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -2974,6 +2988,7 @@ async fn workspace_review_waiter_handles_failed_and_completed_child_runs() {
         workspace.clone(),
         target.clone(),
         completed_run_id.clone(),
+        test_waiter_deadlines(),
     );
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -3029,6 +3044,7 @@ async fn workspace_review_waiter_handles_failed_and_completed_child_runs() {
         workspace.clone(),
         target,
         run_failed_completion_id.clone(),
+        test_waiter_deadlines(),
     );
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -3053,6 +3069,1105 @@ async fn workspace_review_waiter_handles_failed_and_completed_child_runs() {
     );
     assert_eq!(monitor.review_artifact_version, Some(5));
     assert_eq!(monitor.last_error.as_deref(), Some(specific_error.as_str()));
+}
+
+// ── Liveness-aware waiter deadlines ──────────────────────────────────────────
+
+/// Everything a deadline test needs: a persisted workspace, its current target, and a `Running`
+/// reviewer child run whose `started_at` can be backdated to control the idle signal.
+struct WaiterDeadlineFixture {
+    _temp: tempfile::TempDir,
+    state: Arc<AppState>,
+    workspace: AgentConversationWorkspace,
+    target: AgentWorkspaceReviewTarget,
+    child_conversation_id: ChatConversationId,
+    run_id: String,
+}
+
+/// Timeline repo whose activity read always fails, for proving fail-closed liveness handling.
+/// Every other method delegates so the rest of the waiter behaves normally.
+struct FailingChatTimelineRepository {
+    inner: crate::infrastructure::memory::MemoryChatTimelineRepository,
+}
+
+#[async_trait::async_trait]
+impl crate::domain::repositories::ChatTimelineRepository for FailingChatTimelineRepository {
+    async fn upsert_item(
+        &self,
+        item: ChatTimelineItem,
+    ) -> crate::error::AppResult<ChatTimelineItem> {
+        self.inner.upsert_item(item).await
+    }
+
+    async fn get_by_id(
+        &self,
+        id: &crate::domain::entities::ChatTimelineItemId,
+    ) -> crate::error::AppResult<Option<ChatTimelineItem>> {
+        self.inner.get_by_id(id).await
+    }
+
+    async fn get_page(
+        &self,
+        conversation_id: &ChatConversationId,
+        limit: u32,
+        before_sequence: Option<i64>,
+    ) -> crate::error::AppResult<crate::domain::entities::ChatTimelinePage> {
+        self.inner
+            .get_page(conversation_id, limit, before_sequence)
+            .await
+    }
+
+    async fn count_by_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<u32> {
+        self.inner.count_by_conversation(conversation_id).await
+    }
+
+    async fn get_by_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<Vec<ChatTimelineItem>> {
+        self.inner.get_by_conversation(conversation_id).await
+    }
+
+    async fn latest_assistant_activity_at_for_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _assistant_role: MessageRole,
+    ) -> crate::error::AppResult<Option<DateTime<Utc>>> {
+        Err(crate::error::AppError::Infrastructure(
+            "timeline activity read unavailable".to_string(),
+        ))
+    }
+
+    async fn delete_message_items_except_block_indices(
+        &self,
+        message_id: &ChatMessageId,
+        retained_block_indices: Vec<i64>,
+    ) -> crate::error::AppResult<()> {
+        self.inner
+            .delete_message_items_except_block_indices(message_id, retained_block_indices)
+            .await
+    }
+
+    async fn mark_message_items_finalized(
+        &self,
+        message_id: &ChatMessageId,
+    ) -> crate::error::AppResult<()> {
+        self.inner.mark_message_items_finalized(message_id).await
+    }
+}
+
+async fn waiter_deadline_fixture(silent_for_secs: i64) -> WaiterDeadlineFixture {
+    waiter_deadline_fixture_with(silent_for_secs, false).await
+}
+
+async fn waiter_deadline_fixture_with(
+    silent_for_secs: i64,
+    failing_activity_reads: bool,
+) -> WaiterDeadlineFixture {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let mut state = AppState::new_test();
+    if failing_activity_reads {
+        state.chat_timeline_repo = Arc::new(FailingChatTimelineRepository {
+            inner: crate::infrastructure::memory::MemoryChatTimelineRepository::new(),
+        });
+    }
+    let state = Arc::new(state);
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load");
+    let target = context.target.expect("target should exist");
+
+    let child_conversation_id = ChatConversationId::new();
+    let mut run = AgentRun::new(child_conversation_id.clone());
+    run.started_at = Utc::now() - chrono::Duration::seconds(silent_for_secs);
+    let run_id = run.id.as_str().to_string();
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("running reviewer run should persist");
+
+    let mut reviewing_monitor = context.monitor.clone();
+    apply_current_target_to_monitor(&mut reviewing_monitor, Some(&target));
+    reviewing_monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    reviewing_monitor.review_conversation_id = Some(child_conversation_id.clone());
+    reviewing_monitor.last_run_id = Some(run_id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(reviewing_monitor)
+        .await
+        .expect("reviewing monitor should persist");
+
+    WaiterDeadlineFixture {
+        _temp,
+        state,
+        workspace,
+        target,
+        child_conversation_id,
+        run_id,
+    }
+}
+
+/// Persist one assistant timeline block for the reviewer child, stamped `activity_at`.
+/// This is the signal that advances mid-turn; `chat_messages.created_at` does not.
+async fn seed_reviewer_timeline_activity(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    block_index: i64,
+    activity_at: DateTime<Utc>,
+) {
+    let mut item = ChatTimelineItem::for_message_block(
+        ChatMessageId::new(),
+        conversation_id.clone(),
+        block_index,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::Text,
+    );
+    item.created_at = activity_at;
+    item.updated_at = activity_at;
+    state
+        .chat_timeline_repo
+        .upsert_item(item)
+        .await
+        .expect("reviewer timeline activity should persist");
+}
+
+/// Persist one assistant `chat_messages` row for the reviewer child, stamped `created_at`.
+async fn seed_reviewer_message(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    conversation_id: &ChatConversationId,
+    created_at: DateTime<Utc>,
+) {
+    let mut message =
+        ChatMessage::user_in_project(workspace.project_id.clone(), "reviewer progress");
+    message.conversation_id = Some(conversation_id.clone());
+    message.role = MessageRole::Orchestrator;
+    message.created_at = created_at;
+    state
+        .chat_message_repo
+        .create(message)
+        .await
+        .expect("reviewer message should persist");
+}
+
+/// Mark the fixture's monitor as holding a current, complete Review artifact pair for `target`
+/// without a typed outcome — the exact race window the completion grace exists for.
+async fn persist_current_review_artifact_pair(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    target: &AgentWorkspaceReviewTarget,
+    run_id: &str,
+) -> AgentWorkspaceReviewMonitor {
+    let mut monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .expect("monitor should exist");
+    apply_review_artifact_to_monitor(
+        &mut monitor,
+        target.scope,
+        target.head_sha.clone(),
+        target.diff_fingerprint.clone(),
+        Some(run_id.to_string()),
+        ArtifactId::from_string("artifact-awaiting-completion"),
+        9,
+        Utc::now(),
+        None,
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::None;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor.clone())
+        .await
+        .expect("current artifact pair should persist");
+    monitor
+}
+
+async fn read_monitor(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AgentWorkspaceReviewMonitor {
+    state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .expect("monitor should exist")
+}
+
+/// Proof Obligations 1 and 9: a reviewer whose only `chat_messages` row is ancient but whose
+/// timeline blocks keep updating is still producing, so the idle timeout must not fire — even
+/// long past the old fixed 900s deadline.
+#[tokio::test]
+async fn workspace_review_waiter_defers_idle_timeout_while_reviewer_is_producing() {
+    let fixture = waiter_deadline_fixture(3_600).await;
+    // The reviewer's only `chat_messages` row is ancient — a single long turn never re-stamps it.
+    seed_reviewer_message(
+        &fixture.state,
+        &fixture.workspace,
+        &fixture.child_conversation_id,
+        Utc::now() - chrono::Duration::seconds(3_000),
+    )
+    .await;
+
+    // ...but its timeline blocks keep landing, which is what "still producing" actually looks like.
+    let heartbeat_state = Arc::clone(&fixture.state);
+    let heartbeat_conversation = fixture.child_conversation_id.clone();
+    let heartbeat = tokio::spawn(async move {
+        for block_index in 0..40 {
+            seed_reviewer_timeline_activity(
+                &heartbeat_state,
+                &heartbeat_conversation,
+                block_index,
+                Utc::now(),
+            )
+            .await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    });
+
+    let chat_service = Arc::new(MockChatService::new());
+    let handle = spawn_workspace_review_waiter_with_chat_service(
+        Arc::clone(&fixture.state),
+        fixture.workspace.clone(),
+        fixture.target.clone(),
+        fixture.run_id.clone(),
+        WorkspaceReviewWaiterDeadlines {
+            idle_timeout: Duration::from_millis(200),
+            max_wall_clock: Duration::from_secs(60),
+            completion_grace: Duration::from_millis(50),
+        },
+        Arc::clone(&chat_service),
+    );
+
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let monitor = read_monitor(&fixture.state, &fixture.workspace).await;
+    assert_eq!(
+        monitor.status,
+        AgentWorkspaceReviewMonitorStatus::Reviewing,
+        "a reviewer that keeps persisting timeline blocks must never trip the idle timeout, \
+         even though its chat_messages row stayed frozen"
+    );
+    assert_eq!(monitor.last_error, None);
+    assert!(chat_service.get_stop_agent_calls().await.is_empty());
+    handle.abort();
+    heartbeat.abort();
+}
+
+/// Proof Obligation 4: a genuinely silent reviewer fails with the "no Review" error.
+#[tokio::test]
+async fn workspace_review_waiter_times_out_without_review_when_reviewer_is_silent() {
+    let fixture = waiter_deadline_fixture(3_600).await;
+
+    let chat_service = Arc::new(MockChatService::new());
+    let handle = spawn_workspace_review_waiter_with_chat_service(
+        Arc::clone(&fixture.state),
+        fixture.workspace.clone(),
+        fixture.target.clone(),
+        fixture.run_id.clone(),
+        WorkspaceReviewWaiterDeadlines {
+            idle_timeout: Duration::from_millis(100),
+            max_wall_clock: Duration::from_secs(60),
+            completion_grace: Duration::from_millis(50),
+        },
+        Arc::clone(&chat_service),
+    );
+    handle.await.expect("waiter should settle");
+
+    let monitor = read_monitor(&fixture.state, &fixture.workspace).await;
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        monitor.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        monitor.last_error.as_deref(),
+        Some(WORKSPACE_REVIEW_ERR_TIMED_OUT_NO_REVIEW)
+    );
+}
+
+/// Proof Obligation 5: the absolute cap ends even a continuously producing run.
+#[tokio::test]
+async fn workspace_review_waiter_wall_clock_cap_fires_for_continuously_active_run() {
+    let fixture = waiter_deadline_fixture(0).await;
+    seed_reviewer_timeline_activity(
+        &fixture.state,
+        &fixture.child_conversation_id,
+        0,
+        Utc::now(),
+    )
+    .await;
+
+    let chat_service = Arc::new(MockChatService::new());
+    let handle = spawn_workspace_review_waiter_with_chat_service(
+        Arc::clone(&fixture.state),
+        fixture.workspace.clone(),
+        fixture.target.clone(),
+        fixture.run_id.clone(),
+        WorkspaceReviewWaiterDeadlines {
+            idle_timeout: Duration::from_secs(60),
+            max_wall_clock: Duration::from_millis(150),
+            completion_grace: Duration::from_millis(50),
+        },
+        Arc::clone(&chat_service),
+    );
+    handle.await.expect("waiter should settle");
+
+    let monitor = read_monitor(&fixture.state, &fixture.workspace).await;
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        monitor.last_error.as_deref(),
+        Some(WORKSPACE_REVIEW_ERR_TIMED_OUT_NO_REVIEW)
+    );
+}
+
+/// Proof Obligations 3 and 11: grace expires with a current Review still unconfirmed, so the gate
+/// fails with the *accurate* error and the orphaned child is stopped afterwards. The recorded
+/// error must not be the stop-path text, which proves `stop_agent` ran after the block.
+#[tokio::test]
+async fn workspace_review_waiter_fails_unconfirmed_review_after_grace_and_stops_child() {
+    let fixture = waiter_deadline_fixture(3_600).await;
+    persist_current_review_artifact_pair(
+        &fixture.state,
+        &fixture.workspace,
+        &fixture.target,
+        &fixture.run_id,
+    )
+    .await;
+
+    let chat_service = Arc::new(MockChatService::new());
+    let handle = spawn_workspace_review_waiter_with_chat_service(
+        Arc::clone(&fixture.state),
+        fixture.workspace.clone(),
+        fixture.target.clone(),
+        fixture.run_id.clone(),
+        WorkspaceReviewWaiterDeadlines {
+            idle_timeout: Duration::from_millis(100),
+            max_wall_clock: Duration::from_secs(60),
+            completion_grace: Duration::from_millis(300),
+        },
+        Arc::clone(&chat_service),
+    );
+    handle.await.expect("waiter should settle");
+
+    let monitor = read_monitor(&fixture.state, &fixture.workspace).await;
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        monitor.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        monitor.last_error.as_deref(),
+        Some(WORKSPACE_REVIEW_ERR_UNCONFIRMED_REVIEW)
+    );
+    assert_eq!(
+        chat_service.get_stop_agent_calls().await,
+        vec![(
+            ChatContextType::Project,
+            fixture.child_conversation_id.as_str()
+        )]
+    );
+}
+
+/// Proof Obligation 2: the typed completion that lands inside the grace window wins, and the
+/// normal Passed outcome and gate survive the deadline.
+#[tokio::test]
+async fn workspace_review_waiter_preserves_typed_completion_that_lands_inside_grace() {
+    let fixture = waiter_deadline_fixture(3_600).await;
+    persist_current_review_artifact_pair(
+        &fixture.state,
+        &fixture.workspace,
+        &fixture.target,
+        &fixture.run_id,
+    )
+    .await;
+
+    let chat_service = Arc::new(MockChatService::new());
+    let handle = spawn_workspace_review_waiter_with_chat_service(
+        Arc::clone(&fixture.state),
+        fixture.workspace.clone(),
+        fixture.target.clone(),
+        fixture.run_id.clone(),
+        WorkspaceReviewWaiterDeadlines {
+            idle_timeout: Duration::from_millis(100),
+            max_wall_clock: Duration::from_secs(60),
+            completion_grace: Duration::from_secs(5),
+        },
+        Arc::clone(&chat_service),
+    );
+
+    // Land the reviewer's typed completion after the deadline has already tripped.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let mut completed = read_monitor(&fixture.state, &fixture.workspace).await;
+    assert_eq!(
+        completed.status,
+        AgentWorkspaceReviewMonitorStatus::Reviewing,
+        "grace must keep the monitor reviewable instead of failing it immediately"
+    );
+    completed.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    completed.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    completed.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+    fixture
+        .state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(completed)
+        .await
+        .expect("typed completion should persist");
+
+    handle.await.expect("waiter should settle");
+
+    let monitor = read_monitor(&fixture.state, &fixture.workspace).await;
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Ready);
+    assert_eq!(monitor.review_outcome, AgentWorkspaceReviewOutcome::Passed);
+    assert_eq!(
+        monitor.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Passed
+    );
+    assert_eq!(monitor.last_error, None);
+    assert!(chat_service.get_stop_agent_calls().await.is_empty());
+}
+
+/// Proof Obligation 6: a typed completion already durable when the deadline trips is preserved,
+/// reusing the same guard the run-terminal path uses.
+#[tokio::test]
+async fn workspace_review_waiter_preserves_typed_completion_present_at_deadline() {
+    let fixture = waiter_deadline_fixture(3_600).await;
+    let mut monitor = persist_current_review_artifact_pair(
+        &fixture.state,
+        &fixture.workspace,
+        &fixture.target,
+        &fixture.run_id,
+    )
+    .await;
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    fixture
+        .state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("typed completion should persist");
+
+    let chat_service = Arc::new(MockChatService::new());
+    let handle = spawn_workspace_review_waiter_with_chat_service(
+        Arc::clone(&fixture.state),
+        fixture.workspace.clone(),
+        fixture.target.clone(),
+        fixture.run_id.clone(),
+        WorkspaceReviewWaiterDeadlines {
+            idle_timeout: Duration::from_millis(100),
+            max_wall_clock: Duration::from_secs(60),
+            completion_grace: Duration::from_millis(50),
+        },
+        Arc::clone(&chat_service),
+    );
+    handle.await.expect("waiter should settle");
+
+    let monitor = read_monitor(&fixture.state, &fixture.workspace).await;
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Ready);
+    assert_eq!(
+        monitor.review_outcome,
+        AgentWorkspaceReviewOutcome::Blocking
+    );
+    assert_eq!(monitor.last_error, None);
+    assert!(chat_service.get_stop_agent_calls().await.is_empty());
+}
+
+/// Proof Obligation 10: a failing liveness read must never look like idleness. Only the absolute
+/// wall-clock cap may still fire when activity cannot be read.
+#[tokio::test]
+async fn workspace_review_waiter_treats_failed_liveness_read_as_active() {
+    let fixture = waiter_deadline_fixture_with(3_600, true).await;
+
+    let chat_service = Arc::new(MockChatService::new());
+    let handle = spawn_workspace_review_waiter_with_chat_service(
+        Arc::clone(&fixture.state),
+        fixture.workspace.clone(),
+        fixture.target.clone(),
+        fixture.run_id.clone(),
+        WorkspaceReviewWaiterDeadlines {
+            idle_timeout: Duration::from_millis(100),
+            max_wall_clock: Duration::from_secs(60),
+            completion_grace: Duration::from_millis(50),
+        },
+        Arc::clone(&chat_service),
+    );
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let monitor = read_monitor(&fixture.state, &fixture.workspace).await;
+    assert_eq!(
+        monitor.status,
+        AgentWorkspaceReviewMonitorStatus::Reviewing,
+        "an unreadable activity signal must not be treated as idleness"
+    );
+    assert!(chat_service.get_stop_agent_calls().await.is_empty());
+    handle.abort();
+}
+
+/// Wraps the memory agent-run repo and fails `get_by_id` while `should_fail` is set,
+/// letting setup writes through before the flag is raised.
+struct FailingAgentRunRepository {
+    inner: Arc<crate::infrastructure::memory::MemoryAgentRunRepository>,
+    should_fail: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl crate::domain::repositories::AgentRunRepository for FailingAgentRunRepository {
+    async fn create(
+        &self,
+        run: crate::domain::entities::AgentRun,
+    ) -> crate::error::AppResult<crate::domain::entities::AgentRun> {
+        self.inner.create(run).await
+    }
+
+    async fn get_by_id(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+    ) -> crate::error::AppResult<Option<crate::domain::entities::AgentRun>> {
+        if self.should_fail.load(std::sync::atomic::Ordering::SeqCst) {
+            Err(crate::error::AppError::Infrastructure(
+                "simulated run-repo read failure".to_string(),
+            ))
+        } else {
+            self.inner.get_by_id(id).await
+        }
+    }
+
+    async fn get_latest_for_conversation(
+        &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+    ) -> crate::error::AppResult<Option<crate::domain::entities::AgentRun>> {
+        self.inner.get_latest_for_conversation(conversation_id).await
+    }
+
+    async fn get_active_for_conversation(
+        &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+    ) -> crate::error::AppResult<Option<crate::domain::entities::AgentRun>> {
+        self.inner.get_active_for_conversation(conversation_id).await
+    }
+
+    async fn get_by_conversation(
+        &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+    ) -> crate::error::AppResult<Vec<crate::domain::entities::AgentRun>> {
+        self.inner.get_by_conversation(conversation_id).await
+    }
+
+    async fn update_status(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+        status: crate::domain::entities::AgentRunStatus,
+    ) -> crate::error::AppResult<()> {
+        self.inner.update_status(id, status).await
+    }
+
+    async fn update_usage(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+        usage: &crate::domain::entities::AgentRunUsage,
+    ) -> crate::error::AppResult<()> {
+        self.inner.update_usage(id, usage).await
+    }
+
+    async fn update_attribution(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+        attribution: &crate::domain::entities::AgentRunAttribution,
+    ) -> crate::error::AppResult<()> {
+        self.inner.update_attribution(id, attribution).await
+    }
+
+    async fn complete(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+    ) -> crate::error::AppResult<()> {
+        self.inner.complete(id).await
+    }
+
+    async fn complete_if_prune_cancelled(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+    ) -> crate::error::AppResult<bool> {
+        self.inner.complete_if_prune_cancelled(id).await
+    }
+
+    async fn fail(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+        error_message: &str,
+    ) -> crate::error::AppResult<()> {
+        self.inner.fail(id, error_message).await
+    }
+
+    async fn cancel(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+    ) -> crate::error::AppResult<()> {
+        self.inner.cancel(id).await
+    }
+
+    async fn cancel_with_reason(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+        reason: &str,
+    ) -> crate::error::AppResult<()> {
+        self.inner.cancel_with_reason(id, reason).await
+    }
+
+    async fn delete(
+        &self,
+        id: &crate::domain::entities::AgentRunId,
+    ) -> crate::error::AppResult<()> {
+        self.inner.delete(id).await
+    }
+
+    async fn delete_by_conversation(
+        &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+    ) -> crate::error::AppResult<()> {
+        self.inner.delete_by_conversation(conversation_id).await
+    }
+
+    async fn count_by_status(
+        &self,
+        conversation_id: &crate::domain::entities::ChatConversationId,
+        status: crate::domain::entities::AgentRunStatus,
+    ) -> crate::error::AppResult<u32> {
+        self.inner.count_by_status(conversation_id, status).await
+    }
+
+    async fn cancel_all_running(&self) -> crate::error::AppResult<u32> {
+        self.inner.cancel_all_running().await
+    }
+
+    async fn cancel_running_started_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> crate::error::AppResult<u32> {
+        self.inner.cancel_running_started_before(cutoff).await
+    }
+
+    async fn get_interrupted_conversations(
+        &self,
+    ) -> crate::error::AppResult<Vec<crate::domain::entities::InterruptedConversation>> {
+        self.inner.get_interrupted_conversations().await
+    }
+}
+
+/// Proof Obligation 5 (run-poll error path): a sustained `get_by_id` failure must not leave the
+/// waiter task running forever — the wall-clock cap must still fire and exit. Idle is not evaluated
+/// on this path. No `stop_agent` call because the run row is unreadable.
+#[tokio::test]
+async fn workspace_review_waiter_exits_and_fails_gate_when_run_poll_errors_past_wall_clock() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let inner_run_repo =
+        Arc::new(crate::infrastructure::memory::MemoryAgentRunRepository::new());
+    let should_fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let mut state = AppState::new_test();
+    state.agent_run_repo = Arc::new(FailingAgentRunRepository {
+        inner: Arc::clone(&inner_run_repo),
+        should_fail: Arc::clone(&should_fail),
+    });
+    let state = Arc::new(state);
+
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load");
+    let target = context.target.expect("target should exist");
+
+    let child_conversation_id = ChatConversationId::new();
+    let mut run = AgentRun::new(child_conversation_id.clone());
+    run.started_at = Utc::now() - chrono::Duration::seconds(3_600);
+    let run_id = run.id.as_str().to_string();
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("running reviewer run should persist");
+
+    let mut reviewing_monitor = context.monitor.clone();
+    apply_current_target_to_monitor(&mut reviewing_monitor, Some(&target));
+    reviewing_monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    reviewing_monitor.review_conversation_id = Some(child_conversation_id.clone());
+    reviewing_monitor.last_run_id = Some(run_id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(reviewing_monitor)
+        .await
+        .expect("reviewing monitor should persist");
+
+    // All get_by_id calls now fail — this is the sustained read failure the fold-in fixes.
+    should_fail.store(true, Ordering::SeqCst);
+
+    let chat_service = Arc::new(MockChatService::new());
+    let handle = spawn_workspace_review_waiter_with_chat_service(
+        Arc::clone(&state),
+        workspace.clone(),
+        target.clone(),
+        run_id.clone(),
+        WorkspaceReviewWaiterDeadlines {
+            idle_timeout: Duration::from_secs(60),
+            max_wall_clock: Duration::from_millis(150),
+            completion_grace: Duration::from_millis(50),
+        },
+        Arc::clone(&chat_service),
+    );
+    handle.await.expect("waiter should complete");
+
+    let monitor = read_monitor(&state, &workspace).await;
+    assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        monitor.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        monitor.last_error.as_deref(),
+        Some(WORKSPACE_REVIEW_ERR_TIMED_OUT_NO_REVIEW)
+    );
+    assert!(
+        chat_service.get_stop_agent_calls().await.is_empty(),
+        "stop_agent must not be called when the run row is unreadable"
+    );
+}
+
+/// Wraps the memory workspace repo and fails `get_workspace_review_monitor` while `should_fail`
+/// is set, letting setup writes through before the flag is raised.
+struct FailingMonitorReadRepository {
+    inner: Arc<crate::infrastructure::memory::MemoryAgentConversationWorkspaceRepository>,
+    should_fail: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl crate::domain::repositories::AgentConversationWorkspaceRepository
+    for FailingMonitorReadRepository
+{
+    async fn create_or_update(
+        &self,
+        workspace: crate::domain::entities::AgentConversationWorkspace,
+    ) -> crate::error::AppResult<crate::domain::entities::AgentConversationWorkspace> {
+        self.inner.create_or_update(workspace).await
+    }
+
+    async fn get_by_conversation_id(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<Option<crate::domain::entities::AgentConversationWorkspace>> {
+        self.inner.get_by_conversation_id(conversation_id).await
+    }
+
+    async fn get_by_project_id(
+        &self,
+        project_id: &crate::domain::entities::ProjectId,
+    ) -> crate::error::AppResult<Vec<crate::domain::entities::AgentConversationWorkspace>> {
+        self.inner.get_by_project_id(project_id).await
+    }
+
+    async fn list_active_direct_published_workspaces(
+        &self,
+    ) -> crate::error::AppResult<Vec<crate::domain::entities::AgentConversationWorkspace>> {
+        self.inner.list_active_direct_published_workspaces().await
+    }
+
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> crate::error::AppResult<Vec<crate::domain::entities::AgentConversationWorkspace>> {
+        self.inner.list_active_unpublished_edit_workspaces().await
+    }
+
+    async fn list_active_needs_agent_workspaces(
+        &self,
+    ) -> crate::error::AppResult<Vec<crate::domain::entities::AgentConversationWorkspace>> {
+        self.inner.list_active_needs_agent_workspaces().await
+    }
+
+    async fn update_links(
+        &self,
+        conversation_id: &ChatConversationId,
+        ideation_session_id: Option<&crate::domain::entities::IdeationSessionId>,
+        plan_branch_id: Option<&crate::domain::entities::PlanBranchId>,
+    ) -> crate::error::AppResult<()> {
+        self.inner
+            .update_links(conversation_id, ideation_session_id, plan_branch_id)
+            .await
+    }
+
+    async fn update_publication(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: Option<i64>,
+        pr_url: Option<&str>,
+        pr_status: Option<&str>,
+        push_status: Option<&str>,
+    ) -> crate::error::AppResult<()> {
+        self.inner
+            .update_publication(conversation_id, pr_number, pr_url, pr_status, push_status)
+            .await
+    }
+
+    async fn update_pr_supervision_preferences(
+        &self,
+        conversation_id: &ChatConversationId,
+        autofix_enabled: bool,
+        auto_merge_desired: bool,
+        auto_merge_method: &str,
+    ) -> crate::error::AppResult<()> {
+        self.inner
+            .update_pr_supervision_preferences(
+                conversation_id,
+                autofix_enabled,
+                auto_merge_desired,
+                auto_merge_method,
+            )
+            .await
+    }
+
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        conversation_id: &ChatConversationId,
+        fingerprint: Option<&str>,
+    ) -> crate::error::AppResult<()> {
+        self.inner
+            .set_last_blocked_pr_health_fingerprint(conversation_id, fingerprint)
+            .await
+    }
+
+    async fn set_stale_base_detected_at(
+        &self,
+        conversation_id: &ChatConversationId,
+        detected_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> crate::error::AppResult<()> {
+        self.inner
+            .set_stale_base_detected_at(conversation_id, detected_at)
+            .await
+    }
+
+    async fn set_review_automation_override(
+        &self,
+        conversation_id: &ChatConversationId,
+        value: Option<bool>,
+    ) -> crate::error::AppResult<()> {
+        self.inner
+            .set_review_automation_override(conversation_id, value)
+            .await
+    }
+
+    async fn update_status(
+        &self,
+        conversation_id: &ChatConversationId,
+        status: crate::domain::entities::AgentConversationWorkspaceStatus,
+    ) -> crate::error::AppResult<()> {
+        self.inner.update_status(conversation_id, status).await
+    }
+
+    async fn save_pr_description(
+        &self,
+        conversation_id: &ChatConversationId,
+        description: crate::domain::entities::AgentWorkspacePrDescription,
+    ) -> crate::error::AppResult<()> {
+        self.inner
+            .save_pr_description(conversation_id, description)
+            .await
+    }
+
+    async fn get_pr_description(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<Option<crate::domain::entities::AgentWorkspacePrDescription>> {
+        self.inner.get_pr_description(conversation_id).await
+    }
+
+    async fn clear_pr_description(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<()> {
+        self.inner.clear_pr_description(conversation_id).await
+    }
+
+    async fn append_publication_event(
+        &self,
+        event: crate::domain::entities::AgentConversationWorkspacePublicationEvent,
+    ) -> crate::error::AppResult<()> {
+        self.inner.append_publication_event(event).await
+    }
+
+    async fn list_publication_events(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<
+        Vec<crate::domain::entities::AgentConversationWorkspacePublicationEvent>,
+    > {
+        self.inner.list_publication_events(conversation_id).await
+    }
+
+    async fn set_pr_review_auto_approve_enabled(
+        &self,
+        conversation_id: &ChatConversationId,
+        enabled: bool,
+    ) -> crate::error::AppResult<crate::domain::entities::AgentWorkspacePrReviewMonitor> {
+        self.inner
+            .set_pr_review_auto_approve_enabled(conversation_id, enabled)
+            .await
+    }
+
+    async fn mark_pr_review_first_action_resolved(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<crate::domain::entities::AgentWorkspacePrReviewMonitor> {
+        self.inner
+            .mark_pr_review_first_action_resolved(conversation_id)
+            .await
+    }
+
+    async fn claim_pending_pr_review_action(
+        &self,
+        action_id: &str,
+    ) -> crate::error::AppResult<bool> {
+        self.inner.claim_pending_pr_review_action(action_id).await
+    }
+
+    async fn delete(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<()> {
+        self.inner.delete(conversation_id).await
+    }
+
+    async fn upsert_workspace_review_monitor(
+        &self,
+        monitor: crate::domain::entities::AgentWorkspaceReviewMonitor,
+    ) -> crate::error::AppResult<crate::domain::entities::AgentWorkspaceReviewMonitor> {
+        self.inner.upsert_workspace_review_monitor(monitor).await
+    }
+
+    async fn get_workspace_review_monitor(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<Option<crate::domain::entities::AgentWorkspaceReviewMonitor>> {
+        if self
+            .should_fail
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            Err(crate::error::AppError::Infrastructure(
+                "simulated monitor read failure".to_string(),
+            ))
+        } else {
+            self.inner.get_workspace_review_monitor(conversation_id).await
+        }
+    }
+}
+
+/// Proof Obligation 11: when every durable monitor read fails throughout the grace window, the
+/// settlement selects `WORKSPACE_REVIEW_ERR_UNVERIFIABLE_REVIEW` (not the "no review" variant).
+/// `mark_workspace_review_blocked` silently fails because it also reads the monitor, so we verify
+/// the `Failed` path executed by asserting that `stop_workspace_review_child_after_block` ran.
+#[tokio::test]
+async fn workspace_review_waiter_records_unverifiable_error_when_monitor_is_unreadable_during_grace(
+) {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let inner_workspace_repo = Arc::new(
+        crate::infrastructure::memory::MemoryAgentConversationWorkspaceRepository::new(),
+    );
+    let should_fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let mut state = AppState::new_test();
+    state.agent_conversation_workspace_repo = Arc::new(FailingMonitorReadRepository {
+        inner: Arc::clone(&inner_workspace_repo),
+        should_fail: Arc::clone(&should_fail),
+    });
+    let state = Arc::new(state);
+
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("context should load");
+    let target = context.target.expect("target should exist");
+
+    let child_conversation_id = ChatConversationId::new();
+    let mut run = AgentRun::new(child_conversation_id.clone());
+    run.started_at = Utc::now() - chrono::Duration::seconds(3_600);
+    let run_id = run.id.as_str().to_string();
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("running reviewer run should persist");
+
+    let mut reviewing_monitor = context.monitor.clone();
+    apply_current_target_to_monitor(&mut reviewing_monitor, Some(&target));
+    reviewing_monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    reviewing_monitor.review_conversation_id = Some(child_conversation_id.clone());
+    reviewing_monitor.last_run_id = Some(run_id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(reviewing_monitor)
+        .await
+        .expect("reviewing monitor should persist");
+
+    // From this point every get_workspace_review_monitor call returns Err.
+    should_fail.store(true, Ordering::SeqCst);
+
+    let chat_service = Arc::new(MockChatService::new());
+    let handle = spawn_workspace_review_waiter_with_chat_service(
+        Arc::clone(&state),
+        workspace.clone(),
+        target.clone(),
+        run_id.clone(),
+        WorkspaceReviewWaiterDeadlines {
+            idle_timeout: Duration::from_millis(100),
+            max_wall_clock: Duration::from_secs(60),
+            completion_grace: Duration::from_millis(50),
+        },
+        Arc::clone(&chat_service),
+    );
+    handle.await.expect("waiter should complete");
+
+    // stop_workspace_review_child_after_block is called after Failed settlement regardless of
+    // whether mark_workspace_review_blocked persisted (it cannot when the monitor is unreadable).
+    assert_eq!(
+        chat_service.get_stop_agent_calls().await,
+        vec![(
+            ChatContextType::Project,
+            child_conversation_id.as_str().to_owned()
+        )]
+    );
 }
 
 #[tokio::test]

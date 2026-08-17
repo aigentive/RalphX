@@ -17,7 +17,7 @@ use crate::application::agent_plan_context::{
 };
 use crate::application::agent_workspace_review_base::resolve_agent_workspace_review_base;
 use crate::application::chat_service::{
-    ChatService, SendCallerContext, SendMessageOptions, SendQueuePolicy,
+    get_assistant_role, ChatService, SendCallerContext, SendMessageOptions, SendQueuePolicy,
 };
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::{AppState, GitService};
@@ -43,8 +43,10 @@ use crate::domain::services::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
 
-const WORKSPACE_REVIEWER_TIMEOUT_SECS: u64 = 900;
 const WORKSPACE_REVIEW_RUN_POLL_INTERVAL_MS: u64 = 250;
+/// Reviewer liveness is read from persisted timeline activity, which is far more expensive than
+/// the run-status poll. Evaluate it on its own slower cadence.
+const WORKSPACE_REVIEW_ACTIVITY_CHECK_INTERVAL_MS: u64 = 5_000;
 const WORKSPACE_REVIEW_LOG_TARGET: &str = "ralphx_lib::application::agent_workspace_review";
 const WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS: usize = 42_000;
 const WORKSPACE_REVIEW_MAX_CHANGED_FILES: usize = 120;
@@ -60,6 +62,17 @@ const WORKSPACE_REVIEW_GOAL_POLICY: &str =
     "Goal Wins: explicit parent workspace requests and linked/approved plan artifacts are authoritative unless the diff introduces a concrete security, data-loss, build, or correctness blocker.";
 const WORKSPACE_REVIEW_TARGET_MISMATCH_ERROR: &str =
     "Workspace reviewer completion did not match the current Review target";
+/// A deadline expired and the reviewer never wrote a current Review for this target.
+pub(crate) const WORKSPACE_REVIEW_ERR_TIMED_OUT_NO_REVIEW: &str =
+    "Workspace reviewer timed out without producing a current Review";
+/// A deadline expired while a current Review artifact pair already existed, but the reviewer
+/// never confirmed the outcome through `complete_workspace_review_run`.
+pub(crate) const WORKSPACE_REVIEW_ERR_UNCONFIRMED_REVIEW: &str =
+    "Workspace reviewer wrote a current Review but did not confirm completion before the deadline";
+/// A deadline expired and the durable monitor could not be read during the grace window, so
+/// whether a current Review exists is unknown. Distinct from a verified absence.
+pub(crate) const WORKSPACE_REVIEW_ERR_UNVERIFIABLE_REVIEW: &str =
+    "Workspace reviewer deadline expired and the durable Review state could not be read";
 #[cfg(test)]
 pub(crate) const WORKSPACE_REVIEW_UNFINISHED_GIT_OPERATION_ERROR: &str =
     "Resolve conflicts and complete or abort the merge or rebase before retrying Workspace Review.";
@@ -1414,6 +1427,7 @@ async fn start_agent_workspace_review_with_revalidated_target_and_chat_service<
         workspace.clone(),
         target.clone(),
         send_result.agent_run_id.clone(),
+        WorkspaceReviewWaiterDeadlines::from_runtime_config(),
     );
     log_workspace_review_phase(
         "workspace_review_start_phase",
@@ -2023,15 +2037,96 @@ fn push_workspace_review_resolved_artifact(
     artifacts.push(artifact);
 }
 
+/// Liveness-aware deadlines for one workspace Review run.
+///
+/// Injected rather than read from ambient runtime config so the waiter can be driven at
+/// millisecond scale in tests (project rule: test determinism).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WorkspaceReviewWaiterDeadlines {
+    /// Fail only after the reviewer child has persisted no new output for this long.
+    pub idle_timeout: Duration,
+    /// Absolute runaway cap regardless of reviewer activity.
+    pub max_wall_clock: Duration,
+    /// Extra window for the typed completion call when a current Review already exists.
+    pub completion_grace: Duration,
+}
+
+impl WorkspaceReviewWaiterDeadlines {
+    fn from_runtime_config() -> Self {
+        let config = crate::infrastructure::agents::claude::workspace_review_config();
+        Self {
+            idle_timeout: Duration::from_secs(config.reviewer_idle_timeout_secs),
+            max_wall_clock: Duration::from_secs(config.reviewer_max_wall_clock_secs),
+            completion_grace: Duration::from_secs(config.reviewer_completion_grace_secs),
+        }
+    }
+}
+
+/// Which bound ended the wait. Only used for logging; both map to the same settlement sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceReviewDeadlineKind {
+    Idle,
+    WallClock,
+}
+
+impl WorkspaceReviewDeadlineKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle_timeout",
+            Self::WallClock => "max_wall_clock",
+        }
+    }
+}
+
+/// Outcome of the post-deadline settlement sequence.
+enum WorkspaceReviewDeadlineSettlement {
+    /// The reviewer's typed completion already landed for this target; leave it alone.
+    TypedCompletionPreserved,
+    /// The run reached a terminal state during settlement; the normal terminal branch owns it.
+    RunTerminal(Box<AgentRun>),
+    /// The deadline stands. Block the gate with this error.
+    Failed(&'static str),
+}
+
 fn spawn_workspace_review_waiter(
     state: Arc<AppState>,
     workspace: AgentConversationWorkspace,
     target: AgentWorkspaceReviewTarget,
     run_id: String,
+    deadlines: WorkspaceReviewWaiterDeadlines,
 ) {
+    let chat_service = Arc::new(state.build_chat_service());
+    let _handle = spawn_workspace_review_waiter_with_chat_service(
+        state,
+        workspace,
+        target,
+        run_id,
+        deadlines,
+        chat_service,
+    );
+}
+
+fn spawn_workspace_review_waiter_with_chat_service<S>(
+    state: Arc<AppState>,
+    workspace: AgentConversationWorkspace,
+    target: AgentWorkspaceReviewTarget,
+    run_id: String,
+    deadlines: WorkspaceReviewWaiterDeadlines,
+    chat_service: Arc<S>,
+) -> tokio::task::JoinHandle<()>
+where
+    S: ChatService + ?Sized + 'static,
+{
     tokio::spawn(async move {
         let wait_started = Instant::now();
         let run_entity_id = AgentRunId::from_string(run_id.clone());
+        let assistant_role: MessageRole = get_assistant_role(&ChatContextType::Project);
+        let mut activity_probe = WorkspaceReviewActivityProbe::new();
+        // Never sample slower than a quarter of the idle window, so detection granularity stays
+        // bounded relative to the configured deadline instead of a fixed wall-clock cadence.
+        let activity_check_interval =
+            Duration::from_millis(WORKSPACE_REVIEW_ACTIVITY_CHECK_INTERVAL_MS)
+                .min(deadlines.idle_timeout / 4);
         info!(
             target: WORKSPACE_REVIEW_LOG_TARGET,
             operation = "child_chat_wait_started",
@@ -2039,26 +2134,16 @@ fn spawn_workspace_review_waiter(
             project_id = %workspace.project_id,
             branch = %workspace.branch_name,
             run_id = %run_id,
-            timeout_secs = WORKSPACE_REVIEWER_TIMEOUT_SECS,
+            idle_timeout_secs = deadlines.idle_timeout.as_secs(),
+            max_wall_clock_secs = deadlines.max_wall_clock.as_secs(),
+            completion_grace_secs = deadlines.completion_grace.as_secs(),
             target_scope = %target.scope,
             diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
             "Waiting for workspace Review child chat completion"
         );
 
         loop {
-            if wait_started.elapsed() >= Duration::from_secs(WORKSPACE_REVIEWER_TIMEOUT_SECS) {
-                mark_workspace_review_blocked(
-                    &state,
-                    &workspace,
-                    &target,
-                    &run_id,
-                    "Workspace reviewer timed out before producing a current Review".to_string(),
-                )
-                .await;
-                return;
-            }
-
-            let run = match state.agent_run_repo.get_by_id(&run_entity_id).await {
+            let mut run = match state.agent_run_repo.get_by_id(&run_entity_id).await {
                 Ok(Some(run)) => run,
                 Ok(None) => {
                     mark_workspace_review_blocked(
@@ -2081,12 +2166,103 @@ fn spawn_workspace_review_waiter(
                         elapsed_ms = wait_started.elapsed().as_millis(),
                         "Failed to poll workspace Review child chat run"
                     );
+                    // The wall-clock cap must hold even when the run row is unreadable.
+                    // Idle is meaningless without a run, so only the unconditional cap fires here.
+                    // No stop_agent: with the run row unreadable there is no verified child to stop,
+                    // and stopping blind would re-open the "stopped by user" error overwrite.
+                    if wait_started.elapsed() >= deadlines.max_wall_clock {
+                        warn!(
+                            target: WORKSPACE_REVIEW_LOG_TARGET,
+                            operation = "child_chat_deadline_tripped",
+                            conversation_id = %workspace.conversation_id,
+                            project_id = %workspace.project_id,
+                            branch = %workspace.branch_name,
+                            run_id = %run_id,
+                            deadline = WorkspaceReviewDeadlineKind::WallClock.as_str(),
+                            elapsed_ms = wait_started.elapsed().as_millis(),
+                            target_scope = %target.scope,
+                            "Workspace Review deadline tripped on run-poll error; failing the gate"
+                        );
+                        mark_workspace_review_blocked(
+                            &state,
+                            &workspace,
+                            &target,
+                            &run_id,
+                            WORKSPACE_REVIEW_ERR_TIMED_OUT_NO_REVIEW.to_string(),
+                        )
+                        .await;
+                        return;
+                    }
                     sleep(Duration::from_millis(WORKSPACE_REVIEW_RUN_POLL_INTERVAL_MS)).await;
                     continue;
                 }
             };
 
-            if run.status == AgentRunStatus::Running {
+            let tripped = if wait_started.elapsed() >= deadlines.max_wall_clock {
+                Some(WorkspaceReviewDeadlineKind::WallClock)
+            } else if run.status == AgentRunStatus::Running
+                && activity_probe
+                    .idle_for(&state, &run, assistant_role, activity_check_interval)
+                    .await
+                    .is_some_and(|idle| idle >= deadlines.idle_timeout)
+            {
+                Some(WorkspaceReviewDeadlineKind::Idle)
+            } else {
+                None
+            };
+
+            if let Some(kind) = tripped {
+                warn!(
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "child_chat_deadline_tripped",
+                    conversation_id = %workspace.conversation_id,
+                    project_id = %workspace.project_id,
+                    branch = %workspace.branch_name,
+                    run_id = %run_id,
+                    deadline = kind.as_str(),
+                    elapsed_ms = wait_started.elapsed().as_millis(),
+                    run_status = %run.status,
+                    target_scope = %target.scope,
+                    "Workspace Review deadline tripped; settling before failing the gate"
+                );
+                match settle_workspace_review_deadline(
+                    &state,
+                    &workspace,
+                    &target,
+                    &run_id,
+                    &run_entity_id,
+                    deadlines,
+                    wait_started,
+                )
+                .await
+                {
+                    WorkspaceReviewDeadlineSettlement::TypedCompletionPreserved => return,
+                    WorkspaceReviewDeadlineSettlement::RunTerminal(terminal_run) => {
+                        run = *terminal_run;
+                    }
+                    WorkspaceReviewDeadlineSettlement::Failed(error) => {
+                        mark_workspace_review_blocked(
+                            &state,
+                            &workspace,
+                            &target,
+                            &run_id,
+                            error.to_string(),
+                        )
+                        .await;
+                        // Order matters: the stop reconciliation in `chat_service` overwrites
+                        // `last_error` with the "stopped by user" text while the monitor is still
+                        // `Reviewing`. Blocking first makes it early-return instead.
+                        stop_workspace_review_child_after_block(
+                            chat_service.as_ref(),
+                            &workspace,
+                            &run,
+                            &run_id,
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            } else if run.status == AgentRunStatus::Running {
                 sleep(Duration::from_millis(WORKSPACE_REVIEW_RUN_POLL_INTERVAL_MS)).await;
                 continue;
             }
@@ -2232,7 +2408,232 @@ fn spawn_workspace_review_waiter(
             }
             return;
         }
-    });
+    })
+}
+
+/// Rate-limited, fail-closed reader for "is the reviewer still producing output?".
+///
+/// The signal is persisted assistant activity on the reviewer's own child conversation. Timeline
+/// block `updated_at` is the only source that advances *during* a long turn — `chat_messages` has
+/// no `updated_at` and its `created_at` stays frozen for the whole turn, which is exactly the trap
+/// that made a fixed deadline kill live reviewers.
+struct WorkspaceReviewActivityProbe {
+    last_checked: Option<Instant>,
+    last_idle: Option<Duration>,
+}
+
+impl WorkspaceReviewActivityProbe {
+    fn new() -> Self {
+        Self {
+            last_checked: None,
+            last_idle: None,
+        }
+    }
+
+    /// `Some(idle)` when the reviewer is provably idle for that long; `None` when the idle
+    /// timeout must be deferred. A failed read always yields `None` (treat as active) so a repo
+    /// hiccup can never terminalize a working reviewer — only the wall-clock cap can.
+    async fn idle_for(
+        &mut self,
+        state: &AppState,
+        run: &AgentRun,
+        assistant_role: MessageRole,
+        check_interval: Duration,
+    ) -> Option<Duration> {
+        let now = Instant::now();
+        if let Some(last_checked) = self.last_checked {
+            if now.duration_since(last_checked) < check_interval {
+                return self.last_idle;
+            }
+        }
+        self.last_checked = Some(now);
+
+        let timeline_read = state
+            .chat_timeline_repo
+            .latest_assistant_activity_at_for_conversation(&run.conversation_id, assistant_role);
+        let message_read = state
+            .chat_message_repo
+            .get_recent_by_conversation_paginated(&run.conversation_id, 1, 0);
+        let (timeline_activity_at, recent_messages) = match tokio::try_join!(
+            timeline_read,
+            message_read
+        ) {
+            Ok(values) => values,
+            Err(error) => {
+                warn!(
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "child_chat_activity_read_failed",
+                    conversation_id = %run.conversation_id,
+                    run_id = %run.id,
+                    error = %error,
+                    "Failed to read workspace Review reviewer activity; treating the reviewer as active"
+                );
+                self.last_idle = None;
+                return None;
+            }
+        };
+
+        let message_activity_at = recent_messages
+            .into_iter()
+            .find(|message| message.role == assistant_role)
+            .map(|message| message.created_at);
+        let activity_at = [timeline_activity_at, message_activity_at]
+            .into_iter()
+            .flatten()
+            .max()
+            .unwrap_or(run.started_at);
+        let idle = (Utc::now() - activity_at)
+            .to_std()
+            .unwrap_or(Duration::ZERO);
+        self.last_idle = Some(idle);
+        Some(idle)
+    }
+}
+
+/// Decide what a tripped deadline actually means before failing the gate.
+///
+/// The reviewer contract writes the Review artifact pair first and calls
+/// `complete_workspace_review_run` last, so there is a real window where the review is finished in
+/// substance but the monitor is still `Reviewing`. Failing immediately in that window strands a
+/// current Review behind a failed gate.
+async fn settle_workspace_review_deadline(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    target: &AgentWorkspaceReviewTarget,
+    run_id: &str,
+    run_entity_id: &AgentRunId,
+    deadlines: WorkspaceReviewWaiterDeadlines,
+    wait_started: Instant,
+) -> WorkspaceReviewDeadlineSettlement {
+    let settlement_started = Instant::now();
+    let mut saw_review_artifact_pair = false;
+    let mut saw_monitor_read_failure = false;
+
+    loop {
+        let mut monitor_read_failed = false;
+        match state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+        {
+            Ok(durable_monitor) => {
+                if let Some(monitor) = durable_monitor.as_ref() {
+                    if workspace_review_monitor_has_typed_completion_for_target(
+                        monitor, target, run_id,
+                    ) {
+                        info!(
+                            target: WORKSPACE_REVIEW_LOG_TARGET,
+                            operation = "child_chat_typed_completion_preserved",
+                            conversation_id = %workspace.conversation_id,
+                            project_id = %workspace.project_id,
+                            branch = %workspace.branch_name,
+                            run_id = %run_id,
+                            elapsed_ms = wait_started.elapsed().as_millis(),
+                            monitor_status = %monitor.status,
+                            review_outcome = %monitor.review_outcome,
+                            review_gate_status = %monitor.review_gate_status,
+                            "Preserved typed workspace Review completion after a deadline tripped"
+                        );
+                        return WorkspaceReviewDeadlineSettlement::TypedCompletionPreserved;
+                    }
+                    if monitor.is_current_for_target(
+                        target.scope,
+                        target.head_sha.as_deref(),
+                        &target.diff_fingerprint,
+                    ) && monitor.has_review_artifact_pair()
+                    {
+                        saw_review_artifact_pair = true;
+                    }
+                }
+            }
+            Err(error) => {
+                warn!(
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "child_chat_deadline_settlement_retry",
+                    conversation_id = %workspace.conversation_id,
+                    run_id = %run_id,
+                    error = %error,
+                    elapsed_ms = wait_started.elapsed().as_millis(),
+                    "Failed to load durable workspace Review monitor during deadline settlement; retrying"
+                );
+                monitor_read_failed = true;
+                saw_monitor_read_failure = true;
+            }
+        }
+
+        // A terminal run means the ordinary terminal branch owns the outcome, including its own
+        // artifact verification and run_failed preservation. Only hand off when the monitor was
+        // actually readable: that branch reads the same monitor, so handing off during a repo
+        // outage would bounce straight back here with the deadline already exceeded.
+        if !monitor_read_failed {
+            if let Ok(Some(run)) = state.agent_run_repo.get_by_id(run_entity_id).await {
+                if run.status != AgentRunStatus::Running {
+                    return WorkspaceReviewDeadlineSettlement::RunTerminal(Box::new(run));
+                }
+            }
+        }
+
+        // Nothing to protect and nothing unknown: the deadline is final right away.
+        if !saw_review_artifact_pair && !monitor_read_failed {
+            return WorkspaceReviewDeadlineSettlement::Failed(
+                WORKSPACE_REVIEW_ERR_TIMED_OUT_NO_REVIEW,
+            );
+        }
+
+        if settlement_started.elapsed() >= deadlines.completion_grace {
+            return WorkspaceReviewDeadlineSettlement::Failed(if saw_review_artifact_pair {
+                WORKSPACE_REVIEW_ERR_UNCONFIRMED_REVIEW
+            } else if saw_monitor_read_failure {
+                WORKSPACE_REVIEW_ERR_UNVERIFIABLE_REVIEW
+            } else {
+                WORKSPACE_REVIEW_ERR_TIMED_OUT_NO_REVIEW
+            });
+        }
+
+        sleep(Duration::from_millis(WORKSPACE_REVIEW_RUN_POLL_INTERVAL_MS)).await;
+    }
+}
+
+/// Stop the reviewer child so it cannot keep working against a gate it no longer owns.
+///
+/// MUST be called only after `mark_workspace_review_blocked` has persisted: while the monitor is
+/// still `Reviewing`, `try_reconcile_stopped_workspace_review_child` replaces `last_error` with
+/// the "stopped by user" text and destroys the accurate timeout reason.
+async fn stop_workspace_review_child_after_block<S>(
+    chat_service: &S,
+    workspace: &AgentConversationWorkspace,
+    run: &AgentRun,
+    run_id: &str,
+) where
+    S: ChatService + ?Sized,
+{
+    match chat_service
+        .stop_agent(ChatContextType::Project, &run.conversation_id.as_str())
+        .await
+    {
+        Ok(stopped) => {
+            info!(
+                target: WORKSPACE_REVIEW_LOG_TARGET,
+                operation = "child_chat_stopped_after_deadline",
+                conversation_id = %workspace.conversation_id,
+                review_conversation_id = %run.conversation_id,
+                run_id = %run_id,
+                stopped,
+                "Stopped the workspace Review child run after failing the gate"
+            );
+        }
+        Err(error) => {
+            warn!(
+                target: WORKSPACE_REVIEW_LOG_TARGET,
+                operation = "child_chat_stop_after_deadline_failed",
+                conversation_id = %workspace.conversation_id,
+                review_conversation_id = %run.conversation_id,
+                run_id = %run_id,
+                error = %error,
+                "Failed to stop the workspace Review child run after failing the gate"
+            );
+        }
+    }
 }
 
 async fn mark_workspace_review_blocked(
