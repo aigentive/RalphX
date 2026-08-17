@@ -19,6 +19,7 @@ import {
   isAgentWorkspaceMaintenanceActive,
   blocksAgentWorkspaceGitInspection,
   canResumeAgentWorkspacePublish,
+  getAgentWorkspaceMaintenancePublishGate,
   getAgentWorkspacePrConflictSummary,
   getAgentWorkspaceReviewActionBlocker,
   isAgentWorkspaceAutoMergeDeferred,
@@ -28,6 +29,7 @@ import {
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
+import type { AgentWorkspaceMaintenancePublishGateInput } from "./agentWorkspacePublishState";
 
 describe("getAgentWorkspaceDescriptionFailurePresentation", () => {
   it("distinguishes an unopened PR from an existing linked target", () => {
@@ -1579,5 +1581,106 @@ describe("getAgentWorkspacePrConflictSummary", () => {
         }),
       ),
     ).toBeNull();
+  });
+});
+
+describe("getAgentWorkspaceMaintenancePublishGate", () => {
+  const gateInput = (
+    overrides: Partial<AgentWorkspaceMaintenancePublishGateInput> = {},
+  ): AgentWorkspaceMaintenancePublishGateInput => ({
+    hasPublishHandler: true,
+    isManagedByTaskPipeline: false,
+    effectivePublishing: false,
+    isAutomationPreferenceSaving: false,
+    baseBlocked: false,
+    reviewBlocksPublish: false,
+    reviewIsRunning: false,
+    reviewGateStatus: null,
+    reviewGateSummary: null,
+    hasPrConflict: false,
+    hasTerminalPublication: false,
+    workspaceMissing: false,
+    ...overrides,
+  });
+
+  it("enables the maintenance action when nothing blocks it", () => {
+    expect(getAgentWorkspaceMaintenancePublishGate(gateInput())).toEqual({
+      disabled: false,
+      label: null,
+      blockedReason: null,
+    });
+  });
+
+  it.each([
+    ["hasPublishHandler", { hasPublishHandler: false }],
+    ["isManagedByTaskPipeline", { isManagedByTaskPipeline: true }],
+    ["effectivePublishing", { effectivePublishing: true }],
+    ["isAutomationPreferenceSaving", { isAutomationPreferenceSaving: true }],
+    ["baseBlocked", { baseBlocked: true }],
+    ["hasPrConflict", { hasPrConflict: true }],
+    ["hasTerminalPublication", { hasTerminalPublication: true }],
+    ["workspaceMissing", { workspaceMissing: true }],
+  ] satisfies [string, Partial<AgentWorkspaceMaintenancePublishGateInput>][])(
+    "disables the maintenance action for %s and explains why",
+    (_name, overrides) => {
+      const gate = getAgentWorkspaceMaintenancePublishGate(gateInput(overrides));
+      expect(gate.disabled).toBe(true);
+      // The banner replaces the base/PR-conflict remediation buttons, so a
+      // disabled maintenance action must carry its own user-facing reason.
+      expect(gate.blockedReason).toEqual(expect.any(String));
+      expect(gate.blockedReason?.trim().length ?? 0).toBeGreaterThan(0);
+    },
+  );
+
+  it.each([
+    [{ reviewIsRunning: true, reviewGateStatus: "reviewing" as const }, "Reviewing"],
+    [{ reviewGateStatus: "required" as const }, "Review required"],
+    [{ reviewGateStatus: "blocking" as const }, "Review blocking"],
+    [{ reviewGateStatus: "failed" as const }, "Review failed"],
+  ])("mirrors the primary publish label for review state %#", (overrides, label) => {
+    const gate = getAgentWorkspaceMaintenancePublishGate(
+      gateInput({ reviewBlocksPublish: true, ...overrides }),
+    );
+    expect(gate.disabled).toBe(true);
+    expect(gate.label).toBe(label);
+  });
+
+  it("surfaces the review gate summary as the blocked reason", () => {
+    expect(
+      getAgentWorkspaceMaintenancePublishGate(
+        gateInput({
+          reviewBlocksPublish: true,
+          reviewIsRunning: true,
+          reviewGateStatus: "reviewing",
+          reviewGateSummary: "Workspace Review is running.",
+        }),
+      ).blockedReason,
+    ).toBe("Workspace Review is running.");
+  });
+
+  it("keeps the review label off non-review blockers", () => {
+    const gate = getAgentWorkspaceMaintenancePublishGate(
+      gateInput({ baseBlocked: true }),
+    );
+    expect(gate.label).toBeNull();
+    expect(gate.blockedReason).not.toBeNull();
+  });
+
+  // These four flags are deliberately NOT gate inputs. `hasNoDetectedChanges` is
+  // the expected post-repair state, `isPublishCurrent` must still let the parked
+  // durable attempt settle, `repositoryInspectionFailed` is re-validated by the
+  // backend resume path, and `isRepairPending` is structurally false whenever a
+  // maintenance operation exists. Passing them must not change the verdict.
+  it("ignores flags the resume path deliberately exempts", () => {
+    const exemptions = {
+      hasNoDetectedChanges: true,
+      isPublishCurrent: true,
+      repositoryInspectionFailed: true,
+      isRepairPending: true,
+    } as unknown as Partial<AgentWorkspaceMaintenancePublishGateInput>;
+
+    expect(
+      getAgentWorkspaceMaintenancePublishGate(gateInput(exemptions)),
+    ).toEqual({ disabled: false, label: null, blockedReason: null });
   });
 });

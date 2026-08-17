@@ -110,6 +110,7 @@ import {
   getAgentWorkspaceTerminalPublicationStatus,
   getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspaceMaintenancePresentation,
+  getAgentWorkspaceMaintenancePublishGate,
   getAgentWorkspacePrAutofixFingerprintSpendPresentation,
   hasPublishedWorkspacePr,
   isAgentWorkspacePublishActive,
@@ -306,6 +307,12 @@ export function AgentPublishPanel({
     conversationId: string;
     open: boolean;
     phase: PublishWorkspaceDialogPhase;
+    /**
+     * Which gate authorized this dialog. The maintenance banner and the normal
+     * publish button have different preconditions, so the dialog's confirm must
+     * re-check the same gate that opened it rather than one shared predicate.
+     */
+    gate: "publish" | "maintenance";
   } | null>(null);
   const [automationSnapshot, setAutomationSnapshot] =
     useState<AgentsPublishAutomationSnapshot | null>(null);
@@ -395,6 +402,7 @@ export function AgentPublishPanel({
     publishDialogState?.conversationId === conversationId ? publishDialogState : null;
   const publishDialogOpen = currentPublishDialogState?.open ?? false;
   const publishDialogPhase = currentPublishDialogState?.phase ?? "confirm";
+  const publishDialogGate = currentPublishDialogState?.gate ?? "publish";
   const { isUpdatingFromBase, runUpdateFromBase } = useAgentWorkspaceBaseUpdate({
     conversationTitle,
   });
@@ -1133,6 +1141,23 @@ export function AgentPublishPanel({
     if (isPublishCurrent) return "PR is up to date";
     return "Commit & Publish";
   })();
+  // Single verdict for both maintenance-banner actions. Their `disabled` prop and
+  // their click guard must read the same value, or an enabled button can refuse
+  // the click with no feedback.
+  const maintenancePublishGate = getAgentWorkspaceMaintenancePublishGate({
+    hasPublishHandler: Boolean(onPublishWorkspace),
+    isManagedByTaskPipeline,
+    effectivePublishing,
+    isAutomationPreferenceSaving,
+    baseBlocked,
+    reviewBlocksPublish,
+    reviewIsRunning,
+    reviewGateStatus,
+    reviewGateSummary,
+    hasPrConflict,
+    hasTerminalPublication: Boolean(terminalPublicationStatus),
+    workspaceMissing: workspace.status === "missing",
+  });
   const localCommitDisabled =
     !canCommitLocally ||
     commitLocallyMutation.isPending ||
@@ -1463,6 +1488,27 @@ export function AgentPublishPanel({
       conversationId: workspace.conversationId,
       open: true,
       phase: "confirm",
+      gate: "publish",
+    });
+  };
+  /**
+   * Resume/retry of a parked durable repair. The backend entry point is designed
+   * for zero local changes and an already-pushed branch, so this deliberately does
+   * not reuse `publishDisabled`.
+   */
+  const confirmMaintenancePublish = () => {
+    if (!onPublishWorkspace || maintenancePublishGate.disabled) {
+      toast.error(
+        maintenancePublishGate.blockedReason ??
+          "Publishing is currently blocked for this workspace.",
+      );
+      return;
+    }
+    setPublishDialogState({
+      conversationId: workspace.conversationId,
+      open: true,
+      phase: "confirm",
+      gate: "maintenance",
     });
   };
   const confirmCommitLocally = () => {
@@ -1488,11 +1534,12 @@ export function AgentPublishPanel({
   };
   const handleConfirmPublishWorkspace = () => {
     const publishConversationId = workspace.conversationId;
-    setPublishDialogState({
+    setPublishDialogState((current) => ({
       conversationId: publishConversationId,
       open: true,
       phase: "publishing",
-    });
+      gate: current?.gate ?? "publish",
+    }));
     void Promise.resolve(onPublishWorkspace!(publishConversationId))
       .finally(() => {
         setPublishDialogState((current) =>
@@ -1615,23 +1662,27 @@ export function AgentPublishPanel({
                 <Button
                   type="button"
                   className={primaryActionClassName}
-                  onClick={confirmPublishWorkspace}
-                  disabled={!onPublishWorkspace || isManagedByTaskPipeline}
+                  onClick={confirmMaintenancePublish}
+                  disabled={maintenancePublishGate.disabled}
+                  title={maintenancePublishGate.blockedReason ?? undefined}
                   data-testid="agents-publish-retry-maintenance"
                 >
                   <AlertTriangle className="h-3.5 w-3.5" />
-                  {retryRepairLabel}
+                  {maintenancePublishGate.label ?? retryRepairLabel}
                 </Button>
               ) : maintenancePresentation?.action === "publish" ? (
                 <Button
                   type="button"
                   className={primaryActionClassName}
-                  onClick={confirmPublishWorkspace}
-                  disabled={!onPublishWorkspace || isManagedByTaskPipeline}
+                  onClick={confirmMaintenancePublish}
+                  disabled={maintenancePublishGate.disabled}
+                  title={maintenancePublishGate.blockedReason ?? undefined}
                   data-testid="agents-publish-resume-maintenance"
                 >
                   <GitPullRequestArrow className="h-3.5 w-3.5" />
-                  Commit & Publish
+                  {/* The branch is already committed and pushed; only the parked
+                      durable attempt still needs to settle. */}
+                  {maintenancePublishGate.label ?? "Resume publish"}
                 </Button>
               ) : isRepairPending ? (
                 <Button
@@ -2420,7 +2471,11 @@ export function AgentPublishPanel({
         prSupervisionStatus={prSupervisionStatus}
         status={pipelineStatus}
         isPublishing={isPublishingThisWorkspace}
-        confirmDisabled={publishDisabled}
+        confirmDisabled={
+          publishDialogGate === "maintenance"
+            ? maintenancePublishGate.disabled
+            : publishDisabled
+        }
         onConfirm={handleConfirmPublishWorkspace}
         onOpenChange={handlePublishDialogOpenChange}
       />

@@ -13,6 +13,7 @@ import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
   AgentConversationWorkspacePublicationEvent,
+  AgentWorkspaceMaintenanceOperation,
   AgentWorkspaceReviewContext,
 } from "@/api/chat";
 import type { FileChange } from "@/api/diff";
@@ -187,6 +188,49 @@ async function openPublishPane() {
   return screen.findByTestId(
     "agents-publish-actionbar",
     undefined,
+    deferredHydrationTimeout,
+  );
+}
+
+const readyResumeOperation: AgentWorkspaceMaintenanceOperation = {
+  operationId: "maintenance-1",
+  generation: 1,
+  source: "base_update",
+  stage: "ready",
+  status: "ready",
+  recoveryAction: "resume_publish",
+  summary: "Base update completed",
+  blocker: null,
+  automaticContinuation: false,
+  startedAt: "2026-07-25T10:00:00Z",
+  updatedAt: "2026-07-25T10:01:00Z",
+};
+
+const blockedRetryOperation: AgentWorkspaceMaintenanceOperation = {
+  operationId: "maintenance-2",
+  generation: 2,
+  source: "publish",
+  stage: "blocked",
+  status: "blocked",
+  recoveryAction: "retry_repair",
+  summary: "Repair cannot continue",
+  blocker: "Resolve the protected branch policy.",
+  automaticContinuation: false,
+  startedAt: "2026-07-25T10:00:00Z",
+  updatedAt: "2026-07-25T10:01:00Z",
+};
+
+/**
+ * The changed-file verdict feeding the publish guard only exists after the
+ * deferred review query resolves. The Changes tab badge renders that same
+ * `reviewQuery.isSuccess` count, so it is the anchor for "evidence has settled".
+ */
+async function settleChangedFileCount(count: number) {
+  await waitFor(
+    () =>
+      expect(screen.getByTestId("agents-publish-tab-changes")).toHaveTextContent(
+        String(count),
+      ),
     deferredHydrationTimeout,
   );
 }
@@ -984,6 +1028,105 @@ describe("AgentsView publish", () => {
     ).toBeEnabled();
     expect(within(actionbar).queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
 
+  });
+
+  it("resumes a parked publish that has no local changes left to commit", async () => {
+    configurePublishPane({
+      workspace: { maintenanceOperation: readyResumeOperation },
+      // A repaired branch is already pushed, so zero local delta is the
+      // expected state for this banner — not a reason to refuse the click.
+      changes: [],
+    });
+
+    const actionbar = await openPublishPane();
+    // The zero-change verdict only exists once the review query settles. Clicking
+    // before then exercises the pre-settlement state and proves nothing.
+    await settleChangedFileCount(0);
+
+    const resume = within(actionbar).getByTestId(
+      "agents-publish-resume-maintenance",
+    );
+    expect(resume).toBeEnabled();
+    expect(resume).toHaveTextContent("Resume publish");
+
+    fireEvent.click(resume);
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Commit & Publish" }),
+    );
+
+    await waitFor(() =>
+      expect(publishAgentConversationWorkspaceMock).toHaveBeenCalledWith(
+        "conversation-1",
+      ),
+    );
+  });
+
+  it("disables the resume action while Workspace Review gates publishing", async () => {
+    configurePublishPane({
+      workspace: { maintenanceOperation: readyResumeOperation },
+      changes: [],
+      reviewGateStatus: "reviewing",
+    });
+
+    const actionbar = await openPublishPane();
+    await settleChangedFileCount(0);
+
+    const resume = within(actionbar).getByTestId(
+      "agents-publish-resume-maintenance",
+    );
+    await waitFor(() => expect(resume).toBeDisabled());
+    expect(resume).toHaveTextContent("Reviewing");
+    expect(resume).toHaveAttribute(
+      "title",
+      expect.stringContaining("Workspace Review"),
+    );
+  });
+
+  it("disables the retry action while Workspace Review gates publishing", async () => {
+    configurePublishPane({
+      workspace: {
+        linkedPlanBranchId: null,
+        maintenanceOperation: blockedRetryOperation,
+      },
+      changes: [],
+      reviewGateStatus: "reviewing",
+    });
+
+    const actionbar = await openPublishPane();
+    await settleChangedFileCount(0);
+
+    const retry = within(actionbar).getByTestId(
+      "agents-publish-retry-maintenance",
+    );
+    await waitFor(() => expect(retry).toBeDisabled());
+    expect(retry).toHaveTextContent("Reviewing");
+  });
+
+  it("explains why a maintenance action is disabled by a blocked base", async () => {
+    configurePublishPane({
+      workspace: { maintenanceOperation: readyResumeOperation },
+      freshness: {
+        baseStatus: "blocked",
+        effectiveBaseRef: null,
+        effectiveBaseDisplayName: null,
+        baseBlockReason: "Saved base cannot be resolved.",
+      },
+      changes: [],
+    });
+
+    const actionbar = await openPublishPane();
+    const resume = within(actionbar).getByTestId(
+      "agents-publish-resume-maintenance",
+    );
+
+    // The banner replaces the base-blocked remediation button, so a disabled
+    // action here must say why instead of just refusing.
+    await waitFor(() => expect(resume).toBeDisabled());
+    expect(resume).toHaveAttribute(
+      "title",
+      expect.stringContaining("base branch"),
+    );
   });
 
   it("retries blocked maintenance through the normal non-task-pipeline publish flow", async () => {
