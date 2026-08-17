@@ -15,6 +15,7 @@ fn test_all_defaults_are_sensible() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
     assert_eq!(cfg.stream.merge_line_read_secs, 600);
     assert_eq!(cfg.stream.completion_grace_secs, 30);
@@ -169,6 +170,7 @@ fn test_merge_speed_env_overrides() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -204,6 +206,7 @@ fn test_env_overrides_apply() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -367,6 +370,7 @@ fn test_backward_compat_merger_timeout_env() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     // Old key only
@@ -392,6 +396,7 @@ fn test_new_key_takes_precedence_over_old() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     // Both keys set — new one should win (applied second)
@@ -418,6 +423,7 @@ fn test_invalid_env_values_ignored() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -446,6 +452,7 @@ fn test_validation_deadline_env_override() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -502,6 +509,7 @@ fn test_branch_freshness_timeout_env_override() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -570,6 +578,7 @@ fn test_execution_failed_max_retries_env_override() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -597,6 +606,7 @@ fn test_execution_failed_retry_base_secs_env_override() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -622,6 +632,7 @@ fn test_execution_failed_retry_max_secs_env_override() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -649,6 +660,7 @@ fn test_execution_failed_all_three_env_overrides_applied_together() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -691,6 +703,7 @@ fn test_circuit_breaker_env_overrides() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -718,6 +731,7 @@ fn test_execution_failed_invalid_env_values_keep_defaults() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -763,6 +777,7 @@ fn test_external_mcp_env_override_shutdown_grace() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -804,6 +819,7 @@ fn test_external_mcp_env_overrides_enabled_true() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -828,6 +844,7 @@ fn test_external_mcp_env_overrides_enabled_one() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -855,6 +872,7 @@ fn test_external_mcp_env_overrides_enabled_false() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -879,6 +897,7 @@ fn test_external_mcp_env_overrides_port_and_host() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -905,6 +924,7 @@ fn test_external_mcp_env_override_node_path() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -932,6 +952,7 @@ fn test_external_mcp_env_override_human_wait_timeout() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -956,6 +977,7 @@ fn test_external_mcp_env_override_startup_timeout() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -992,6 +1014,7 @@ fn test_external_mcp_invalid_port_env_keeps_default() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -1131,6 +1154,7 @@ fn test_git_isolation_env_overrides() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
 
     apply_env_overrides_with(&mut cfg, &|name| match name {
@@ -1169,6 +1193,98 @@ fn test_validate_git_isolation_retry_base_secs_zero_clamped() {
     );
 }
 
+fn default_all_runtime_config() -> AllRuntimeConfig {
+    AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
+    }
+}
+
+#[test]
+fn test_workspace_review_defaults_apply_without_yaml_section() {
+    let cfg = WorkspaceReviewRuntimeConfig::default();
+    assert_eq!(cfg.reviewer_idle_timeout_secs, 600);
+    assert_eq!(cfg.reviewer_max_wall_clock_secs, 3600);
+    assert_eq!(cfg.reviewer_completion_grace_secs, 120);
+
+    let from_absent_yaml: WorkspaceReviewRuntimeConfig =
+        serde_yaml::from_str("{}").expect("absent workspace_review keys should fall back");
+    assert_eq!(from_absent_yaml.reviewer_idle_timeout_secs, 600);
+    assert_eq!(from_absent_yaml.reviewer_max_wall_clock_secs, 3600);
+    assert_eq!(from_absent_yaml.reviewer_completion_grace_secs, 120);
+}
+
+#[test]
+fn test_workspace_review_yaml_overrides_apply() {
+    let cfg: WorkspaceReviewRuntimeConfig = serde_yaml::from_str(
+        "reviewer_idle_timeout_secs: 900\n\
+         reviewer_max_wall_clock_secs: 7200\n\
+         reviewer_completion_grace_secs: 300\n",
+    )
+    .expect("workspace_review yaml should parse");
+    assert_eq!(cfg.reviewer_idle_timeout_secs, 900);
+    assert_eq!(cfg.reviewer_max_wall_clock_secs, 7200);
+    assert_eq!(cfg.reviewer_completion_grace_secs, 300);
+}
+
+#[test]
+fn test_workspace_review_env_overrides_apply_and_validate() {
+    let mut cfg = default_all_runtime_config();
+    apply_env_overrides_with_lookup(&mut cfg, &|key| match key {
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_IDLE_TIMEOUT_SECS" => Some("1200".to_string()),
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_MAX_WALL_CLOCK_SECS" => Some("5400".to_string()),
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_COMPLETION_GRACE_SECS" => Some("240".to_string()),
+        _ => None,
+    });
+    assert_eq!(cfg.workspace_review.reviewer_idle_timeout_secs, 1200);
+    assert_eq!(cfg.workspace_review.reviewer_max_wall_clock_secs, 5400);
+    assert_eq!(cfg.workspace_review.reviewer_completion_grace_secs, 240);
+}
+
+#[test]
+fn test_validate_workspace_review_clamps_invalid_values() {
+    // An idle timeout short enough to kill a live reviewer is exactly the bug this config fixes.
+    let mut cfg = WorkspaceReviewRuntimeConfig {
+        reviewer_idle_timeout_secs: 5,
+        reviewer_max_wall_clock_secs: 1,
+        reviewer_completion_grace_secs: 0,
+    };
+    validate_workspace_review_config(&mut cfg);
+    assert_eq!(cfg.reviewer_idle_timeout_secs, 60);
+    assert_eq!(
+        cfg.reviewer_max_wall_clock_secs, 60,
+        "the wall-clock cap must never be shorter than the idle timeout"
+    );
+    assert_eq!(cfg.reviewer_completion_grace_secs, 10);
+
+    // Grace longer than the idle window would let a stalled reviewer hold the gate twice over.
+    let mut oversized_grace = WorkspaceReviewRuntimeConfig {
+        reviewer_idle_timeout_secs: 120,
+        reviewer_max_wall_clock_secs: 3600,
+        reviewer_completion_grace_secs: 9_000,
+    };
+    validate_workspace_review_config(&mut oversized_grace);
+    assert_eq!(oversized_grace.reviewer_completion_grace_secs, 120);
+
+    // Valid values are left alone.
+    let mut valid = WorkspaceReviewRuntimeConfig::default();
+    validate_workspace_review_config(&mut valid);
+    assert_eq!(valid.reviewer_idle_timeout_secs, 600);
+    assert_eq!(valid.reviewer_max_wall_clock_secs, 3600);
+    assert_eq!(valid.reviewer_completion_grace_secs, 120);
+}
+
 /// Build a default `AllRuntimeConfig` for env-override tests, then apply the
 /// supplied `RALPHX_UI_TICKETING_DASHBOARD` value (if any) via the injectable
 /// lookup so we never touch real process env (deterministic + parallel-safe).
@@ -1186,6 +1302,7 @@ fn ticketing_dashboard_after_env(value: Option<&str>) -> bool {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
     apply_env_overrides_with(&mut cfg, &|name| match name {
         "RALPHX_UI_TICKETING_DASHBOARD" => value.map(str::to_string),
@@ -1208,6 +1325,7 @@ fn agent_personas_after_env(value: Option<&str>) -> bool {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
     apply_env_overrides_with(&mut cfg, &|name| match name {
         "RALPHX_UI_AGENT_PERSONAS" => value.map(str::to_string),
@@ -1239,6 +1357,7 @@ fn runtime_config_env_override_persona_switch_fresh_session_fallback() {
         ui_feature_flags: Default::default(),
         database_maintenance: DatabaseMaintenanceConfig::default(),
         delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
     };
     apply_env_overrides_with(&mut cfg, &|name| match name {
         "RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION" => Some("true".to_string()),

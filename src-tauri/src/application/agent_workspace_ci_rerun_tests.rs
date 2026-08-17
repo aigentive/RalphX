@@ -410,3 +410,59 @@ fn hold_ends_when_identified_runs_are_absent_from_health() {
 
     assert!(!ci_rerun_hold_still_pending(&health, Some(&fingerprint)));
 }
+
+#[test]
+fn plan_rejects_whitespace_only_head_oid() {
+    // The filter trims before checking empty; whitespace-only OIDs must be treated as
+    // missing to avoid publishing a fingerprint with a nonsensical head.
+    for whitespace in ["  ", "\t", "\n"] {
+        assert_eq!(
+            transient_ci_rerun_plan(&health(Some(whitespace), Vec::new())),
+            TransientCiPlan::MissingHead,
+            "whitespace OID {whitespace:?} must be treated as missing"
+        );
+    }
+}
+
+#[test]
+fn hold_identity_parse_rejects_empty_head_oid_segment() {
+    // "ci-hold:v1::10" has an empty head OID between the second and third colons.
+    assert_eq!(CiHoldIdentity::parse("ci-hold:v1::10"), None);
+}
+
+#[test]
+fn hold_ends_for_empty_string_fingerprint() {
+    let health = health(
+        Some("head-1"),
+        vec![check("Running", Some("in_progress"), None, Some(10))],
+    );
+    assert!(!ci_rerun_hold_still_pending(&health, Some("")));
+}
+
+#[test]
+fn plan_ignores_transient_check_with_no_details_url() {
+    // A transient check with no details_url has no parseable run ID and is silently ignored.
+    let health = health(
+        Some("head-1"),
+        vec![check("Hosted runner", Some("completed"), Some("cancelled"), None)],
+    );
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::NoObservedFailure
+    );
+}
+
+#[test]
+fn plan_rejects_deterministic_failure_with_no_details_url() {
+    // A deterministic check with no details_url is still a real failure regardless of URL.
+    let health = health(
+        Some("head-1"),
+        vec![check("Rust tests", Some("completed"), Some("failure"), None)],
+    );
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::DeterministicFailures(vec!["Rust tests (failure)".to_string()])
+    );
+}
