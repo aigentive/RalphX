@@ -390,15 +390,6 @@ limits:
   # Env: RALPHX_LIMITS_REPAIR_FINGERPRINT_BUDGET_MINUTES
   repair_fingerprint_budget_minutes: 45
 
-workspace_review:
-  # agent_workspace_review.rs — max wall-clock seconds the backend waits for the workspace reviewer
-  # child chat. On expiry the gate settles from durable review evidence when the reviewer's final
-  # artifact write recorded a typed outcome; otherwise the review is marked failed.
-  reviewer_timeout_secs: 900 # Env: RALPHX_WORKSPACE_REVIEW_REVIEWER_TIMEOUT_SECS
-  # agent_workspace_review.rs — max wall-clock seconds for the post-settlement hunk annotator run.
-  # Expiry terminates the annotator only; it never mutates the review gate.
-  annotator_timeout_secs: 600 # Env: RALPHX_WORKSPACE_REVIEW_ANNOTATOR_TIMEOUT_SECS
-
 ideation:
   # Seconds of inactivity before an agent is considered "likely_waiting" vs "likely_generating".
   # Used by get_child_session_status MCP tool to derive estimated_status. Env: RALPHX_IDEATION_ACTIVITY_THRESHOLD_SECS
