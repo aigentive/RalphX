@@ -68,6 +68,9 @@ use crate::application::agent_workspace_review::{
     AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewTarget,
     WorkspaceReviewFixerConfirmation,
 };
+use crate::application::agent_workspace_review_annotator::{
+    merge_workspace_review_hunk_annotations, missing_workspace_review_hunk_anchors,
+};
 #[cfg(test)]
 use crate::application::agent_workspace_review_auto_merge::start_guarded_agent_workspace_review;
 use crate::application::agent_workspace_review_auto_merge::{
@@ -4952,112 +4955,6 @@ fn build_workspace_review_hunk_annotation_entities(
         }
         })
         .collect()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct WorkspaceReviewHunkAnnotationKey {
-    path: String,
-    source: String,
-    hunk_header: String,
-    old_start: u32,
-    old_lines: u32,
-    new_start: u32,
-    new_lines: u32,
-}
-
-impl From<&AgentWorkspaceReviewHunkAnnotation> for WorkspaceReviewHunkAnnotationKey {
-    fn from(value: &AgentWorkspaceReviewHunkAnnotation) -> Self {
-        Self {
-            path: value.path.clone(),
-            source: value.diff_source.clone(),
-            hunk_header: value.hunk_header.clone(),
-            old_start: value.old_start,
-            old_lines: value.old_lines,
-            new_start: value.new_start,
-            new_lines: value.new_lines,
-        }
-    }
-}
-
-impl From<&AgentWorkspaceReviewHunkAnchor> for WorkspaceReviewHunkAnnotationKey {
-    fn from(value: &AgentWorkspaceReviewHunkAnchor) -> Self {
-        Self {
-            path: value.path.clone(),
-            source: value.source.clone(),
-            hunk_header: value.hunk_header.clone(),
-            old_start: value.old_start,
-            old_lines: value.old_lines,
-            new_start: value.new_start,
-            new_lines: value.new_lines,
-        }
-    }
-}
-
-fn merge_workspace_review_hunk_annotations(
-    existing: Vec<AgentWorkspaceReviewHunkAnnotation>,
-    updates: Vec<AgentWorkspaceReviewHunkAnnotation>,
-) -> Vec<AgentWorkspaceReviewHunkAnnotation> {
-    let mut merged = BTreeMap::new();
-    for annotation in existing {
-        merged.insert(
-            WorkspaceReviewHunkAnnotationKey::from(&annotation),
-            annotation,
-        );
-    }
-    for annotation in updates {
-        merged.insert(
-            WorkspaceReviewHunkAnnotationKey::from(&annotation),
-            annotation,
-        );
-    }
-    merged.into_values().collect()
-}
-
-fn missing_workspace_review_hunk_anchors(
-    target: &AgentWorkspaceReviewTarget,
-    annotations: &[AgentWorkspaceReviewHunkAnnotation],
-) -> Vec<AgentWorkspaceReviewHunkAnchor> {
-    let covered = annotations
-        .iter()
-        .map(WorkspaceReviewHunkAnnotationKey::from)
-        .collect::<BTreeSet<_>>();
-    target
-        .review_packet
-        .hunk_anchors
-        .iter()
-        .filter(|anchor| !covered.contains(&WorkspaceReviewHunkAnnotationKey::from(*anchor)))
-        .cloned()
-        .collect()
-}
-
-/// Populates `automation_attempt_count` from fixer cycles plus durable repair attempts.
-///
-/// Fail-closed: a repair-repo read error propagates instead of degrading to the fixer count,
-/// which would tell the reviewer "no repair has run" on exactly the evidence it needs most.
-async fn apply_automation_attempt_count(
-    state: &AppState,
-    conversation_id: &ChatConversationId,
-    monitor: &mut AgentWorkspaceReviewMonitorResponse,
-    review_fixer_cycle_count: i64,
-) -> Result<(), JsonError> {
-    let repair_attempts = state
-        .agent_workspace_repair_repo
-        .list_repair_attempts_for_conversation(conversation_id)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    monitor.automation_attempt_count =
-        Some(review_fixer_cycle_count.saturating_add(repair_attempts.len() as i64));
-    Ok(())
-}
-
-/// Test seam for the annotator's work-list contract: carried-forward annotations must make their
-/// hunks non-missing, which is what lets the annotator skip them without any skip logic.
-#[doc(hidden)]
-pub fn missing_workspace_review_hunk_anchors_for_test(
-    target: &AgentWorkspaceReviewTarget,
-    annotations: &[AgentWorkspaceReviewHunkAnnotation],
-) -> Vec<AgentWorkspaceReviewHunkAnchor> {
-    missing_workspace_review_hunk_anchors(target, annotations)
 }
 
 fn workspace_review_completion_requires_hunk_coverage(_outcome: Option<&str>) -> bool {

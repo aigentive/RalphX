@@ -7237,7 +7237,7 @@ async fn carried_annotations_cover_their_hunks_so_the_annotator_skips_them() {
 
     let current = carried_annotations(&state, &workspace).await;
     let still_missing =
-        crate::http_server::handlers::agent_workspaces::missing_workspace_review_hunk_anchors_for_test(
+        crate::application::agent_workspace_review_annotator::missing_workspace_review_hunk_anchors_for_test(
             &target, &current,
         );
     assert!(

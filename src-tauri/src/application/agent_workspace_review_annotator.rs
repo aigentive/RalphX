@@ -8,7 +8,7 @@
 //! Everything here is fail-soft by design: a dispatch failure logs and returns, and the annotator
 //! holds no tool that can touch gate or outcome state.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,7 +26,7 @@ use crate::domain::services::RunningAgentKey;
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::agent_names;
 
-use super::agent_workspace_review::AgentWorkspaceReviewTarget;
+use super::agent_workspace_review::{AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewTarget};
 
 const ANNOTATOR_LOG_TARGET: &str = "ralphx_lib::application::agent_workspace_review_annotator";
 
@@ -335,4 +335,96 @@ fn build_annotator_request_message(target: &AgentWorkspaceReviewTarget) -> Strin
          gate is already settled.",
         target.scope
     )
+}
+
+// --- Hunk-anchor / annotation key helpers -------------------------------------------------------
+// These live in the application layer so the application tests can assert annotation coverage
+// without importing upward into http_server.
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct WorkspaceReviewHunkAnnotationKey {
+    pub path: String,
+    pub source: String,
+    pub hunk_header: String,
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+}
+
+impl From<&AgentWorkspaceReviewHunkAnnotation> for WorkspaceReviewHunkAnnotationKey {
+    fn from(value: &AgentWorkspaceReviewHunkAnnotation) -> Self {
+        Self {
+            path: value.path.clone(),
+            source: value.diff_source.clone(),
+            hunk_header: value.hunk_header.clone(),
+            old_start: value.old_start,
+            old_lines: value.old_lines,
+            new_start: value.new_start,
+            new_lines: value.new_lines,
+        }
+    }
+}
+
+impl From<&AgentWorkspaceReviewHunkAnchor> for WorkspaceReviewHunkAnnotationKey {
+    fn from(value: &AgentWorkspaceReviewHunkAnchor) -> Self {
+        Self {
+            path: value.path.clone(),
+            source: value.source.clone(),
+            hunk_header: value.hunk_header.clone(),
+            old_start: value.old_start,
+            old_lines: value.old_lines,
+            new_start: value.new_start,
+            new_lines: value.new_lines,
+        }
+    }
+}
+
+/// Returns anchors in `target` that are not covered by any of the given annotations.
+pub(crate) fn missing_workspace_review_hunk_anchors(
+    target: &AgentWorkspaceReviewTarget,
+    annotations: &[AgentWorkspaceReviewHunkAnnotation],
+) -> Vec<AgentWorkspaceReviewHunkAnchor> {
+    let covered = annotations
+        .iter()
+        .map(WorkspaceReviewHunkAnnotationKey::from)
+        .collect::<BTreeSet<_>>();
+    target
+        .review_packet
+        .hunk_anchors
+        .iter()
+        .filter(|anchor| !covered.contains(&WorkspaceReviewHunkAnnotationKey::from(*anchor)))
+        .cloned()
+        .collect()
+}
+
+/// Merges `updates` onto `existing`, with updates winning on key collision.
+pub(crate) fn merge_workspace_review_hunk_annotations(
+    existing: Vec<AgentWorkspaceReviewHunkAnnotation>,
+    updates: Vec<AgentWorkspaceReviewHunkAnnotation>,
+) -> Vec<AgentWorkspaceReviewHunkAnnotation> {
+    let mut merged = BTreeMap::new();
+    for annotation in existing {
+        merged.insert(
+            WorkspaceReviewHunkAnnotationKey::from(&annotation),
+            annotation,
+        );
+    }
+    for annotation in updates {
+        merged.insert(
+            WorkspaceReviewHunkAnnotationKey::from(&annotation),
+            annotation,
+        );
+    }
+    merged.into_values().collect()
+}
+
+/// Test seam: application tests can call this to assert annotation-coverage contracts without
+/// reaching into the http_server layer.
+#[doc(hidden)]
+pub fn missing_workspace_review_hunk_anchors_for_test(
+    target: &AgentWorkspaceReviewTarget,
+    annotations: &[AgentWorkspaceReviewHunkAnnotation],
+) -> Vec<AgentWorkspaceReviewHunkAnchor> {
+    missing_workspace_review_hunk_anchors(target, annotations)
 }

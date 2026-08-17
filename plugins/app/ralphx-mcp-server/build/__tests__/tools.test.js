@@ -1271,7 +1271,7 @@ describe('agent workspace publish tool transport', () => {
             conversationId: 'review-conversation-from-runtime',
             agentRunId: 'run-from-runtime',
         })).resolves.toEqual({ success: true });
-        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true', {
+        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true&include_events=false', {
             headers: {
                 'x-ralphx-agent-run-id': 'run-from-runtime',
                 'x-ralphx-conversation-id': 'review-conversation-from-runtime',
@@ -1527,7 +1527,7 @@ describe('agent workspace publish tool transport', () => {
         }, runtimeContext)).resolves.toEqual({ success: true });
         await expect(callAgentWorkspaceTool('complete_workspace_review_run', callTauri, callTauriGet, { summary: 'Done', outcome: 'passed', created_by_run_id: 'run-1' }, runtimeContext)).resolves.toEqual({ success: true });
         expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/pr-review-context');
-        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true');
+        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true&include_events=false');
         expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/pr-review-actions', {
             head_sha: undefined,
             proposed_action: undefined,
@@ -1714,7 +1714,7 @@ describe('agent workspace publish tool transport', () => {
         [
             'get_workspace_review_context',
             'get',
-            'agent-workspaces/conversation-1/workspace-review-context?include_review_packet=true',
+            'agent-workspaces/conversation-1/workspace-review-context?include_review_packet=true&include_events=false',
             undefined,
         ],
         [
