@@ -270,6 +270,8 @@ struct RalphxConfig {
     #[serde(default)]
     delegation: runtime_config::DelegationConfig,
     #[serde(default)]
+    workspace_review: runtime_config::WorkspaceReviewRuntimeConfig,
+    #[serde(default)]
     ui: Option<UiConfig>,
     #[serde(default)]
     execution_defaults: ExecutionDefaultsConfig,
@@ -1259,6 +1261,7 @@ fn resolve_loaded_config_with_lookup(
         verification: parsed.ideation.verification,
         external_mcp: parsed.external_mcp,
         delegation: parsed.delegation,
+        workspace_review: parsed.workspace_review,
         child_session_activity_threshold_secs: parsed
             .ideation
             .child_session_activity_threshold_secs,
@@ -1721,6 +1724,7 @@ fn load_config() -> LoadedConfig {
                 verification: VerificationConfig::default(),
                 external_mcp: ExternalMcpConfig::default(),
                 delegation: runtime_config::DelegationConfig::default(),
+                workspace_review: runtime_config::WorkspaceReviewRuntimeConfig::default(),
                 child_session_activity_threshold_secs: None,
                 ui_feature_flags: UiFeatureFlagsConfig::default(),
             };
@@ -1907,6 +1911,14 @@ pub fn stream_timeouts() -> &'static StreamTimeoutsConfig {
 /// Backend-held delegation waiting settings (bounded `delegate_wait` + park/wake).
 pub fn delegation_config() -> &'static runtime_config::DelegationConfig {
     &LOADED_CONFIG_CELL.get_or_init(load_config).runtime.delegation
+}
+
+/// Workspace Review reviewer deadlines (idle / absolute wall-clock / completion grace).
+pub fn workspace_review_config() -> &'static runtime_config::WorkspaceReviewRuntimeConfig {
+    &LOADED_CONFIG_CELL
+        .get_or_init(load_config)
+        .runtime
+        .workspace_review
 }
 
 pub fn database_maintenance_config() -> &'static runtime_config::DatabaseMaintenanceConfig {
