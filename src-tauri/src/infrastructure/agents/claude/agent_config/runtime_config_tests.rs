@@ -1193,6 +1193,98 @@ fn test_validate_git_isolation_retry_base_secs_zero_clamped() {
     );
 }
 
+fn default_all_runtime_config() -> AllRuntimeConfig {
+    AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
+    }
+}
+
+#[test]
+fn test_workspace_review_defaults_apply_without_yaml_section() {
+    let cfg = WorkspaceReviewRuntimeConfig::default();
+    assert_eq!(cfg.reviewer_idle_timeout_secs, 600);
+    assert_eq!(cfg.reviewer_max_wall_clock_secs, 3600);
+    assert_eq!(cfg.reviewer_completion_grace_secs, 120);
+
+    let from_absent_yaml: WorkspaceReviewRuntimeConfig =
+        serde_yaml::from_str("{}").expect("absent workspace_review keys should fall back");
+    assert_eq!(from_absent_yaml.reviewer_idle_timeout_secs, 600);
+    assert_eq!(from_absent_yaml.reviewer_max_wall_clock_secs, 3600);
+    assert_eq!(from_absent_yaml.reviewer_completion_grace_secs, 120);
+}
+
+#[test]
+fn test_workspace_review_yaml_overrides_apply() {
+    let cfg: WorkspaceReviewRuntimeConfig = serde_yaml::from_str(
+        "reviewer_idle_timeout_secs: 900\n\
+         reviewer_max_wall_clock_secs: 7200\n\
+         reviewer_completion_grace_secs: 300\n",
+    )
+    .expect("workspace_review yaml should parse");
+    assert_eq!(cfg.reviewer_idle_timeout_secs, 900);
+    assert_eq!(cfg.reviewer_max_wall_clock_secs, 7200);
+    assert_eq!(cfg.reviewer_completion_grace_secs, 300);
+}
+
+#[test]
+fn test_workspace_review_env_overrides_apply_and_validate() {
+    let mut cfg = default_all_runtime_config();
+    apply_env_overrides_with_lookup(&mut cfg, &|key| match key {
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_IDLE_TIMEOUT_SECS" => Some("1200".to_string()),
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_MAX_WALL_CLOCK_SECS" => Some("5400".to_string()),
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_COMPLETION_GRACE_SECS" => Some("240".to_string()),
+        _ => None,
+    });
+    assert_eq!(cfg.workspace_review.reviewer_idle_timeout_secs, 1200);
+    assert_eq!(cfg.workspace_review.reviewer_max_wall_clock_secs, 5400);
+    assert_eq!(cfg.workspace_review.reviewer_completion_grace_secs, 240);
+}
+
+#[test]
+fn test_validate_workspace_review_clamps_invalid_values() {
+    // An idle timeout short enough to kill a live reviewer is exactly the bug this config fixes.
+    let mut cfg = WorkspaceReviewRuntimeConfig {
+        reviewer_idle_timeout_secs: 5,
+        reviewer_max_wall_clock_secs: 1,
+        reviewer_completion_grace_secs: 0,
+    };
+    validate_workspace_review_config(&mut cfg);
+    assert_eq!(cfg.reviewer_idle_timeout_secs, 60);
+    assert_eq!(
+        cfg.reviewer_max_wall_clock_secs, 60,
+        "the wall-clock cap must never be shorter than the idle timeout"
+    );
+    assert_eq!(cfg.reviewer_completion_grace_secs, 10);
+
+    // Grace longer than the idle window would let a stalled reviewer hold the gate twice over.
+    let mut oversized_grace = WorkspaceReviewRuntimeConfig {
+        reviewer_idle_timeout_secs: 120,
+        reviewer_max_wall_clock_secs: 3600,
+        reviewer_completion_grace_secs: 9_000,
+    };
+    validate_workspace_review_config(&mut oversized_grace);
+    assert_eq!(oversized_grace.reviewer_completion_grace_secs, 120);
+
+    // Valid values are left alone.
+    let mut valid = WorkspaceReviewRuntimeConfig::default();
+    validate_workspace_review_config(&mut valid);
+    assert_eq!(valid.reviewer_idle_timeout_secs, 600);
+    assert_eq!(valid.reviewer_max_wall_clock_secs, 3600);
+    assert_eq!(valid.reviewer_completion_grace_secs, 120);
+}
+
 /// Build a default `AllRuntimeConfig` for env-override tests, then apply the
 /// supplied `RALPHX_UI_TICKETING_DASHBOARD` value (if any) via the injectable
 /// lookup so we never touch real process env (deterministic + parallel-safe).
