@@ -6,6 +6,8 @@ use std::sync::Arc;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use async_trait::async_trait;
+
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_recovery::agent_workspace_repair_owns_unpublished_publish_continuation;
 use crate::application::agent_workspace_publish_recovery::{
@@ -67,7 +69,7 @@ use crate::domain::repositories::{
     AgentRunRepository, AgentWorkspaceRepairAttemptTransition,
     AgentWorkspaceRepairAttemptTransitionOutcome, BeginGitMutation,
     CompleteAgentWorkspaceRepairEffect, CompleteAgentWorkspaceRepairEffectOutcome,
-    CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome,
+    CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome, ProjectRepository,
     SettleAgentWorkspaceRepairAttempt, SettleAgentWorkspaceRepairAttemptOutcome,
     StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
