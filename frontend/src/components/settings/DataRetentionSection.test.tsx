@@ -107,6 +107,7 @@ describe("DataRetentionSection", () => {
     render(<DataRetentionSection />);
 
     const days = await screen.findByLabelText("Keep tool-call detail for");
+    await waitFor(() => expect(days).not.toBeDisabled());
     await user.clear(days);
     await user.type(days, "30");
     await user.tab();

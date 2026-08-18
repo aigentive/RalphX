@@ -28,6 +28,7 @@ use super::{
     normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
     normalize_explicit_publish_base_selection, normalized_effort_for_supported,
     parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
+    pr_supervision_schedule_route,
     precompute_agent_conversation_workspace_pr_description_for_app_state,
     preview_tool_payloads_for_message, project_plan_branch_publication_into_workspace_response,
     publication_event_status_for_push_status, publication_event_summary_for_push_status,
@@ -65,9 +66,10 @@ use super::{
     AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
     AgentWorkspaceSourcePullRequestInput, CommitAgentConversationWorkspaceLocallyResponse,
     CreateAgentConversationInput, DelegatedToolRuntimeSnapshot, ForkAgentConversationInput,
-    ForkAgentConversationResponse, ModeSwitchInitiator, SwitchAgentConversationModeInput,
-    UpdateAgentConversationCoordinationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
-    MAX_ATTRIBUTION_BATCH, STANDALONE_TEAM_INTENT_REJECTED_ERROR,
+    ForkAgentConversationResponse, ModeSwitchInitiator, PrSupervisionScheduleRoute,
+    SwitchAgentConversationModeInput, UpdateAgentConversationCoordinationModeInput,
+    AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE, MAX_ATTRIBUTION_BATCH,
+    STANDALONE_TEAM_INTENT_REJECTED_ERROR,
 };
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, prepare_agent_conversation_workspace,
@@ -4311,6 +4313,79 @@ async fn validate_explicit_publish_base_ref_accepts_remote_tracking_ref() {
         .await
         .expect_err("missing branch should fail validation");
     assert!(error.contains("Selected base branch 'release/missing' does not exist"));
+}
+
+/// Proof obligation 1: an ineligible workspace is decided from the record alone, so the caller
+/// never reaches the arm that constructs a `TaskTransitionService` + `ChatService`. Each of the
+/// five reasons below dominated the 2026-08-13 production log.
+#[test]
+fn ineligible_workspaces_route_to_durable_only_without_pr_supervision() {
+    let base = command_test_workspace();
+
+    let mut terminal = base.clone();
+    terminal.auto_publish_enabled = true;
+    terminal.pr_autofix_enabled = true;
+    terminal.publication_pr_number = Some(11);
+    terminal.publication_pr_status = Some("merged".to_string());
+    assert_eq!(
+        pr_supervision_schedule_route(true, &terminal),
+        PrSupervisionScheduleRoute::DurableOnly("workspace_terminal")
+    );
+
+    let mut not_active = base.clone();
+    not_active.status = AgentConversationWorkspaceStatus::Missing;
+    assert_eq!(
+        pr_supervision_schedule_route(true, &not_active),
+        PrSupervisionScheduleRoute::DurableOnly("workspace_not_active")
+    );
+
+    let mut wrong_mode = base.clone();
+    wrong_mode.auto_publish_enabled = true;
+    wrong_mode.pr_autofix_enabled = true;
+    wrong_mode.mode = AgentConversationWorkspaceMode::Chat;
+    assert_eq!(
+        pr_supervision_schedule_route(true, &wrong_mode),
+        PrSupervisionScheduleRoute::DurableOnly("workspace_not_edit_or_ideation_mode")
+    );
+
+    let mut supervision_disabled = base.clone();
+    supervision_disabled.auto_publish_enabled = true;
+    supervision_disabled.pr_autofix_enabled = false;
+    supervision_disabled.pr_auto_merge_desired = false;
+    assert_eq!(
+        pr_supervision_schedule_route(true, &supervision_disabled),
+        PrSupervisionScheduleRoute::DurableOnly("pr_supervision_disabled")
+    );
+
+    let mut missing_pr = base.clone();
+    missing_pr.auto_publish_enabled = true;
+    missing_pr.pr_autofix_enabled = true;
+    missing_pr.publication_pr_number = None;
+    assert_eq!(
+        pr_supervision_schedule_route(true, &missing_pr),
+        PrSupervisionScheduleRoute::DurableOnly("missing_pr_number")
+    );
+}
+
+/// A project without GitHub keeps its existing durable-only routing, and an eligible workspace
+/// still reaches the PR-supervision arm so the fix cannot silently disable supervision.
+#[test]
+fn eligible_workspace_routes_to_pr_supervision_and_no_github_routes_durable_only() {
+    let mut eligible = command_test_workspace();
+    eligible.auto_publish_enabled = true;
+    eligible.pr_autofix_enabled = true;
+    eligible.publication_pr_number = Some(41);
+    eligible.publication_push_status = Some("failed".to_string());
+    eligible.pr_supervision_status = Some("blocked".to_string());
+
+    assert_eq!(
+        pr_supervision_schedule_route(true, &eligible),
+        PrSupervisionScheduleRoute::PrSupervision
+    );
+    assert_eq!(
+        pr_supervision_schedule_route(false, &eligible),
+        PrSupervisionScheduleRoute::DurableOnly("github_service_unavailable")
+    );
 }
 
 fn command_test_workspace() -> AgentConversationWorkspace {

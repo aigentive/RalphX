@@ -19,12 +19,17 @@ use crate::domain::entities::data_retention::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::{DatabaseMaintenanceConfig, StreamTimeoutsConfig};
 use crate::infrastructure::sqlite::sqlite_chat_payload_retention_repo::{
-    PruneCursor, SqliteChatPayloadRetentionRepository,
+    PayloadUsage, PruneCursor, SqliteChatPayloadRetentionRepository,
 };
 use crate::infrastructure::sqlite::sqlite_data_retention_settings_repo::SqliteDataRetentionSettingsRepository;
 
 /// Upper bound on size-budget batches per cycle so an unreachable budget cannot spin forever.
 const MAX_SIZE_BUDGET_BATCHES: u64 = 100_000;
+
+/// Rows per bounded usage-measurement read. A single unbounded `SUM(LENGTH(...))` over the payload
+/// table held a pooled connection for 175s on the production database, queueing every other
+/// caller behind it at startup.
+const USAGE_SCAN_BATCH_ROWS: u32 = 20_000;
 
 /// Process-global because `AppState` builds application services per call: the command,
 /// the detached startup cycle and the periodic loop each hold a *different* service
@@ -332,7 +337,7 @@ impl DataRetentionService {
         if self.payload_repo.database_size_hint().await? <= budget {
             return Ok((None, Some(RetentionSkipReason::AlreadyUnderBudget)));
         }
-        let usage = self.payload_repo.payload_usage().await?;
+        let usage = self.measure_payload_usage_bounded().await?;
         if usage.total_bytes <= budget {
             return Ok((Some(usage), Some(RetentionSkipReason::AlreadyUnderBudget)));
         }
@@ -346,8 +351,31 @@ impl DataRetentionService {
         if self.payload_repo.database_size_hint().await? <= self.tuning.advisory_threshold_bytes {
             return Ok((None, false));
         }
-        let usage = self.payload_repo.payload_usage().await?;
+        let usage = self.measure_payload_usage_bounded().await?;
         Ok((Some((usage.total_bytes, usage.row_count)), true))
+    }
+
+    /// Measures total payload usage in bounded batches, pausing on the same cadence as the prune
+    /// loops. Equivalent to `payload_repo.payload_usage()` but never holds a pooled connection for
+    /// more than one batch.
+    async fn measure_payload_usage_bounded(&self) -> AppResult<PayloadUsage> {
+        let mut usage = PayloadUsage::default();
+        let mut cursor: Option<String> = None;
+        let mut batches = 0;
+        loop {
+            let (partial, next_cursor) = self
+                .payload_repo
+                .payload_usage_batch(USAGE_SCAN_BATCH_ROWS, cursor)
+                .await?;
+            usage.total_bytes = usage.total_bytes.saturating_add(partial.total_bytes);
+            usage.row_count = usage.row_count.saturating_add(partial.row_count);
+            let Some(next_cursor) = next_cursor else {
+                return Ok(usage);
+            };
+            cursor = Some(next_cursor);
+            batches += 1;
+            self.pause_between_batches(batches).await;
+        }
     }
 
     /// Deletes oldest-first until the running total falls under budget. The total is kept
