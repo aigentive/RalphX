@@ -113,7 +113,8 @@ use crate::application::agent_workspace_publish_recovery::{
 };
 use crate::application::agent_workspace_publish_repair_state::{
     classify_agent_workspace_repair_delivery, last_human_repair_reason,
-    rerun_agent_workspace_ci_for_hold, reserve_agent_workspace_repair_dispatch,
+    record_agent_workspace_pr_autofix_base_update_head, rerun_agent_workspace_ci_for_hold,
+    reserve_agent_workspace_repair_dispatch,
     resume_current_agent_workspace_repair_publish, resume_ready_agent_workspace_repair_for_publish,
     retry_agent_workspace_pr_autofix_hold_override,
     retry_agent_workspace_publication_effect as retry_agent_workspace_publication_effect_service,
@@ -6795,6 +6796,72 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
     .await
 }
 
+/// Records the local head a base update just produced on the active `pr_autofix` attempt, so the
+/// existing held-head publish redrive can push it regardless of how the fixer later classifies its
+/// own completion.
+///
+/// Deliberately best effort: the git update already succeeded, so a failure here must degrade to a
+/// warning rather than fail the update or trip repair churn.
+async fn record_pr_autofix_base_update_head_evidence(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    worktree_path: &Path,
+    branch_name: &str,
+) {
+    let head_commit = match GitService::get_branch_sha(worktree_path, branch_name).await {
+        Ok(head_commit) => head_commit,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                %error,
+                "Could not read the branch head produced by a PR-autofix base update"
+            );
+            return;
+        }
+    };
+    let attempt = match state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+    {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                %error,
+                "Could not load the repair attempt for PR-autofix base-update evidence"
+            );
+            return;
+        }
+    };
+    if attempt.source != AgentWorkspaceRepairSource::PrAutofix || !attempt.is_unsettled() {
+        return;
+    }
+    match record_agent_workspace_pr_autofix_base_update_head(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        attempt,
+        &head_commit,
+    )
+    .await
+    {
+        Ok(AgentWorkspaceRepairTransitionOutcome::Applied(_)) => {}
+        Ok(_) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                "PR-autofix base-update head evidence lost its CAS race; the hold may need a manual re-drive"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                %error,
+                "Could not record PR-autofix base-update head evidence"
+            );
+        }
+    }
+}
+
 #[doc(hidden)]
 pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_caller(
     state: &AppState,
@@ -7171,6 +7238,18 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             return Err(message);
         }
     };
+
+    // A base update the fixer ran itself produced a real new HEAD that nothing has pushed. Record
+    // it now so the hold cannot depend on how the agent later classifies its own completion.
+    if preserve_pr_autofix_claim && updated {
+        record_pr_autofix_base_update_head_evidence(
+            state,
+            &workspace.conversation_id,
+            &publish_target.worktree_path,
+            &publish_target.branch_name,
+        )
+        .await;
+    }
 
     let mut push_status = "refreshed";
     if let Some(plan_branch) = publish_target.plan_branch.as_ref() {
