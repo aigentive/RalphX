@@ -5,6 +5,7 @@ import type {
   AgentWorkspaceMaintenanceOperation,
   AgentWorkspaceMaintenanceOperationHoldReason,
   AgentWorkspacePrAutofixFingerprintSpend,
+  AgentWorkspaceReviewGateStatus,
 } from "@/api/chat";
 
 const PUBLISH_EVENT_START_SKEW_MS = 5_000;
@@ -468,6 +469,98 @@ export function canResumeAgentWorkspacePublish(
       operation.recoveryAction === "resume_publish" &&
       operation.holdReason == null,
   );
+}
+
+export type AgentWorkspaceMaintenancePublishGateInput = {
+  hasPublishHandler: boolean;
+  isManagedByTaskPipeline: boolean;
+  effectivePublishing: boolean;
+  isAutomationPreferenceSaving: boolean;
+  baseBlocked: boolean;
+  reviewBlocksPublish: boolean;
+  reviewIsRunning: boolean;
+  reviewGateStatus: AgentWorkspaceReviewGateStatus | null;
+  reviewGateSummary: string | null;
+  hasPrConflict: boolean;
+  hasTerminalPublication: boolean;
+  workspaceMissing: boolean;
+};
+
+export type AgentWorkspaceMaintenancePublishGate = {
+  disabled: boolean;
+  /** Review-state override label; null → caller uses its branch default label. */
+  label: string | null;
+  /** User-facing reason for the disabled state; null when enabled. */
+  blockedReason: string | null;
+};
+
+/**
+ * Single verdict for the maintenance banner's Resume publish / Retry repair action.
+ *
+ * The banner buttons must use this for BOTH their `disabled` prop and their click
+ * guard, so an enabled-looking button can never silently refuse the click.
+ *
+ * Deliberately NOT inputs, because the backend resume path is designed for them:
+ * - `hasNoDetectedChanges` — zero local delta is the expected post-repair state.
+ * - `isPublishCurrent` — the parked durable attempt must still settle, or the
+ *   banner strands with no way forward.
+ * - `repositoryInspectionFailed` — the backend resume re-validates and fails safely.
+ * - `isRepairPending` — structurally false whenever a maintenance operation exists.
+ */
+export function getAgentWorkspaceMaintenancePublishGate(
+  input: AgentWorkspaceMaintenancePublishGateInput,
+): AgentWorkspaceMaintenancePublishGate {
+  const label = input.reviewBlocksPublish
+    ? input.reviewIsRunning
+      ? "Reviewing"
+      : input.reviewGateStatus === "required"
+        ? "Review required"
+        : input.reviewGateStatus === "blocking"
+          ? "Review blocking"
+          : input.reviewGateStatus === "failed"
+            ? "Review failed"
+            : null
+    : null;
+
+  const blockedReason = (() => {
+    if (input.reviewBlocksPublish) {
+      return (
+        input.reviewGateSummary ??
+        "Workspace Review must settle before publishing."
+      );
+    }
+    if (!input.hasPublishHandler) {
+      return "Publishing is unavailable for this workspace.";
+    }
+    if (input.isManagedByTaskPipeline) {
+      return "Publishing is managed by this ideation plan's task pipeline.";
+    }
+    if (input.workspaceMissing) {
+      return "The workspace files are missing.";
+    }
+    if (input.hasTerminalPublication) {
+      return "The linked pull request is already merged or closed.";
+    }
+    if (input.baseBlocked) {
+      return "Publishing is blocked until the workspace base branch is resolved.";
+    }
+    if (input.hasPrConflict) {
+      return "Resolve the pull request conflicts before publishing.";
+    }
+    if (input.effectivePublishing) {
+      return "A workspace operation is already in progress.";
+    }
+    if (input.isAutomationPreferenceSaving) {
+      return "Saving automation preferences. Try again in a moment.";
+    }
+    return null;
+  })();
+
+  return {
+    disabled: blockedReason !== null,
+    label,
+    blockedReason,
+  };
 }
 
 /** A blank string carries no information; treat it the same as absent. */

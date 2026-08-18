@@ -84,6 +84,19 @@ function mockRetentionInvoke(overrides: SettingsOverrides = {}) {
 const updates = (calls: RetentionCalls) =>
   calls.filter((call) => call.command === "update_data_retention_settings");
 
+// The numeric inputs render disabled until settings load (and again while a save
+// is in flight), so a bare findBy* can hand back a control user-event refuses to
+// edit. Wait for the control itself to be editable before typing into it.
+async function replaceValue(
+  user: ReturnType<typeof userEvent.setup>,
+  input: HTMLElement,
+  value: string,
+) {
+  await waitFor(() => expect(input).toBeEnabled());
+  await user.clear(input);
+  await user.type(input, value);
+}
+
 describe("DataRetentionSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -107,9 +120,7 @@ describe("DataRetentionSection", () => {
     render(<DataRetentionSection />);
 
     const days = await screen.findByLabelText("Keep tool-call detail for");
-    await waitFor(() => expect(days).not.toBeDisabled());
-    await user.clear(days);
-    await user.type(days, "30");
+    await replaceValue(user, days, "30");
     await user.tab();
 
     await waitFor(() => expect(updates(calls)).toHaveLength(1));
@@ -163,8 +174,7 @@ describe("DataRetentionSection", () => {
     render(<DataRetentionSection />);
 
     const budget = await screen.findByLabelText("Size limit in GB");
-    await user.clear(budget);
-    await user.type(budget, "10");
+    await replaceValue(user, budget, "10");
     await user.click(screen.getByRole("button", { name: "Update limit" }));
 
     await waitFor(() => expect(updates(calls)).toHaveLength(1));
@@ -172,8 +182,7 @@ describe("DataRetentionSection", () => {
       calls.some((call) => call.command === "preview_data_retention_size_budget"),
     ).toBe(false);
 
-    await user.clear(budget);
-    await user.type(budget, "2");
+    await replaceValue(user, budget, "2");
     await user.click(screen.getByRole("button", { name: "Update limit" }));
 
     await screen.findByTestId("size-budget-preview");
