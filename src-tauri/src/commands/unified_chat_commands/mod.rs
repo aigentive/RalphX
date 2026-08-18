@@ -47,11 +47,14 @@ pub use crate::application::agent_conversation_start_service::{
     AgentWorkspaceSourcePullRequestInput, StartAgentConversationInput,
 };
 use crate::application::agent_conversation_workspace::{
+    classify_agent_conversation_workspace_path,
+    classify_effective_agent_conversation_workspace_path,
     ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
     prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
     reject_persona_builder_workspace_mode, resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspacePrAutomationDefaults, AgentConversationWorkspaceSetupMode,
+    WorkspacePathResolution,
 };
 use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base,
@@ -94,6 +97,7 @@ use crate::application::agent_workspace_pr_reopen::{
 use crate::application::agent_workspace_pr_reopen_restore::ReopenLocalWorkspaceState;
 use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
+    pr_supervision_recovery_schedule_skip_reason,
     schedule_agent_workspace_durable_repair_reconciliation,
     schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps,
     AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryTrigger,
@@ -1180,10 +1184,7 @@ pub async fn agent_workspace_response_with_pr_supervision_for_state(
     // supervision scheduler rather than by the response request.
     schedule_pr_supervision_recovery_for_workspace(
         state,
-        crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
-            state,
-            Arc::clone(execution_state),
-        ),
+        execution_state,
         &workspace,
         AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
         false,
@@ -1313,14 +1314,49 @@ fn schedule_external_pr_reconciliation_for_workspace(
     );
 }
 
+/// Scheduling-time routing for a workspace recovery. Both arms still reach the durable repair
+/// coordinator — the first recovery authority — so this only decides whether the far more
+/// expensive PR-supervision runtime is worth constructing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrSupervisionScheduleRoute {
+    /// Full PR supervision, which lazily builds a `TaskTransitionService` + `ChatService`.
+    PrSupervision,
+    /// Durable repair reconciliation only. Constructs neither runtime service.
+    DurableOnly(&'static str),
+}
+
+/// Decides the route from the caller-held workspace record alone, so an ineligible workspace never
+/// pays for runtime construction. The record can be marginally stale; the authoritative in-run
+/// checks still re-read it on the PR-supervision arm.
+pub(crate) fn pr_supervision_schedule_route(
+    github_available: bool,
+    workspace: &AgentConversationWorkspace,
+) -> PrSupervisionScheduleRoute {
+    if !github_available {
+        return PrSupervisionScheduleRoute::DurableOnly("github_service_unavailable");
+    }
+    match pr_supervision_recovery_schedule_skip_reason(workspace) {
+        Some(reason) => PrSupervisionScheduleRoute::DurableOnly(reason),
+        None => PrSupervisionScheduleRoute::PrSupervision,
+    }
+}
+
 pub(crate) fn schedule_pr_supervision_recovery_for_workspace(
     state: &AppState,
-    runtime: crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime,
+    execution_state: &Arc<ExecutionState>,
     workspace: &AgentConversationWorkspace,
     trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
     force: bool,
 ) {
-    if state.github_service.is_none() {
+    if let PrSupervisionScheduleRoute::DurableOnly(reason) =
+        pr_supervision_schedule_route(state.github_service.is_some(), workspace)
+    {
+        tracing::debug!(
+            conversation_id = workspace.conversation_id.as_str(),
+            trigger = trigger.as_str(),
+            reason,
+            "PR supervision ineligible at scheduling; durable-only reconciliation"
+        );
         schedule_agent_workspace_durable_repair_reconciliation(
             state.clone(),
             workspace.conversation_id.clone(),
@@ -1331,13 +1367,20 @@ pub(crate) fn schedule_pr_supervision_recovery_for_workspace(
     }
     let resumer = state.agent_workspace_pr_fix_review_publish_resumer().ok();
     let recovery_state = state.clone();
+    let recovery_execution_state = Arc::clone(execution_state);
     schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps(
         move || {
+            // Built inside the closure: `claim_recovery` throttles the vast majority of sidebar-
+            // driven schedules away, and an eagerly constructed runtime would be pure waste.
+            let runtime = crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
+                &recovery_state,
+                recovery_execution_state,
+            );
             build_agent_workspace_pr_supervision_recovery_deps(
                 &recovery_state,
-                Some(Arc::clone(&runtime.transition_service)),
-                Some(Arc::clone(&runtime.chat_service)),
-                resumer.clone(),
+                Some(runtime.transition_service),
+                Some(runtime.chat_service),
+                resumer,
             )
             .expect("github service was checked before scheduling PR supervision recovery")
         },
@@ -1391,10 +1434,7 @@ async fn schedule_pr_supervision_recovery_for_conversation_id(
 
     schedule_pr_supervision_recovery_for_workspace(
         state,
-        crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
-            state,
-            Arc::clone(execution_state),
-        ),
+        execution_state,
         &workspace,
         trigger,
         force,
@@ -6824,7 +6864,18 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         match resolve_agent_workspace_publish_target(state, &project, &workspace).await {
             Ok(target) => target,
             Err(error) => {
-                if error.contains("Agent conversation workspace is missing") {
+                // Classify through the same effective resolver the publish target used: a
+                // linked-plan-branch workspace never evaluates its record path, so its record
+                // path must not decide whether the workspace is missing.
+                if matches!(
+                    classify_effective_agent_conversation_workspace_path(
+                        &project,
+                        &workspace,
+                        state.plan_branch_repo.as_ref(),
+                    )
+                    .await,
+                    Ok(WorkspacePathResolution::Missing { .. })
+                ) {
                     let _ = state
                         .agent_conversation_workspace_repo
                         .update_status(
@@ -8932,10 +8983,12 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         match resolve_valid_agent_conversation_workspace_path(&project, &workspace).await {
             Ok(path) => path,
             Err(error) => {
-                if error
-                    .to_string()
-                    .contains("Agent conversation workspace is missing")
-                {
+                // `resolve_valid_…` resolves the record path, so the record classifier is the
+                // matching companion here.
+                if matches!(
+                    classify_agent_conversation_workspace_path(&project, &workspace),
+                    Ok(WorkspacePathResolution::Missing { .. })
+                ) {
                     let _ = state
                         .agent_conversation_workspace_repo
                         .update_status(
