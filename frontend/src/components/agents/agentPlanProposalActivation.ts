@@ -47,6 +47,18 @@ export class PlanContinuationCommittedError extends Error {
   }
 }
 
+/**
+ * Derives the appended failure detail for plan-continuation retry dialogs.
+ *
+ * Tauri rejects with plain strings, so an `error instanceof Error` check alone
+ * silently drops the backend's message and leaves the retry dialog unexplained.
+ */
+export function planContinuationFailureDetail(error: unknown): string {
+  if (error instanceof Error) return ` ${error.message}`;
+  if (typeof error === "string" && error.trim()) return ` ${error.trim()}`;
+  return "";
+}
+
 export async function refreshTransitionedAgentWorkspace({
   queryClient,
   conversationId,
@@ -162,7 +174,7 @@ export async function activateAgentPlanProposals({
         conversationId,
         ...(onConversationModeSwitched ? { onConversationModeSwitched } : {}),
       });
-      const detail = error instanceof Error ? ` ${error.message}` : "";
+      const detail = planContinuationFailureDetail(error);
       throw new PlanContinuationCommittedError(
         `Tasks mode is active, but proposal launch failed. Retry will only send the proposal request; it will not activate Tasks again.${detail}`,
       );
