@@ -61,10 +61,10 @@ mod chat_service_runtime_handoff_tests;
 mod continuation_runtime_tests;
 
 use crate::application::agent_conversation_workspace::{
-    ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
-    resolve_agent_conversation_workspace_path_for_send,
+    classify_agent_conversation_workspace_path, ensure_linked_plan_branch_agent_worktree,
+    is_terminal_agent_conversation_publication_status,
     rollover_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceSetupMode,
-    AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
+    WorkspacePathResolution, AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
 use crate::application::agent_runtime_context::{
     branch_status::BranchStatusCache, compose_agent_runtime_context, AgentRuntimeContextDeps,
@@ -4104,13 +4104,13 @@ impl AppChatService {
             }
         }
 
-        match resolve_agent_conversation_workspace_path_for_send(&project, workspace) {
+        let resolution = classify_agent_conversation_workspace_path(&project, workspace)
+            .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?;
+        let worktree_missing = matches!(resolution, WorkspacePathResolution::Missing { .. });
+        match resolution.into_valid_path(workspace) {
             Ok(path) => Ok(path),
             Err(error) => {
-                if error
-                    .to_string()
-                    .contains("Agent conversation workspace is missing")
-                {
+                if worktree_missing {
                     self.mark_agent_conversation_workspace_missing(workspace)
                         .await;
                 }

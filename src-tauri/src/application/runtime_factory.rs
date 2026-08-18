@@ -307,7 +307,7 @@ impl RuntimeFactoryDeps {
                 state.agent_clients.clone(),
             ),
         );
-        tracing::info!(
+        tracing::debug!(
             elapsed_ms = started_at.elapsed().as_millis(),
             "Runtime factory deps loaded from AppState"
         );
@@ -1191,7 +1191,7 @@ pub(crate) fn build_transition_service_from_deps(
         app_handle,
         Arc::clone(&deps.memory_event_repo),
     );
-    tracing::info!(
+    tracing::debug!(
         elapsed_ms = new_started_at.elapsed().as_millis(),
         "Transition service core constructor completed"
     );
@@ -1206,7 +1206,7 @@ pub(crate) fn build_transition_service_from_deps(
         deps.plan_branch_repo.as_ref().map(Arc::clone),
         deps.interactive_process_registry.as_ref().map(Arc::clone),
     );
-    tracing::info!(
+    tracing::debug!(
         elapsed_ms = runtime_started_at.elapsed().as_millis(),
         "Transition service runtime context wiring completed"
     );
