@@ -3029,6 +3029,302 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
     .expect("background queue processing should drain queued message");
 }
 
+/// Pins the exit-path write in `spawn_send_message_background` to refresh-only
+/// semantics: a background send completing on a conversation whose provider
+/// session ref was already cleared (e.g. by a Plan→Edit handoff) must not
+/// resurrect a ref. Regression coverage for the Claude first-click "Implement
+/// Directly" double-click bug.
+#[tokio::test]
+async fn background_exit_write_does_not_resurrect_a_cleared_provider_session() {
+    use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
+    use crate::domain::entities::ChatMessageAttribution;
+    use tokio::time::{sleep, timeout, Duration};
+
+    let state = AppState::new_test();
+    let conversation = ChatConversation::new_project(ProjectId::new());
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed conversation");
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(
+            &conversation_id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "plan-session".to_string(),
+            },
+        )
+        .await
+        .expect("seed plan session ref");
+    state
+        .chat_conversation_repo
+        .clear_provider_session_ref(&conversation_id)
+        .await
+        .expect("simulate Plan→Edit handoff clear");
+
+    let agent_run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed agent run");
+    let agent_run_id = agent_run.id.as_str().to_string();
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let agent_run_lookup_id = agent_run.id;
+
+    let repos = super::BackgroundRunRepos {
+        chat_message_repo: Arc::clone(&state.chat_message_repo),
+        chat_timeline_repo: Some(Arc::clone(&state.chat_timeline_repo)),
+        chat_attachment_repo: Arc::clone(&state.chat_attachment_repo),
+        artifact_repo: Arc::clone(&state.artifact_repo),
+        conversation_repo: Arc::clone(&state.chat_conversation_repo),
+        agent_run_repo: Arc::clone(&state.agent_run_repo),
+        task_repo: Arc::clone(&state.task_repo),
+        task_dependency_repo: Arc::clone(&state.task_dependency_repo),
+        project_repo: Arc::clone(&state.project_repo),
+        ideation_session_repo: Arc::clone(&state.ideation_session_repo),
+        delegated_session_repo: Arc::clone(&state.delegated_session_repo),
+        execution_settings_repo: Some(Arc::clone(&state.execution_settings_repo)),
+        agent_lane_settings_repo: Some(Arc::clone(&state.agent_lane_settings_repo)),
+        agent_provider_settings_repo: Some(Arc::clone(&state.agent_provider_settings_repo)),
+        task_proposal_repo: Some(Arc::clone(&state.task_proposal_repo)),
+        activity_event_repo: Arc::clone(&state.activity_event_repo),
+        memory_event_repo: Arc::clone(&state.memory_event_repo),
+        notification_service: None,
+        message_queue: Arc::clone(&state.message_queue),
+        queued_message_repo: Some(Arc::clone(&state.queued_message_repo)),
+        running_agent_registry: Arc::clone(&state.running_agent_registry),
+        task_step_repo: Some(Arc::clone(&state.task_step_repo)),
+        validation_run_repo: Some(Arc::clone(&state.validation_run_repo)),
+        external_events_repo: Some(Arc::clone(&state.external_events_repo)),
+        webhook_publisher: None,
+        review_repo: Some(Arc::clone(&state.review_repo)),
+    };
+
+    // Deliberately omit the "result" line: only a "result" message emits
+    // `StreamEvent::TurnComplete`, which is the unconditional creation path
+    // (chat_service_streaming.rs TurnComplete handlers) and would otherwise
+    // recreate the ref itself, masking whether the exit-path write in
+    // chat_service_send_background.rs is refresh-only. This mirrors the real
+    // race: a cancelled/torn-down stream carries a known session id without
+    // ever completing a turn.
+    let child = spawn_claude_jsonl_fixture(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"initial turn complete"}]},"session_id":"sess-bg"}"#,
+    ])
+    .await;
+
+    super::spawn_send_message_background(super::BackgroundRunContext {
+        child,
+        harness: AgentHarnessKind::Claude,
+        context_type: ChatContextType::Project,
+        context_id: conversation_id.as_str().to_string(),
+        runtime_context_id: conversation_id.as_str().to_string(),
+        conversation_id: conversation_id.clone(),
+        agent_run_id,
+        stored_session_id: None,
+        // Never "." — background flows can run git (freshness auto-commit)
+        // against the working directory, which would mutate the checkout.
+        working_directory: std::env::temp_dir().join("ralphx-bg-refresh-cleared-wd"),
+        cli_path: Path::new("/definitely/missing/ralphx-test-cli").to_path_buf(),
+        plugin_dir: std::env::temp_dir().join("ralphx-bg-refresh-cleared-plugin"),
+        repos,
+        execution_state: None,
+        question_state: None,
+        plan_branch_repo: None,
+        events: Arc::new(NullEventSink),
+        plan_verification_completion: None,
+        runtime_factory_deps: None,
+        run_chain_id: None,
+        is_retry_attempt: false,
+        persona_feature_enabled: false,
+        agent_name_override_set: false,
+        user_message_content: Some("initial prompt".to_string()),
+        turn_metadata: None,
+        conversation: Some(conversation),
+        agent_name: Some("orchestrator".to_string()),
+        assistant_message_attribution: ChatMessageAttribution::default(),
+        persist_conversation_provider_session_ref: true,
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        streaming_state_cache: super::StreamingStateCache::new(),
+        interactive_process_registry: None,
+        interactive_process_token: None,
+        verification_child_registry: None,
+    });
+
+    timeout(Duration::from_secs(3), async {
+        loop {
+            let run = agent_run_repo
+                .get_by_id(&agent_run_lookup_id)
+                .await
+                .expect("agent run lookup")
+                .expect("agent run should remain persisted");
+            if run.status == AgentRunStatus::Completed {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("background run should complete");
+
+    let persisted = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("conversation lookup")
+        .expect("conversation should remain persisted");
+    assert!(
+        persisted.provider_session_ref().is_none(),
+        "stream-exit write must not resurrect a deliberately cleared provider session ref"
+    );
+}
+
+/// Positive companion to the resurrection regression above: the exit-path write
+/// at `chat_service_send_background.rs:1174` refreshes a present ref without any
+/// `TurnComplete`. Deliberately omits the "result" line (same fixture shape as
+/// the negative test) — a "result" message would drive the unconditional
+/// TurnComplete persist at `chat_service_streaming.rs:2536-2559`, which would
+/// satisfy this test's assertion even if the refresh-only exit write were inert.
+#[tokio::test]
+async fn background_exit_write_refreshes_an_existing_provider_session() {
+    use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
+    use crate::domain::entities::ChatMessageAttribution;
+    use tokio::time::{sleep, timeout, Duration};
+
+    let state = AppState::new_test();
+    let conversation = ChatConversation::new_project(ProjectId::new());
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed conversation");
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(
+            &conversation_id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "stale-session".to_string(),
+            },
+        )
+        .await
+        .expect("seed existing provider session ref");
+
+    let agent_run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed agent run");
+    let agent_run_id = agent_run.id.as_str().to_string();
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let agent_run_lookup_id = agent_run.id;
+
+    let repos = super::BackgroundRunRepos {
+        chat_message_repo: Arc::clone(&state.chat_message_repo),
+        chat_timeline_repo: Some(Arc::clone(&state.chat_timeline_repo)),
+        chat_attachment_repo: Arc::clone(&state.chat_attachment_repo),
+        artifact_repo: Arc::clone(&state.artifact_repo),
+        conversation_repo: Arc::clone(&state.chat_conversation_repo),
+        agent_run_repo: Arc::clone(&state.agent_run_repo),
+        task_repo: Arc::clone(&state.task_repo),
+        task_dependency_repo: Arc::clone(&state.task_dependency_repo),
+        project_repo: Arc::clone(&state.project_repo),
+        ideation_session_repo: Arc::clone(&state.ideation_session_repo),
+        delegated_session_repo: Arc::clone(&state.delegated_session_repo),
+        execution_settings_repo: Some(Arc::clone(&state.execution_settings_repo)),
+        agent_lane_settings_repo: Some(Arc::clone(&state.agent_lane_settings_repo)),
+        agent_provider_settings_repo: Some(Arc::clone(&state.agent_provider_settings_repo)),
+        task_proposal_repo: Some(Arc::clone(&state.task_proposal_repo)),
+        activity_event_repo: Arc::clone(&state.activity_event_repo),
+        memory_event_repo: Arc::clone(&state.memory_event_repo),
+        notification_service: None,
+        message_queue: Arc::clone(&state.message_queue),
+        queued_message_repo: Some(Arc::clone(&state.queued_message_repo)),
+        running_agent_registry: Arc::clone(&state.running_agent_registry),
+        task_step_repo: Some(Arc::clone(&state.task_step_repo)),
+        validation_run_repo: Some(Arc::clone(&state.validation_run_repo)),
+        external_events_repo: Some(Arc::clone(&state.external_events_repo)),
+        webhook_publisher: None,
+        review_repo: Some(Arc::clone(&state.review_repo)),
+    };
+
+    let child = spawn_claude_jsonl_fixture(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"initial turn complete"}]},"session_id":"sess-bg"}"#,
+    ])
+    .await;
+
+    super::spawn_send_message_background(super::BackgroundRunContext {
+        child,
+        harness: AgentHarnessKind::Claude,
+        context_type: ChatContextType::Project,
+        context_id: conversation_id.as_str().to_string(),
+        runtime_context_id: conversation_id.as_str().to_string(),
+        conversation_id: conversation_id.clone(),
+        agent_run_id,
+        stored_session_id: None,
+        // Never "." — background flows can run git (freshness auto-commit)
+        // against the working directory, which would mutate the checkout.
+        working_directory: std::env::temp_dir().join("ralphx-bg-refresh-existing-wd"),
+        cli_path: Path::new("/definitely/missing/ralphx-test-cli").to_path_buf(),
+        plugin_dir: std::env::temp_dir().join("ralphx-bg-refresh-existing-plugin"),
+        repos,
+        execution_state: None,
+        question_state: None,
+        plan_branch_repo: None,
+        events: Arc::new(NullEventSink),
+        plan_verification_completion: None,
+        runtime_factory_deps: None,
+        run_chain_id: None,
+        is_retry_attempt: false,
+        persona_feature_enabled: false,
+        agent_name_override_set: false,
+        user_message_content: Some("initial prompt".to_string()),
+        turn_metadata: None,
+        conversation: Some(conversation),
+        agent_name: Some("orchestrator".to_string()),
+        assistant_message_attribution: ChatMessageAttribution::default(),
+        persist_conversation_provider_session_ref: true,
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        streaming_state_cache: super::StreamingStateCache::new(),
+        interactive_process_registry: None,
+        interactive_process_token: None,
+        verification_child_registry: None,
+    });
+
+    timeout(Duration::from_secs(3), async {
+        loop {
+            let run = agent_run_repo
+                .get_by_id(&agent_run_lookup_id)
+                .await
+                .expect("agent run lookup")
+                .expect("agent run should remain persisted");
+            if run.status == AgentRunStatus::Completed {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("background run should complete");
+
+    let persisted = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("conversation lookup")
+        .expect("conversation should remain persisted");
+    assert_eq!(
+        persisted
+            .provider_session_ref()
+            .map(|r| r.provider_session_id),
+        Some("sess-bg".to_string()),
+        "stream-exit write must refresh an existing provider session ref"
+    );
+}
+
 #[tokio::test]
 async fn background_run_suppresses_answered_pending_stdin_turns() {
     use crate::domain::entities::ChatMessageAttribution;

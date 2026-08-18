@@ -267,6 +267,22 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         Ok(())
     }
 
+    async fn refresh_provider_session_ref(
+        &self,
+        id: &ChatConversationId,
+        session_ref: &ProviderSessionRef,
+    ) -> AppResult<bool> {
+        let mut convos = self.conversations.write().await;
+        let Some(conv) = convos.get_mut(id) else {
+            return Ok(false);
+        };
+        if conv.provider_session_ref().is_none() {
+            return Ok(false);
+        }
+        conv.set_provider_session_ref(session_ref.clone());
+        Ok(true)
+    }
+
     async fn clear_provider_session_ref(&self, id: &ChatConversationId) -> AppResult<()> {
         let mut convos = self.conversations.write().await;
         if let Some(conversation) = convos.get_mut(id) {
