@@ -1342,29 +1342,113 @@ pub fn resolve_agent_conversation_workspace_path_for_send(
     resolve_agent_conversation_workspace_path_from_record(project, workspace)
 }
 
-fn resolve_agent_conversation_workspace_path_from_record(
+/// Why a workspace record's worktree path did or did not resolve.
+///
+/// Callers that need to *act* on a missing worktree — rather than just fail — must branch on this
+/// instead of matching the error text (rule 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspacePathResolution {
+    Valid(PathBuf),
+    /// The worktree directory is gone. `parent_root_present` separates a deleted workspace (the
+    /// project's worktree root still exists, so the directory really was removed) from a whole
+    /// missing or unmounted root, which is disk trouble and must not settle any workspace.
+    Missing {
+        expected: PathBuf,
+        parent_root_present: bool,
+    },
+    /// The directory exists but carries no `.git` entry.
+    NotGit(PathBuf),
+}
+
+impl WorkspacePathResolution {
+    /// Unwraps to the resolved path, or to the exact `AppError::Validation` the untyped resolver
+    /// has always produced for this shape, so error text stays byte-identical for every caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AppError::Validation` for `Missing` and `NotGit`.
+    pub fn into_valid_path(self, workspace: &AgentConversationWorkspace) -> AppResult<PathBuf> {
+        match self {
+            Self::Valid(path) => Ok(path),
+            Self::Missing { expected, .. } => Err(AppError::Validation(format!(
+                "Agent conversation workspace is missing: {}",
+                expected.display()
+            ))),
+            Self::NotGit(path) => Err(AppError::Validation(format!(
+                "Agent conversation workspace {} is not a git worktree: {}",
+                workspace.conversation_id,
+                path.display()
+            ))),
+        }
+    }
+}
+
+/// Classifies the worktree path a workspace *record* points at.
+///
+/// The `Err` arm is reserved for identity failures (wrong project, drifted stored path) that say
+/// nothing about the directory itself.
+///
+/// # Errors
+///
+/// Returns `AppError::Validation` when the record's identity does not resolve.
+pub fn classify_agent_conversation_workspace_path(
     project: &Project,
     workspace: &AgentConversationWorkspace,
-) -> AppResult<PathBuf> {
+) -> AppResult<WorkspacePathResolution> {
     let expected_path =
         resolve_agent_conversation_workspace_path_from_record_identity(project, workspace)?;
 
     if !expected_path.is_dir() {
-        return Err(AppError::Validation(format!(
-            "Agent conversation workspace is missing: {}",
-            expected_path.display()
-        )));
+        let parent_root_present = resolve_agent_conversation_project_workspace_dir(project)
+            .map(|root| root.is_dir())
+            .unwrap_or(false);
+        return Ok(WorkspacePathResolution::Missing {
+            expected: expected_path,
+            parent_root_present,
+        });
     }
 
     if !expected_path.join(".git").exists() {
-        return Err(AppError::Validation(format!(
-            "Agent conversation workspace {} is not a git worktree: {}",
-            workspace.conversation_id,
-            expected_path.display()
-        )));
+        return Ok(WorkspacePathResolution::NotGit(expected_path));
     }
 
-    Ok(expected_path)
+    Ok(WorkspacePathResolution::Valid(expected_path))
+}
+
+/// Classifies the path [`resolve_effective_agent_conversation_workspace_path`] would actually use.
+///
+/// A workspace linked to a plan branch resolves through `ensure_linked_plan_branch_agent_worktree`
+/// and never evaluates its record path, so classifying that record path would judge a path the
+/// resolver never looked at — and could mark a healthy workspace `Missing` when the real failure
+/// was a plan-branch lookup. On that branch this deliberately does not classify: the underlying
+/// error propagates unchanged and success is reported as `Valid`.
+///
+/// # Errors
+///
+/// Propagates whatever the effective resolver returns for linked-plan-branch workspaces, and the
+/// record classifier's identity errors otherwise.
+pub async fn classify_effective_agent_conversation_workspace_path(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    plan_branch_repo: &dyn PlanBranchRepository,
+) -> AppResult<WorkspacePathResolution> {
+    if workspace.linked_plan_branch_id.is_some() {
+        let resolved = resolve_effective_agent_conversation_workspace_path(
+            project,
+            workspace,
+            plan_branch_repo,
+        )
+        .await?;
+        return Ok(WorkspacePathResolution::Valid(resolved.path));
+    }
+    classify_agent_conversation_workspace_path(project, workspace)
+}
+
+fn resolve_agent_conversation_workspace_path_from_record(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<PathBuf> {
+    classify_agent_conversation_workspace_path(project, workspace)?.into_valid_path(workspace)
 }
 
 pub(super) fn resolve_agent_conversation_workspace_path_from_record_identity(

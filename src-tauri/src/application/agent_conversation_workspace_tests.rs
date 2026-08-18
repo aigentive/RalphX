@@ -1743,3 +1743,182 @@ async fn rollover_agent_conversation_workspace_blocks_retarget_when_old_head_not
         .expect("old workspace should remain checked out");
     assert_eq!(checked_out, workspace.branch_name);
 }
+
+/// Proof obligation 6 (classification half): each fixture shape maps to exactly one resolution,
+/// and `parent_root_present` separates a deleted workspace from a whole missing worktree root.
+#[tokio::test]
+async fn workspace_path_classification_distinguishes_missing_from_not_git_and_a_missing_root() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+
+    let mut project = Project::new(
+        "Agent Classification".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+    let conversation_id =
+        ChatConversationId::from_string("conversation-classification-test".to_string());
+    let workspace = prepare_agent_conversation_workspace_with_setup_mode(
+        &project,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            branch_mode: None,
+            base_ref: Some("main".to_string()),
+            display_name: None,
+            source_pull_request: None,
+        },
+        AgentConversationWorkspaceSetupMode::Deferred,
+    )
+    .await
+    .expect("workspace should be prepared");
+    let worktree_path = PathBuf::from(&workspace.worktree_path);
+
+    assert_eq!(
+        classify_agent_conversation_workspace_path(&project, &workspace).unwrap(),
+        WorkspacePathResolution::Valid(worktree_path.clone())
+    );
+
+    // Directory present, `.git` gone.
+    std::fs::remove_file(worktree_path.join(".git")).expect("worktree .git should be removable");
+    assert_eq!(
+        classify_agent_conversation_workspace_path(&project, &workspace).unwrap(),
+        WorkspacePathResolution::NotGit(worktree_path.clone())
+    );
+
+    // Worktree deleted while the project's worktree root survives: a real orphan.
+    std::fs::remove_dir_all(&worktree_path).expect("worktree should be removable");
+    assert_eq!(
+        classify_agent_conversation_workspace_path(&project, &workspace).unwrap(),
+        WorkspacePathResolution::Missing {
+            expected: worktree_path.clone(),
+            parent_root_present: true,
+        }
+    );
+
+    // Whole root gone: disk/mount trouble, never an orphan.
+    let project_root = resolve_agent_conversation_project_workspace_dir(&project)
+        .expect("project workspace dir should resolve");
+    std::fs::remove_dir_all(&project_root).expect("project worktree root should be removable");
+    assert_eq!(
+        classify_agent_conversation_workspace_path(&project, &workspace).unwrap(),
+        WorkspacePathResolution::Missing {
+            expected: worktree_path.clone(),
+            parent_root_present: false,
+        }
+    );
+}
+
+/// The typed classifier must not change any existing caller's error text.
+#[tokio::test]
+async fn the_untyped_resolver_still_produces_its_legacy_validation_strings() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+
+    let mut project = Project::new(
+        "Agent Legacy Strings".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+    let conversation_id =
+        ChatConversationId::from_string("conversation-legacy-strings-test".to_string());
+    let workspace = prepare_agent_conversation_workspace_with_setup_mode(
+        &project,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            branch_mode: None,
+            base_ref: Some("main".to_string()),
+            display_name: None,
+            source_pull_request: None,
+        },
+        AgentConversationWorkspaceSetupMode::Deferred,
+    )
+    .await
+    .expect("workspace should be prepared");
+    let worktree_path = PathBuf::from(&workspace.worktree_path);
+
+    std::fs::remove_file(worktree_path.join(".git")).expect("worktree .git should be removable");
+    let not_git = resolve_agent_conversation_workspace_path_for_send(&project, &workspace)
+        .expect_err("a directory without .git must still fail");
+    assert_eq!(
+        not_git.to_string(),
+        format!(
+            "Validation error: Agent conversation workspace {} is not a git worktree: {}",
+            workspace.conversation_id,
+            worktree_path.display()
+        )
+    );
+
+    std::fs::remove_dir_all(&worktree_path).expect("worktree should be removable");
+    let missing = resolve_agent_conversation_workspace_path_for_send(&project, &workspace)
+        .expect_err("a deleted worktree must still fail");
+    assert_eq!(
+        missing.to_string(),
+        format!(
+            "Validation error: Agent conversation workspace is missing: {}",
+            worktree_path.display()
+        )
+    );
+}
+
+/// Proof obligation 8: a workspace linked to a plan branch resolves through
+/// `ensure_linked_plan_branch_agent_worktree` and never evaluates its record path, so the
+/// effective classifier must propagate the underlying error rather than report `Missing`.
+#[tokio::test]
+async fn the_effective_classifier_never_reports_missing_for_a_linked_plan_branch_workspace() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+
+    let mut project = Project::new(
+        "Agent Linked Plan".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+    let conversation_id =
+        ChatConversationId::from_string("conversation-linked-plan-test".to_string());
+    let mut workspace = prepare_agent_conversation_workspace_with_setup_mode(
+        &project,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            branch_mode: None,
+            base_ref: Some("main".to_string()),
+            display_name: None,
+            source_pull_request: None,
+        },
+        AgentConversationWorkspaceSetupMode::Deferred,
+    )
+    .await
+    .expect("workspace should be prepared");
+
+    // Record path deleted *and* linked to a plan branch the repo cannot find.
+    std::fs::remove_dir_all(PathBuf::from(&workspace.worktree_path))
+        .expect("worktree should be removable");
+    workspace.linked_plan_branch_id = Some(crate::domain::entities::PlanBranchId::new());
+    let plan_branch_repo = MemoryPlanBranchRepository::new();
+
+    let error = classify_effective_agent_conversation_workspace_path(
+        &project,
+        &workspace,
+        &plan_branch_repo,
+    )
+    .await
+    .expect_err("an unresolvable plan branch must propagate, not classify the unused record path");
+    assert!(
+        error.to_string().contains("Linked plan branch not found"),
+        "the plan-branch error must survive unchanged: {error}"
+    );
+}
