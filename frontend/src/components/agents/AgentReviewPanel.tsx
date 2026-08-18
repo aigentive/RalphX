@@ -397,7 +397,7 @@ function reviewStatusForState({
   }
   if (context?.monitor.reviewFixerStatus === "failed") {
     return {
-      label: "Automatic fix reported a blocker",
+      label: "Automatic fix stopped",
       detail: [context.monitor.reviewBlockingSummary, context.monitor.lastError]
         .filter(Boolean)
         .join(" "),
