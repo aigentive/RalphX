@@ -12,7 +12,9 @@ export type AgentComposerIntegrationKind =
   | "granola";
 export type AgentComposerIntegrationReferenceKind =
   | "jira"
+  | "jira_board"
   | "confluence"
+  | "confluence_link"
   | "linear"
   | "clickup"
   | "note";
@@ -378,7 +380,9 @@ export function normalizeComposerIntegrationReferences(
       id.includes("\0") ||
       (provider === "atlassian" &&
         reference.kind !== "jira" &&
-        reference.kind !== "confluence") ||
+        reference.kind !== "jira_board" &&
+        reference.kind !== "confluence" &&
+        reference.kind !== "confluence_link") ||
       (provider === "linear" && reference.kind !== "linear") ||
       (provider === "clickup" && reference.kind !== "clickup") ||
       (provider === "granola" && reference.kind !== "note") ||
@@ -454,6 +458,7 @@ function isPlausibleAtlassianResourcePath(pathname: string): boolean {
   return (
     pathname.includes("/browse/") ||
     pathname.includes("/issues/") ||
+    pathname.includes("/boards/") ||
     pathname === "/wiki" ||
     pathname.startsWith("/wiki/")
   );
