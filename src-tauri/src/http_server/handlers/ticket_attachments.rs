@@ -1,8 +1,9 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::State, http::HeaderMap, http::StatusCode, response::IntoResponse, Json};
 use base64::Engine;
 use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request, Uri};
@@ -14,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use tokio_util::bytes::Bytes;
 
 use super::*;
+use super::atlassian_mcp::{authorize, AtlassianMcpHttpError};
+use super::trusted_run_authority::resolve_live_caller_run;
 use crate::application::atlassian_integration_service::{
     AtlassianAuthContext, AtlassianCredential,
 };
@@ -24,9 +27,24 @@ use crate::application::ticket_attachment::{
     TicketAttachmentProviderReader, TicketAttachmentSourceHandle,
 };
 use crate::application::ticket_attachment_runtime_store::TicketAttachmentRuntimeStore;
+use crate::domain::agents::AtlassianMcpAccess;
+use crate::domain::entities::{AgentRunId, ChatConversationId};
 use crate::domain::services::ComposerIntegrationReference;
 
 const ATTACHMENT_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The only agents whose canonical `agent.yaml` `capabilities.mcp_tools`
+/// actually grant `list_ticket_attachments`/`fetch_ticket_attachment` —
+/// the grant surface `docs/features/atlassian-mcp-access.md` and
+/// `.claude/rules/agent-mcp-tools.md` describe as authoritative for the
+/// non-Atlassian (Linear/ClickUp) attachment path.
+pub(super) const TICKET_ATTACHMENT_CANONICAL_GRANTEES: [&str; 2] =
+    ["ralphx-execution-worker", "ralphx-execution-coder"];
+
+/// Inline `contentText` cap: small enough to stay a preview, not a second
+/// download path. Binary/image attachments and text above this size are
+/// exposed through `contentPath` only.
+const TICKET_ATTACHMENT_INLINE_TEXT_MAX_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Deserialize)]
 pub struct TicketAttachmentListRequest {
@@ -61,6 +79,15 @@ pub struct TicketAttachmentContentReference {
     pub id: String,
     pub trust: &'static str,
     pub available: bool,
+    /// Materialized, containment-checked path under RalphX-managed attachment
+    /// storage. Readable by Claude-harness runs; other sandboxed harnesses may
+    /// not have filesystem access to this path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_path: Option<String>,
+    /// Inline preview for small `text/*` attachments only. See
+    /// [`TICKET_ATTACHMENT_INLINE_TEXT_MAX_BYTES`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_text: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,8 +98,10 @@ struct TicketAttachmentErrorResponse {
 
 pub async fn list_ticket_attachments_http(
     State(state): State<HttpServerState>,
+    headers: HeaderMap,
     Json(req): Json<TicketAttachmentListRequest>,
 ) -> Result<Json<TicketAttachmentListResponse>, TicketAttachmentHttpError> {
+    authorize_ticket_attachment_access(&state, &headers, req.provider).await?;
     let reader = IntegrationTicketAttachmentReader::new(Arc::clone(&state.app_state));
     let result = reader
         .list_attachments(req.provider, &req.ticket_id)
@@ -84,8 +113,10 @@ pub async fn list_ticket_attachments_http(
 
 pub async fn fetch_ticket_attachment_http(
     State(state): State<HttpServerState>,
+    headers: HeaderMap,
     Json(req): Json<TicketAttachmentFetchRequest>,
 ) -> Result<Json<TicketAttachmentFetchResponse>, TicketAttachmentHttpError> {
+    authorize_ticket_attachment_access(&state, &headers, req.provider).await?;
     let pointer = TicketAttachmentContentPointer::from_id(&req.content_pointer)?;
     let reader = IntegrationTicketAttachmentReader::new(Arc::clone(&state.app_state));
     let store = TicketAttachmentRuntimeStore::new(state.app_state.attachment_storage_path.clone());
@@ -93,11 +124,92 @@ pub async fn fetch_ticket_attachment_http(
         fetch_ticket_attachment_content(&reader, &store, req.provider, &req.ticket_id, &pointer)
             .await?;
 
-    Ok(Json(fetch_response(result)))
+    Ok(Json(fetch_response_with_inline_text(result).await))
+}
+
+/// Authorize a ticket attachment request.
+///
+/// Jira attachments share the Atlassian role-tiered gate (`authorize()`); the
+/// tier is re-derived per request from the run's persisted `routing_role`, so
+/// this stays independent of MCP spawn-time tool filtering. Linear and
+/// ClickUp attachments are not part of the Atlassian tier system today, so
+/// they require the same trusted, live caller-run identity plus the
+/// canonical worker/coder grant — never a fall-through with no check at all.
+async fn authorize_ticket_attachment_access(
+    state: &HttpServerState,
+    headers: &HeaderMap,
+    provider: TicketAttachmentProvider,
+) -> Result<(), TicketAttachmentHttpError> {
+    match provider {
+        TicketAttachmentProvider::Jira => {
+            authorize(state, headers, AtlassianMcpAccess::Read).await?;
+            Ok(())
+        }
+        TicketAttachmentProvider::Linear | TicketAttachmentProvider::ClickUp => {
+            verify_trusted_ticket_attachment_caller(state, headers).await
+        }
+    }
+}
+
+async fn verify_trusted_ticket_attachment_caller(
+    state: &HttpServerState,
+    headers: &HeaderMap,
+) -> Result<(), TicketAttachmentHttpError> {
+    let conversation_id =
+        trusted_ticket_attachment_header(headers, "x-ralphx-conversation-id")?
+            .parse::<ChatConversationId>()
+            .map_err(|_| {
+                TicketAttachmentHttpError::CallerUnauthorized(
+                    TicketAttachmentCallerRejection::MissingIdentity,
+                )
+            })?;
+    let run_id = AgentRunId::from_string(trusted_ticket_attachment_header(
+        headers,
+        "x-ralphx-agent-run-id",
+    )?);
+
+    let run = resolve_live_caller_run(&state.app_state.agent_run_repo, &conversation_id, &run_id)
+        .await
+        .map_err(|_| {
+            TicketAttachmentHttpError::CallerUnauthorized(
+                TicketAttachmentCallerRejection::Untrusted,
+            )
+        })?;
+
+    let is_canonical_grantee = run
+        .agent_name
+        .as_deref()
+        .map(crate::infrastructure::agents::claude::canonical_short_agent_name)
+        .is_some_and(|name| TICKET_ATTACHMENT_CANONICAL_GRANTEES.contains(&name));
+    if !is_canonical_grantee {
+        return Err(TicketAttachmentHttpError::CallerUnauthorized(
+            TicketAttachmentCallerRejection::Untrusted,
+        ));
+    }
+    Ok(())
+}
+
+fn trusted_ticket_attachment_header(
+    headers: &HeaderMap,
+    name: &str,
+) -> Result<String, TicketAttachmentHttpError> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or(TicketAttachmentHttpError::CallerUnauthorized(
+            TicketAttachmentCallerRejection::MissingIdentity,
+        ))
 }
 
 pub(super) fn fetch_response(result: TicketAttachmentFetchResult) -> TicketAttachmentFetchResponse {
     let pointer = result.descriptor.content_pointer.id().to_string();
+    let content_path = result
+        .location
+        .as_ref()
+        .map(|location| location.path().display().to_string());
     TicketAttachmentFetchResponse {
         attachment: result.descriptor,
         content: TicketAttachmentContentReference {
@@ -105,8 +217,42 @@ pub(super) fn fetch_response(result: TicketAttachmentFetchResult) -> TicketAttac
             id: pointer,
             trust: "untrusted_external_content",
             available: true,
+            content_path,
+            content_text: None,
         },
     }
+}
+
+pub(super) async fn fetch_response_with_inline_text(
+    result: TicketAttachmentFetchResult,
+) -> TicketAttachmentFetchResponse {
+    let inline_text = match (
+        &result.location,
+        is_inline_text_eligible(result.descriptor.media_type.as_deref()),
+    ) {
+        (Some(location), true) => read_inline_ticket_attachment_text(location.path()).await,
+        _ => None,
+    };
+    let mut response = fetch_response(result);
+    response.content.content_text = inline_text;
+    response
+}
+
+fn is_inline_text_eligible(media_type: Option<&str>) -> bool {
+    media_type.is_some_and(|value| value.to_ascii_lowercase().starts_with("text/"))
+}
+
+/// Best-effort inline preview read of an already-persisted, already
+/// containment-checked attachment location. Never a new path sink: `path`
+/// always comes from a [`crate::application::ticket_attachment::TicketAttachmentContentLocation`]
+/// produced by the existing runtime store, never from request input.
+async fn read_inline_ticket_attachment_text(path: &Path) -> Option<String> {
+    let metadata = tokio::fs::metadata(path).await.ok()?;
+    if metadata.len() > TICKET_ATTACHMENT_INLINE_TEXT_MAX_BYTES {
+        return None;
+    }
+    let bytes = tokio::fs::read(path).await.ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 struct IntegrationTicketAttachmentReader {
@@ -523,18 +669,65 @@ async fn download_ticket_attachment_bytes(
     BoundedTicketAttachmentBytes::new(bytes)
 }
 
+/// Why a ticket attachment request was refused or failed.
 #[derive(Debug)]
-pub struct TicketAttachmentHttpError(TicketAttachmentError);
+pub enum TicketAttachmentHttpError {
+    /// The provider/storage layer rejected the request or content.
+    Attachment(TicketAttachmentError),
+    /// The Jira/Atlassian role-tiered gate refused the caller.
+    Atlassian(AtlassianMcpHttpError),
+    /// The Linear/ClickUp trusted-caller identity check refused the caller.
+    CallerUnauthorized(TicketAttachmentCallerRejection),
+}
+
+/// Why the lightweight (non-Atlassian) trusted-caller check refused a
+/// Linear/ClickUp ticket attachment request.
+#[derive(Debug)]
+pub enum TicketAttachmentCallerRejection {
+    /// Transport identity headers were missing or unusable.
+    MissingIdentity,
+    /// The transport-supplied run is not a live, correctly bound caller.
+    Untrusted,
+}
 
 impl From<TicketAttachmentError> for TicketAttachmentHttpError {
     fn from(error: TicketAttachmentError) -> Self {
-        Self(error)
+        Self::Attachment(error)
+    }
+}
+
+impl From<AtlassianMcpHttpError> for TicketAttachmentHttpError {
+    fn from(error: AtlassianMcpHttpError) -> Self {
+        Self::Atlassian(error)
     }
 }
 
 impl IntoResponse for TicketAttachmentHttpError {
     fn into_response(self) -> axum::response::Response {
-        let (status, error, details) = match self.0 {
+        let error = match self {
+            Self::Atlassian(error) => return error.into_response(),
+            Self::CallerUnauthorized(rejection) => {
+                let (status, error, details) = match rejection {
+                    TicketAttachmentCallerRejection::MissingIdentity => (
+                        StatusCode::UNAUTHORIZED,
+                        "ticket_attachment_missing_identity",
+                        "Ticket attachment tools require trusted runtime identity.",
+                    ),
+                    TicketAttachmentCallerRejection::Untrusted => (
+                        StatusCode::UNAUTHORIZED,
+                        "ticket_attachment_untrusted_caller",
+                        "Ticket attachment tools require a live caller run bound to this conversation.",
+                    ),
+                };
+                return (
+                    status,
+                    Json(TicketAttachmentErrorResponse { error, details }),
+                )
+                    .into_response();
+            }
+            Self::Attachment(error) => error,
+        };
+        let (status, error, details) = match error {
             TicketAttachmentError::EmptyField { .. }
             | TicketAttachmentError::FieldTooLarge { .. }
             | TicketAttachmentError::UnsafeField { .. }

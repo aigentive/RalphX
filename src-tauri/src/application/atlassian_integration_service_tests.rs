@@ -138,6 +138,8 @@ struct TestAtlassianClient {
     list_statuses_keys: Mutex<Vec<String>>,
     /// Recorded `(project_key, limit)` tuples for `list_jira_project_issues`.
     list_issues_calls: Mutex<Vec<(String, usize)>>,
+    /// Recorded `(sprint_id, limit)` tuples for `list_jira_sprint_issues`.
+    list_sprint_issues_calls: Mutex<Vec<(String, usize)>>,
     /// Recorded composer references fetched through `fetch_resource_content` /
     /// URL resolution.
     fetches: Mutex<Vec<ComposerIntegrationReference>>,
@@ -205,6 +207,10 @@ impl AtlassianApiClient for TestAtlassianClient {
             title: "Example issue".to_string(),
             url: Some("https://example.atlassian.net/browse/PROJ-1".to_string()),
             excerpt: Some("Example excerpt".to_string()),
+            status: None,
+            issue_type: None,
+            assignee: None,
+            updated_at: None,
         }])
     }
 
@@ -257,6 +263,11 @@ impl AtlassianApiClient for TestAtlassianClient {
             acceptance_criteria_text: None,
             comments: Vec::new(),
             attachments: Vec::new(),
+            issue_type: None,
+            labels: Vec::new(),
+            priority: None,
+            parent_key: None,
+            children: Vec::new(),
         })
     }
 
@@ -336,6 +347,34 @@ impl AtlassianApiClient for TestAtlassianClient {
             updated: None,
             priority: None,
             url: None,
+        }])
+    }
+
+    async fn list_jira_sprint_issues(
+        &self,
+        auth: &AtlassianAuthContext,
+        sprint_id: &str,
+        limit: usize,
+    ) -> Result<Vec<AtlassianResourceSummary>, String> {
+        self.assert_api_token_auth(auth).await;
+        if let Some(error) = self.error.lock().await.clone() {
+            return Err(error);
+        }
+        self.list_sprint_issues_calls
+            .lock()
+            .await
+            .push((sprint_id.to_string(), limit));
+        Ok(vec![AtlassianResourceSummary {
+            kind: AtlassianResourceKind::Jira,
+            id: "PROJ-1".to_string(),
+            key: Some("PROJ-1".to_string()),
+            title: "Sprint issue".to_string(),
+            url: Some("https://example.atlassian.net/browse/PROJ-1".to_string()),
+            excerpt: None,
+            status: Some("In Progress".to_string()),
+            issue_type: Some("Bug".to_string()),
+            assignee: Some("A. Dev".to_string()),
+            updated_at: Some("2026-08-01T10:00:00.000+0000".to_string()),
         }])
     }
 
@@ -835,6 +874,169 @@ async fn resolve_resource_urls_keeps_inaccessible_resources_unresolved() {
 }
 
 #[tokio::test]
+async fn resolve_resource_urls_converts_jira_board_url_with_reference_kind_marker() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let results = service
+        .resolve_resource_urls(&[
+            "https://example.atlassian.net/jira/software/projects/RX/boards/12".to_string(),
+        ])
+        .await
+        .expect("url resolution");
+
+    assert_eq!(results.len(), 1);
+    let board = results[0].resource.as_ref().expect("board resource");
+    assert_eq!(board.kind, AtlassianResourceKind::Jira);
+    assert_eq!(board.id, "12");
+    assert_eq!(results[0].reference_kind.as_deref(), Some("jira_board"));
+
+    let fetches = client.fetches.lock().await;
+    assert_eq!(fetches.len(), 1);
+    assert_eq!(fetches[0].kind, "jira_board");
+    assert_eq!(fetches[0].id, "12");
+    assert!(fetches[0].key.is_none());
+}
+
+#[tokio::test]
+async fn resolve_resource_urls_rejects_non_numeric_board_id() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let results = service
+        .resolve_resource_urls(&[
+            "https://example.atlassian.net/jira/software/projects/RX/boards/not-a-number"
+                .to_string(),
+        ])
+        .await
+        .expect("url resolution");
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].resource.is_none());
+    assert!(results[0].reference_kind.is_none());
+    assert!(client.fetches.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn resolve_resource_urls_sets_reference_kind_for_plain_jira_and_confluence() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let results = service
+        .resolve_resource_urls(&["https://example.atlassian.net/browse/RX-42".to_string()])
+        .await
+        .expect("url resolution");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].reference_kind.as_deref(), Some("jira"));
+}
+
+#[tokio::test]
+async fn resolve_resource_urls_converts_confluence_whiteboard_url_to_confluence_link() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let results = service
+        .resolve_resource_urls(&[
+            "https://example.atlassian.net/wiki/spaces/OPS/whiteboard/4242".to_string(),
+        ])
+        .await
+        .expect("url resolution");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].reference_kind.as_deref(),
+        Some("confluence_link")
+    );
+    assert!(results[0].resource.is_some());
+
+    let fetches = client.fetches.lock().await;
+    assert_eq!(fetches.len(), 1);
+    assert_eq!(fetches[0].kind, "confluence_link");
+    assert_eq!(fetches[0].id, "4242");
+    assert_eq!(
+        fetches[0].title.as_deref(),
+        Some("Confluence whiteboard in OPS (id 4242)")
+    );
+}
+
+#[tokio::test]
+async fn resolve_resource_urls_converts_confluence_database_url_to_confluence_link() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let results = service
+        .resolve_resource_urls(&[
+            "https://example.atlassian.net/wiki/spaces/OPS/database/7777".to_string(),
+        ])
+        .await
+        .expect("url resolution");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].reference_kind.as_deref(),
+        Some("confluence_link")
+    );
+
+    let fetches = client.fetches.lock().await;
+    assert_eq!(fetches[0].kind, "confluence_link");
+    assert_eq!(fetches[0].id, "7777");
+    assert_eq!(
+        fetches[0].title.as_deref(),
+        Some("Confluence database in OPS (id 7777)")
+    );
+}
+
+#[test]
+fn confluence_page_id_from_uri_distinguishes_pages_from_whiteboards_and_databases() {
+    let page_uri = "https://example.atlassian.net/wiki/spaces/OPS/pages/123456/Deploy-notes"
+        .parse::<hyper::Uri>()
+        .expect("uri");
+    let page_segments = uri_path_segments(&page_uri);
+    assert!(matches!(
+        confluence_page_id_from_uri(&page_uri, &page_segments),
+        Some(ConfluenceUriTarget::Page(id)) if id == "123456"
+    ));
+
+    let whiteboard_uri = "https://example.atlassian.net/wiki/spaces/OPS/whiteboard/4242"
+        .parse::<hyper::Uri>()
+        .expect("uri");
+    let whiteboard_segments = uri_path_segments(&whiteboard_uri);
+    match confluence_page_id_from_uri(&whiteboard_uri, &whiteboard_segments) {
+        Some(ConfluenceUriTarget::Link { id, title }) => {
+            assert_eq!(id, "4242");
+            assert_eq!(title, "Confluence whiteboard in OPS (id 4242)");
+        }
+        other => panic!("expected a Link target, got {other:?}"),
+    }
+
+    let database_uri = "https://example.atlassian.net/wiki/spaces/OPS/database/7777"
+        .parse::<hyper::Uri>()
+        .expect("uri");
+    let database_segments = uri_path_segments(&database_uri);
+    match confluence_page_id_from_uri(&database_uri, &database_segments) {
+        Some(ConfluenceUriTarget::Link { id, title }) => {
+            assert_eq!(id, "7777");
+            assert_eq!(title, "Confluence database in OPS (id 7777)");
+        }
+        other => panic!("expected a Link target, got {other:?}"),
+    }
+}
+
+#[test]
+fn confluence_page_id_from_uri_still_resolves_the_query_param_shorthand_as_a_page() {
+    let uri = "https://example.atlassian.net/wiki/pages/viewpage.action?pageId=987654"
+        .parse::<hyper::Uri>()
+        .expect("uri");
+    let segments = uri_path_segments(&uri);
+
+    assert!(matches!(
+        confluence_page_id_from_uri(&uri, &segments),
+        Some(ConfluenceUriTarget::Page(id)) if id == "987654"
+    ));
+}
+
+#[tokio::test]
 async fn assign_jira_issue_routes_to_client_when_enabled() {
     let client = Arc::new(TestAtlassianClient::default());
     let service = enabled_service(client.clone()).await;
@@ -895,6 +1097,25 @@ async fn list_jira_project_issues_routes_key_and_limit() {
     assert_eq!(
         client.list_issues_calls.lock().await.as_slice(),
         &[("PROJ".to_string(), 75)]
+    );
+}
+
+#[tokio::test]
+async fn list_jira_sprint_issues_routes_sprint_id_and_limit() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let issues = service
+        .list_jira_sprint_issues("91", 50)
+        .await
+        .expect("sprint issues");
+
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].key.as_deref(), Some("PROJ-1"));
+    assert_eq!(issues[0].status.as_deref(), Some("In Progress"));
+    assert_eq!(
+        client.list_sprint_issues_calls.lock().await.as_slice(),
+        &[("91".to_string(), 50)]
     );
 }
 

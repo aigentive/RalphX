@@ -75,6 +75,30 @@ fn tool_names_are_bare_snake_case() {
 }
 
 #[test]
+fn agile_tools_are_granted_at_the_read_tier() {
+    for name in ["jira_list_boards", "jira_list_sprints", "jira_get_sprint_issues"] {
+        assert!(
+            ATLASSIAN_READ_TOOLS.contains(&name),
+            "{name} must be in ATLASSIAN_READ_TOOLS"
+        );
+    }
+}
+
+#[test]
+fn discovery_tools_are_granted_at_the_read_tier() {
+    for name in [
+        "jira_list_comments",
+        "jira_search_users",
+        "confluence_list_spaces",
+    ] {
+        assert!(
+            ATLASSIAN_READ_TOOLS.contains(&name),
+            "{name} must be in ATLASSIAN_READ_TOOLS"
+        );
+    }
+}
+
+#[test]
 fn read_and_write_tool_lists_are_disjoint_and_unique() {
     let mut all: Vec<&str> = ATLASSIAN_READ_TOOLS
         .iter()
