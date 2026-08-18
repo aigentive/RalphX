@@ -892,8 +892,34 @@ jobs:
         run: npm ci
         working-directory: frontend
 
+      # `playwright install --with-deps` shells out to apt-get with no Acquire
+      # timeouts, so a wedged Ubuntu mirror stalls it with no output until the
+      # *job* timeout fires (this check burned its full 20m budget that way).
+      # Bound the apt half exactly like .github/actions/linux-deps does, and
+      # split the browser download — which never touches apt — into its own
+      # step so it still has to succeed.
+      - name: Bound apt fetches
+        shell: bash
+        run: |
+          sudo tee /etc/apt/apt.conf.d/99-ci-acquire-timeouts >/dev/null <<'EOF'
+          Acquire::Retries "3";
+          Acquire::http::Timeout "30";
+          Acquire::https::Timeout "30";
+          EOF
+
+      # Non-fatal on purpose: ubuntu-latest already ships the chromium runtime
+      # libraries, so a mirror blip degrades to the image's preinstalled set in
+      # minutes instead of cancelling the build. The gate is not weakened — a
+      # genuinely missing library still fails the test step below.
+      - name: Install Playwright system dependencies
+        shell: bash
+        run: |
+          timeout --kill-after=30 300 npx playwright install-deps chromium \
+            || echo "::warning::playwright install-deps failed or timed out; continuing with the runner image's preinstalled libraries"
+        working-directory: frontend
+
       - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
         working-directory: frontend
 
       - name: Run chat scroll lifecycle integration test
