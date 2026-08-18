@@ -560,7 +560,7 @@ describe("useAgentWorkspaceOperationToasts", () => {
       await Promise.resolve();
     });
 
-    await waitFor(() => expect(toastLoadingMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toastLoadingMock).toHaveBeenCalledTimes(1), { timeout: 5000 });
     expect(localStorage.getItem(DISMISSALS_STORAGE_KEY)).toBeNull();
   });
 

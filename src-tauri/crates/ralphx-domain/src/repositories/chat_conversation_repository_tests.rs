@@ -175,6 +175,14 @@ impl ChatConversationRepository for MockChatConversationRepository {
         Ok(())
     }
 
+    async fn refresh_provider_session_ref(
+        &self,
+        _id: &ChatConversationId,
+        _session_ref: &ProviderSessionRef,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
     async fn clear_provider_session_ref(&self, _id: &ChatConversationId) -> AppResult<()> {
         Ok(())
     }
