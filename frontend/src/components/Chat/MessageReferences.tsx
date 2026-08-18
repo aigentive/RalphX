@@ -3,6 +3,8 @@ import {
   ExternalLink,
   FileText,
   FolderOpen,
+  Kanban,
+  Link2,
   ScrollText,
   Ticket,
 } from "lucide-react";
@@ -73,8 +75,10 @@ export function MessageReferences({
       })}
       {integrationReferences.map((reference) => {
         const isJira = reference.kind === "jira";
+        const isJiraBoard = reference.kind === "jira_board";
         const isLinear = reference.kind === "linear";
         const isClickUp = reference.kind === "clickup";
+        const isConfluenceLink = reference.kind === "confluence_link";
         const isGranola = reference.provider === "granola" && reference.kind === "note";
         const ticketProvider = isClickUp
           ? "clickup"
@@ -99,14 +103,27 @@ export function MessageReferences({
             ? "Linear"
             : isJira
               ? "Jira"
-              : isGranola
-                ? "Granola"
-                : "Confluence";
+              : isJiraBoard
+                ? "Jira Board"
+                : isGranola
+                  ? "Granola"
+                  : isConfluenceLink
+                    ? "Confluence Link"
+                    : "Confluence";
+        const icon = isJira || isLinear || isClickUp
+          ? Ticket
+          : isJiraBoard
+            ? Kanban
+            : isGranola
+              ? ScrollText
+              : isConfluenceLink
+                ? Link2
+                : BookOpen;
         return (
           <ReferenceChip
             key={`integration:${reference.provider}:${reference.kind}:${reference.id}`}
             testId={`message-reference-integration:${reference.kind}:${reference.id}`}
-            icon={isJira || isLinear || isClickUp ? Ticket : isGranola ? ScrollText : BookOpen}
+            icon={icon}
             typeLabel={typeLabel}
             label={label}
             {...(description && description !== label ? { description } : {})}

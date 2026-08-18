@@ -319,11 +319,13 @@ pub use crate::domain::integrations::atlassian_mcp_ops::{
 };
 pub use atlassian_integration_service::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
-    AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
-    AtlassianJiraTransition, AtlassianOAuthAuthorization, AtlassianOAuthResource,
-    AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
-    AtlassianResourceSummary, AtlassianResourceUrlResolution, EmptyAtlassianApiClient,
-    JiraIssueDetail, JiraProjectSummary, JiraStatusSummary, UnavailableAtlassianApiClient,
+    AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraChildIssue,
+    AtlassianJiraComment, AtlassianJiraTransition, AtlassianOAuthAuthorization,
+    AtlassianOAuthResource, AtlassianOAuthTokenResponse, AtlassianResourceContent,
+    AtlassianResourceKind, AtlassianResourceSummary, AtlassianResourceUrlResolution,
+    ConfluenceSpaceSummary, EmptyAtlassianApiClient, JiraCommentsPage, JiraIssueDetail,
+    JiraProjectSummary, JiraStatusSummary, JiraUserSummary, SearchMode,
+    UnavailableAtlassianApiClient,
 };
 pub use chat_attachment_service::ChatAttachmentService;
 pub use chat_resumption::ChatResumptionRunner;

@@ -911,6 +911,11 @@ impl AtlassianApiClient for FakeAtlassianTicketingClient {
             acceptance_criteria_text: None,
             comments: Vec::new(),
             attachments: Vec::new(),
+            issue_type: None,
+            labels: Vec::new(),
+            priority: None,
+            parent_key: None,
+            children: Vec::new(),
         })
     }
 
@@ -2140,6 +2145,10 @@ fn jira_summary_maps_with_empty_metadata_and_provider_state() {
         title: "Investigate flaky merge".to_string(),
         url: Some("https://jira.test/browse/JRA-1".to_string()),
         excerpt: Some("excerpt is ignored by the summary mapper".to_string()),
+        status: None,
+        issue_type: None,
+        assignee: None,
+        updated_at: None,
     });
 
     assert_eq!(summary.ref_.provider, "jira");
@@ -2185,6 +2194,10 @@ fn jira_summary_without_key_keeps_none_key() {
         title: "No key issue".to_string(),
         url: None,
         excerpt: None,
+        status: None,
+        issue_type: None,
+        assignee: None,
+        updated_at: None,
     });
 
     assert!(summary.ref_.key.is_none());
@@ -2313,6 +2326,11 @@ fn jira_content_maps_description_comments_and_attachments() {
             thumbnail_url: Some("https://jira.test/thumb/1".to_string()),
             created_at: Some("2026-06-20T09:45:00Z".to_string()),
         }],
+        issue_type: None,
+        labels: Vec::new(),
+        priority: None,
+        parent_key: None,
+        children: Vec::new(),
     });
 
     // status maps into the ticket state name.
@@ -2382,6 +2400,11 @@ fn jira_content_prefers_description_markdown_over_body() {
         acceptance_criteria_text: None,
         comments: Vec::new(),
         attachments: Vec::new(),
+        issue_type: None,
+        labels: Vec::new(),
+        priority: None,
+        parent_key: None,
+        children: Vec::new(),
     });
 
     assert_eq!(

@@ -10,8 +10,8 @@ use tokio::time::Duration as TokioDuration;
 use uuid::Uuid;
 
 use crate::domain::integrations::{
-    AtlassianAuthMethod, AtlassianIntegrationSettings, AtlassianIntegrationSettingsRepository,
-    IntegrationValidationStatus,
+    AtlassianApiError, AtlassianAuthMethod, AtlassianIntegrationSettings,
+    AtlassianIntegrationSettingsRepository, IntegrationValidationStatus,
 };
 use crate::domain::services::{ComposerIntegrationReference, SecretStore};
 
@@ -28,11 +28,21 @@ use crate::domain::integrations::jira_agile_types::{
 // `application::atlassian_integration_service` importers keep resolving.
 pub use crate::domain::integrations::atlassian_resources::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
-    AtlassianJiraAttachment, AtlassianJiraComment, AtlassianJiraTransition,
-    AtlassianOAuthAuthorization, AtlassianOAuthResource, AtlassianOAuthTokenResponse,
-    AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
-    AtlassianResourceUrlResolution, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
+    AtlassianJiraAttachment, AtlassianJiraChildIssue, AtlassianJiraComment,
+    AtlassianJiraTransition, AtlassianOAuthAuthorization, AtlassianOAuthResource,
+    AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
+    AtlassianResourceSummary, AtlassianResourceUrlResolution, ConfluenceSpaceSummary,
+    JiraCommentsPage, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary, JiraUserSummary,
 };
+
+/// Whether a Jira/Confluence search interprets the caller's `query` as free
+/// text (issue-key/phrase heuristics) or passes it through verbatim as raw
+/// JQL/CQL. See [`AtlassianIntegrationService::search_resources_with_mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchMode {
+    Smart,
+    RawQuery,
+}
 
 const ATLASSIAN_TOKEN_SECRET_REF: &str = "integrations/atlassian/default/api-token";
 const ATLASSIAN_OAUTH_CLIENT_SECRET_REF: &str =
@@ -112,6 +122,11 @@ impl AtlassianApiClient for EmptyAtlassianApiClient {
             acceptance_criteria_text: None,
             comments: Vec::new(),
             attachments: Vec::new(),
+            issue_type: None,
+            labels: Vec::new(),
+            priority: None,
+            parent_key: None,
+            children: Vec::new(),
         })
     }
 
@@ -626,10 +641,36 @@ impl AtlassianIntegrationService {
         query: &str,
         limit: usize,
     ) -> Result<Vec<AtlassianResourceSummary>, String> {
-        let auth = self.enabled_auth_context().await?;
-        self.client
-            .search(&auth, kind, query, limit.clamp(1, 25))
+        self.search_resources_with_mode(kind, query, limit, SearchMode::Smart)
             .await
+            .map_err(String::from)
+    }
+
+    /// Single entry point for both smart (phrase/JQL-inferred) and raw
+    /// JQL/CQL pass-through search, so raw mode reuses the same auth/limit
+    /// handling instead of duplicating it in a second method. Raw-mode
+    /// errors keep the Atlassian HTTP status so callers can surface it
+    /// verbatim instead of collapsing every failure into a flat 400.
+    pub async fn search_resources_with_mode(
+        &self,
+        kind: AtlassianResourceKind,
+        query: &str,
+        limit: usize,
+        mode: SearchMode,
+    ) -> Result<Vec<AtlassianResourceSummary>, AtlassianApiError> {
+        let auth = self
+            .enabled_auth_context()
+            .await
+            .map_err(AtlassianApiError::transport)?;
+        let limit = limit.clamp(1, 25);
+        match mode {
+            SearchMode::Smart => self
+                .client
+                .search(&auth, kind, query, limit)
+                .await
+                .map_err(AtlassianApiError::transport),
+            SearchMode::RawQuery => self.client.search_raw(&auth, kind, query, limit).await,
+        }
     }
 
     pub async fn fetch_resource_content(
@@ -653,18 +694,27 @@ impl AtlassianIntegrationService {
             if input_url.is_empty() {
                 continue;
             }
-            let resource = match reference_from_atlassian_url(&input_url, &site_origin) {
-                Some(reference) => self
-                    .client
-                    .fetch(&auth, &reference)
-                    .await
-                    .ok()
-                    .map(resource_summary_from_content),
-                None => None,
-            };
+            let (resource, reference_kind) =
+                match reference_from_atlassian_url(&input_url, &site_origin) {
+                    Some(reference) => {
+                        let reference_kind = reference.kind.clone();
+                        let resource = self
+                            .client
+                            .fetch(&auth, &reference)
+                            .await
+                            .ok()
+                            .map(resource_summary_from_content);
+                        match resource {
+                            Some(resource) => (Some(resource), Some(reference_kind)),
+                            None => (None, None),
+                        }
+                    }
+                    None => (None, None),
+                };
             results.push(AtlassianResourceUrlResolution {
                 input_url,
                 resource,
+                reference_kind,
             });
         }
 
@@ -682,6 +732,17 @@ impl AtlassianIntegrationService {
         let auth = self.enabled_auth_context().await?;
         self.client
             .clear_jira_issue_assignee(&auth, issue_key)
+            .await
+    }
+
+    pub async fn assign_jira_issue_to_account(
+        &self,
+        issue_key: &str,
+        account_id: &str,
+    ) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .assign_jira_issue_to_account(&auth, issue_key, account_id)
             .await
     }
 
@@ -799,6 +860,73 @@ impl AtlassianIntegrationService {
     ) -> Result<Vec<JiraSprintSummary>, String> {
         let auth = self.enabled_auth_context().await?;
         self.client.list_jira_active_sprints(&auth, board_id).await
+    }
+
+    /// Lists issues in a Jira Software sprint as enriched summaries, using the
+    /// same shape [`Self::search_resources_with_mode`] returns
+    /// (status/type/assignee/updated), capped at `limit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Jira is disabled, authentication cannot be loaded,
+    /// or Jira rejects or returns an invalid paginated response.
+    pub async fn list_jira_sprint_issues(
+        &self,
+        sprint_id: &str,
+        limit: usize,
+    ) -> Result<Vec<AtlassianResourceSummary>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .list_jira_sprint_issues(&auth, sprint_id, limit)
+            .await
+    }
+
+    /// Lists comments on a Jira issue with the provider's true total.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Jira is disabled, authentication cannot be loaded,
+    /// or Jira rejects the request.
+    pub async fn list_jira_comments(
+        &self,
+        issue_key: &str,
+        start_at: usize,
+        max_results: usize,
+    ) -> Result<JiraCommentsPage, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .list_jira_comments(&auth, issue_key, start_at, max_results)
+            .await
+    }
+
+    /// Lists Confluence spaces (v2 API) visible to the connected user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Confluence is disabled, authentication cannot be
+    /// loaded, or Confluence rejects the request.
+    pub async fn list_confluence_spaces(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ConfluenceSpaceSummary>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_confluence_spaces(&auth, limit).await
+    }
+
+    /// Bounded Jira user search (max 20 results), used to resolve an
+    /// `accountId` for `jira_assign_issue`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Jira is disabled, authentication cannot be loaded,
+    /// or Jira rejects the request.
+    pub async fn search_jira_users(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<JiraUserSummary>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.search_jira_users(&auth, query, limit).await
     }
 
     pub async fn expand_references_for_prompt(
@@ -1230,17 +1358,40 @@ fn reference_from_atlassian_url(
             include_transcript: None,
         });
     }
-    let page_id = confluence_page_id_from_uri(&uri, &segments)?;
-    Some(ComposerIntegrationReference {
-        provider: "atlassian".to_string(),
-        kind: AtlassianResourceKind::Confluence.as_str().to_string(),
-        id: page_id,
-        key: None,
-        title: None,
-        url: Some(raw_url.to_string()),
-        summary_excerpt: None,
-        include_transcript: None,
-    })
+    if let Some(board_id) = jira_board_id_from_path(&segments) {
+        return Some(ComposerIntegrationReference {
+            provider: "atlassian".to_string(),
+            kind: "jira_board".to_string(),
+            id: board_id,
+            key: None,
+            title: None,
+            url: Some(raw_url.to_string()),
+            summary_excerpt: None,
+            include_transcript: None,
+        });
+    }
+    match confluence_page_id_from_uri(&uri, &segments)? {
+        ConfluenceUriTarget::Page(page_id) => Some(ComposerIntegrationReference {
+            provider: "atlassian".to_string(),
+            kind: AtlassianResourceKind::Confluence.as_str().to_string(),
+            id: page_id,
+            key: None,
+            title: None,
+            url: Some(raw_url.to_string()),
+            summary_excerpt: None,
+            include_transcript: None,
+        }),
+        ConfluenceUriTarget::Link { id, title } => Some(ComposerIntegrationReference {
+            provider: "atlassian".to_string(),
+            kind: "confluence_link".to_string(),
+            id,
+            key: None,
+            title: Some(title),
+            url: Some(raw_url.to_string()),
+            summary_excerpt: None,
+            include_transcript: None,
+        }),
+    }
 }
 
 fn uri_origin(uri: &hyper::Uri) -> Option<String> {
@@ -1284,7 +1435,33 @@ fn normalize_jira_issue_key(value: &str) -> Option<String> {
     Some(format!("{}-{number}", project.to_ascii_uppercase()))
 }
 
-fn confluence_page_id_from_uri(uri: &hyper::Uri, segments: &[&str]) -> Option<String> {
+fn jira_board_id_from_path(segments: &[&str]) -> Option<String> {
+    let board_id = segments
+        .windows(2)
+        .find(|window| window[0] == "boards")
+        .map(|window| window[1])?;
+    normalize_jira_board_id(board_id)
+}
+
+fn normalize_jira_board_id(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || !trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// What a `/wiki/...` URL on the Confluence site resolves to: an ordinary
+/// fetchable page id, or a whiteboard/database link the Confluence API
+/// cannot expand inline (rendered as a titled, not-expandable reference by
+/// the `"confluence_link"` fetch dispatch arm).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConfluenceUriTarget {
+    Page(String),
+    Link { id: String, title: String },
+}
+
+fn confluence_page_id_from_uri(uri: &hyper::Uri, segments: &[&str]) -> Option<ConfluenceUriTarget> {
     if segments.first().copied() != Some("wiki") {
         return None;
     }
@@ -1294,11 +1471,44 @@ fn confluence_page_id_from_uri(uri: &hyper::Uri, segments: &[&str]) -> Option<St
         .map(|window| window[1])
         .and_then(normalize_confluence_page_id)
     {
-        return Some(page_id);
+        return Some(ConfluenceUriTarget::Page(page_id));
+    }
+    if let Some(target) = confluence_link_target_from_segments(segments) {
+        return Some(target);
     }
     uri.query()
         .and_then(confluence_page_id_from_query)
         .and_then(normalize_confluence_page_id)
+        .map(ConfluenceUriTarget::Page)
+}
+
+/// Whiteboards and databases live at `/wiki/spaces/<space>/{whiteboard,database}/<id>`
+/// and have no expandable body via the Confluence page API, so they resolve to
+/// a link-only target instead of a fetchable `Page`.
+fn confluence_link_target_from_segments(segments: &[&str]) -> Option<ConfluenceUriTarget> {
+    for (marker, label) in [("whiteboard", "whiteboard"), ("database", "database")] {
+        let Some(id) = segments
+            .windows(2)
+            .find(|window| window[0] == marker)
+            .map(|window| window[1])
+            .and_then(normalize_confluence_page_id)
+        else {
+            continue;
+        };
+        let title = match confluence_space_key_from_segments(segments) {
+            Some(space) => format!("Confluence {label} in {space} (id {id})"),
+            None => format!("Confluence {label} (id {id})"),
+        };
+        return Some(ConfluenceUriTarget::Link { id, title });
+    }
+    None
+}
+
+fn confluence_space_key_from_segments<'a>(segments: &[&'a str]) -> Option<&'a str> {
+    segments
+        .windows(2)
+        .find(|window| window[0] == "spaces")
+        .map(|window| window[1])
 }
 
 fn normalize_confluence_page_id(value: &str) -> Option<String> {
@@ -1324,6 +1534,10 @@ fn resource_summary_from_content(content: AtlassianResourceContent) -> Atlassian
         title: content.title,
         url: content.url,
         excerpt: None,
+        status: content.status,
+        issue_type: content.issue_type,
+        assignee: content.assignee,
+        updated_at: content.updated_at_remote,
     }
 }
 

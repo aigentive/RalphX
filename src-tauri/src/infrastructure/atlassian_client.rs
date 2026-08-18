@@ -13,21 +13,26 @@ use tokio_util::bytes::Bytes;
 use crate::domain::integrations::{
     AtlassianApiClient, AtlassianApiError, AtlassianAuthContext as ApplicationAtlassianAuthContext,
     AtlassianConnectivity, AtlassianCredential as ApplicationAtlassianCredential,
-    AtlassianJiraAttachment, AtlassianJiraComment, AtlassianJiraTransition, AtlassianOAuthResource,
-    AtlassianOAuthTokenResponse, AtlassianRawMethod, AtlassianResourceContent,
+    AtlassianJiraAttachment, AtlassianJiraChildIssue, AtlassianJiraComment,
+    AtlassianJiraTransition, AtlassianOAuthResource, AtlassianOAuthTokenResponse,
+    AtlassianRawMethod, AtlassianResourceContent,
     AtlassianResourceKind as ApplicationAtlassianResourceKind, AtlassianResourceSummary,
     ConfluencePageContent, ConfluencePageCreateRequest, ConfluencePageUpdateRequest,
-    JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary, JiraIssueCreateRequest,
-    JiraIssueCreated, JiraIssueDetail, JiraIssueUpdateRequest, JiraProjectSummary,
-    JiraSprintSummary, JiraStatusSummary,
+    ConfluenceSpaceSummary, JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary,
+    JiraCommentsPage, JiraIssueCreateRequest, JiraIssueCreated, JiraIssueDetail,
+    JiraIssueUpdateRequest, JiraProjectSummary, JiraSprintSummary, JiraStatusSummary,
+    JiraUserSummary,
 };
 use crate::domain::services::ComposerIntegrationReference;
 
 use super::atlassian_jira_fields::{acceptance_criteria_from_fields, JiraFieldCatalogCache};
 use super::atlassian_mcp_client;
+use super::confluence_secondary;
 use super::jira_agile_client::{
     get_jira_board_configuration, list_jira_active_sprints, list_jira_boards,
+    list_jira_sprint_issues,
 };
+use super::jira_board_context_client;
 
 pub(crate) type JiraAgileAuthContext = AtlassianAuthContext;
 #[cfg(test)]
@@ -247,6 +252,21 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
         }
     }
 
+    async fn search_raw(
+        &self,
+        auth: &AtlassianAuthContext,
+        kind: AtlassianResourceKind,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<AtlassianResourceSummary>, AtlassianApiError> {
+        match kind {
+            AtlassianResourceKind::Jira => search_jira_raw(self, auth, query, limit).await,
+            AtlassianResourceKind::Confluence => {
+                search_confluence_raw(self, auth, query, limit).await
+            }
+        }
+    }
+
     async fn fetch(
         &self,
         auth: &AtlassianAuthContext,
@@ -261,6 +281,10 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
                 fetch_jira(self, auth, reference, &field_ids).await
             }
             "confluence" => fetch_confluence(self, auth, reference).await,
+            "confluence_link" => confluence_secondary::confluence_link_content(reference),
+            "jira_board" => {
+                jira_board_context_client::fetch_jira_board_context(self, auth, reference).await
+            }
             other => Err(format!("Unsupported Atlassian reference kind: {other}")),
         }
     }
@@ -279,6 +303,15 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
         issue_key: &str,
     ) -> Result<(), String> {
         clear_jira_issue_assignee(self, auth, issue_key).await
+    }
+
+    async fn assign_jira_issue_to_account(
+        &self,
+        auth: &AtlassianAuthContext,
+        issue_key: &str,
+        account_id: &str,
+    ) -> Result<(), String> {
+        assign_jira_issue_to_account(self, auth, issue_key, account_id).await
     }
 
     async fn list_jira_issue_transitions(
@@ -363,6 +396,42 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
         board_id: &str,
     ) -> Result<Vec<JiraSprintSummary>, String> {
         list_jira_active_sprints(self, auth, board_id).await
+    }
+
+    async fn list_jira_sprint_issues(
+        &self,
+        auth: &AtlassianAuthContext,
+        sprint_id: &str,
+        limit: usize,
+    ) -> Result<Vec<AtlassianResourceSummary>, String> {
+        list_jira_sprint_issues(self, auth, sprint_id, limit).await
+    }
+
+    async fn list_jira_comments(
+        &self,
+        auth: &AtlassianAuthContext,
+        issue_key: &str,
+        start_at: usize,
+        max_results: usize,
+    ) -> Result<JiraCommentsPage, String> {
+        list_jira_comments(self, auth, issue_key, start_at, max_results).await
+    }
+
+    async fn list_confluence_spaces(
+        &self,
+        auth: &AtlassianAuthContext,
+        limit: usize,
+    ) -> Result<Vec<ConfluenceSpaceSummary>, String> {
+        list_confluence_spaces(self, auth, limit).await
+    }
+
+    async fn search_jira_users(
+        &self,
+        auth: &AtlassianAuthContext,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<JiraUserSummary>, String> {
+        search_jira_users(self, auth, query, limit).await
     }
 
     async fn create_jira_issue(
@@ -539,6 +608,36 @@ async fn search_jira_with_jql<C: AtlassianJsonRequester + ?Sized>(
     let Some(jql) = build_jira_search_jql(query) else {
         return Ok(Vec::new());
     };
+    search_jira_with_jql_string(client, auth, &jql, limit)
+        .await
+        .map_err(String::from)
+}
+
+/// Raw JQL pass-through (gap G1): the caller's string reaches the request
+/// body byte-identical, with no smart-mode rewriting. Errors preserve the
+/// Atlassian HTTP status so malformed JQL surfaces as a real 400, not a
+/// flattened string.
+pub(crate) async fn search_jira_raw<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    jql: &str,
+    limit: usize,
+) -> Result<Vec<AtlassianResourceSummary>, AtlassianApiError> {
+    let jql = jql.trim();
+    if jql.is_empty() {
+        return Err(AtlassianApiError::transport(
+            "Raw JQL query must not be blank",
+        ));
+    }
+    search_jira_with_jql_string(client, auth, jql, limit).await
+}
+
+async fn search_jira_with_jql_string<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    jql: &str,
+    limit: usize,
+) -> Result<Vec<AtlassianResourceSummary>, AtlassianApiError> {
     let value = client
         .request_json(
             Method::POST,
@@ -550,7 +649,7 @@ async fn search_jira_with_jql<C: AtlassianJsonRequester + ?Sized>(
             request_auth(auth),
             Some(serde_json::json!({
                 "jql": jql,
-                "fields": ["summary", "status"],
+                "fields": ["summary", "status", "issuetype", "assignee", "updated"],
                 "maxResults": limit,
             })),
         )
@@ -670,13 +769,29 @@ fn jira_summary_from_issue_value(
     site_url: &str,
 ) -> Option<AtlassianResourceSummary> {
     let key = issue.get("key").and_then(Value::as_str)?;
-    let title = issue
-        .get("fields")
+    let fields = issue.get("fields");
+    let title = fields
         .and_then(|fields| fields.get("summary"))
         .and_then(Value::as_str)
         .unwrap_or(key)
         .to_string();
-    Some(jira_summary(key, title, site_url))
+    let mut summary = jira_summary(key, title, site_url);
+    summary.status = fields
+        .and_then(|fields| fields.get("status"))
+        .and_then(|status| status.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    summary.issue_type = fields
+        .and_then(|fields| fields.get("issuetype"))
+        .and_then(|issue_type| issue_type.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    summary.assignee = fields.and_then(|fields| jira_user_display_name(fields.get("assignee")));
+    summary.updated_at = fields
+        .and_then(|fields| fields.get("updated"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some(summary)
 }
 
 fn jira_summary(key: &str, title: String, site_url: &str) -> AtlassianResourceSummary {
@@ -687,6 +802,10 @@ fn jira_summary(key: &str, title: String, site_url: &str) -> AtlassianResourceSu
         title,
         url: Some(format!("{site_url}/browse/{key}")),
         excerpt: None,
+        status: None,
+        issue_type: None,
+        assignee: None,
+        updated_at: None,
     }
 }
 
@@ -770,6 +889,47 @@ pub(crate) async fn search_confluence<C: AtlassianJsonRequester + ?Sized>(
     Ok(results)
 }
 
+/// Raw CQL pass-through (gap G1): the caller's query string is submitted
+/// unmodified to the same v1 search endpoint, skipping the smart-mode page-id
+/// short-circuit and dedup merge. Errors preserve the Atlassian HTTP status.
+pub(crate) async fn search_confluence_raw<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    cql: &str,
+    limit: usize,
+) -> Result<Vec<AtlassianResourceSummary>, AtlassianApiError> {
+    let cql = cql.trim();
+    if cql.is_empty() {
+        return Err(AtlassianApiError::transport(
+            "Raw CQL query must not be blank",
+        ));
+    }
+    let value = client
+        .request_json(
+            Method::GET,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Confluence,
+                &format!(
+                    "/wiki/rest/api/search?cql={}&limit={limit}",
+                    percent_encode(cql)
+                ),
+            ),
+            request_auth(auth),
+            None,
+        )
+        .await?;
+    let site_url = &auth.site_url;
+    Ok(value
+        .get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|result| confluence_summary_from_search_result(result, site_url))
+        .take(limit)
+        .collect())
+}
+
 async fn fetch_confluence_summary_by_id<C: AtlassianJsonRequester + ?Sized>(
     client: &C,
     auth: &AtlassianAuthContext,
@@ -841,6 +1001,14 @@ fn confluence_summary_from_content(
         .get("_links")
         .and_then(|links| links.get("webui"))
         .and_then(Value::as_str);
+    // Not exposed by an unexpanded CQL search or the plain v2 page GET today;
+    // populated only when Atlassian includes a version timestamp on the
+    // response, otherwise stays None.
+    let updated_at = content
+        .get("version")
+        .and_then(|version| version.get("when").or_else(|| version.get("createdAt")))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     Some(AtlassianResourceSummary {
         kind: AtlassianResourceKind::Confluence,
         id: id.to_string(),
@@ -848,6 +1016,10 @@ fn confluence_summary_from_content(
         title: title.to_string(),
         url: webui.map(|path| format!("{site_url}/wiki{path}")),
         excerpt: None,
+        status: None,
+        issue_type: None,
+        assignee: None,
+        updated_at,
     })
 }
 
@@ -858,7 +1030,7 @@ pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
     acceptance_criteria_field_ids: &[String],
 ) -> Result<AtlassianResourceContent, String> {
     let key = reference.key.as_deref().unwrap_or(&reference.id);
-    const JIRA_BASE_ISSUE_FIELDS: [&str; 8] = [
+    const JIRA_BASE_ISSUE_FIELDS: [&str; 13] = [
         "summary",
         "status",
         "description",
@@ -867,6 +1039,11 @@ pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
         "updated",
         "comment",
         "attachment",
+        "issuetype",
+        "labels",
+        "priority",
+        "parent",
+        "subtasks",
     ];
     let requested_fields = JIRA_BASE_ISSUE_FIELDS
         .iter()
@@ -912,6 +1089,29 @@ pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
         .get("updated")
         .and_then(Value::as_str)
         .map(str::to_string);
+    let issue_type = fields
+        .get("issuetype")
+        .and_then(|issue_type| issue_type.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let labels = fields
+        .get("labels")
+        .and_then(Value::as_array)
+        .map(|labels| {
+            labels
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let priority = fields
+        .get("priority")
+        .and_then(|priority| priority.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let description = fields
         .get("description")
         .filter(|value| !value.is_null())
@@ -942,8 +1142,12 @@ pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
                 .as_deref()
                 .and_then(extract_acceptance_criteria)
         });
-    let comments = fields
-        .get("comment")
+    let comment_field = fields.get("comment");
+    let comment_total = comment_field
+        .and_then(|comment| comment.get("total"))
+        .and_then(Value::as_u64)
+        .map(|total| total as usize);
+    let comments = comment_field
         .and_then(|comment| comment.get("comments"))
         .and_then(Value::as_array)
         .map(|comments| {
@@ -966,6 +1170,28 @@ pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let parent_field = fields.get("parent");
+    let parent_key = parent_field
+        .and_then(|parent| parent.get("key"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let parent_summary = parent_field
+        .and_then(|parent| parent.get("fields"))
+        .and_then(|fields| fields.get("summary"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let subtasks = fields
+        .get("subtasks")
+        .and_then(Value::as_array)
+        .map(|subtasks| {
+            subtasks
+                .iter()
+                .filter_map(jira_child_issue_from_value)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let mut body = Vec::new();
     push_field(&mut body, "Key", key);
     push_field(&mut body, "Summary", &title);
@@ -974,6 +1200,38 @@ pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
     }
     if let Some(updated) = updated_at_remote.as_deref() {
         push_field(&mut body, "Updated", updated);
+    }
+    if let Some(issue_type) = issue_type.as_deref() {
+        push_field(&mut body, "Type", issue_type);
+    }
+    if let Some(assignee) = assignee.as_deref() {
+        push_field(&mut body, "Assignee", assignee);
+    }
+    if let Some(reporter) = reporter.as_deref() {
+        push_field(&mut body, "Reporter", reporter);
+    }
+    if let Some(priority) = priority.as_deref() {
+        push_field(&mut body, "Priority", priority);
+    }
+    if !labels.is_empty() {
+        push_field(&mut body, "Labels", &labels.join(", "));
+    }
+    if let Some(parent_key) = parent_key.as_deref() {
+        let parent_line = match parent_summary.as_deref() {
+            Some(summary) => format!("Parent: {parent_key} — {summary}"),
+            None => format!("Parent: {parent_key}"),
+        };
+        body.push(parent_line);
+    }
+    if !subtasks.is_empty() {
+        body.push(format!("Subtasks ({}):", subtasks.len()));
+        for subtask in &subtasks {
+            let status = subtask.status.as_deref().unwrap_or("Unknown status");
+            body.push(format!(
+                "- {} — {} ({status})",
+                subtask.key, subtask.summary
+            ));
+        }
     }
     if let Some(acceptance_criteria) = acceptance_criteria_markdown
         .as_deref()
@@ -986,6 +1244,18 @@ pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
         body.push("Description:".to_string());
         body.push(description.to_string());
     }
+    if !attachments.is_empty() {
+        body.push(format!("Attachments ({}):", attachments.len()));
+        for attachment in &attachments {
+            let mime_type = attachment.mime_type.as_deref().unwrap_or("unknown type");
+            let size = attachment
+                .size
+                .map(human_readable_size)
+                .unwrap_or_else(|| "unknown size".to_string());
+            body.push(format!("- {} ({mime_type}, {size})", attachment.filename));
+        }
+        body.push("(readable via list_ticket_attachments / fetch_ticket_attachment)".to_string());
+    }
     const JIRA_PROMPT_COMMENT_LIMIT: usize = 5;
     for comment in comments.iter().rev().take(JIRA_PROMPT_COMMENT_LIMIT).rev() {
         let author = comment.author.as_deref().unwrap_or("Jira user");
@@ -997,12 +1267,41 @@ pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
         body.push(format!("Comment by {author} ({timestamp}):"));
         body.push(comment.body_markdown.clone());
     }
-    if comments.len() > JIRA_PROMPT_COMMENT_LIMIT {
+    let total_comments = comment_total.unwrap_or(comments.len());
+    if total_comments > JIRA_PROMPT_COMMENT_LIMIT {
         body.push(format!(
-            "({} older comments omitted)",
-            comments.len() - JIRA_PROMPT_COMMENT_LIMIT
+            "({total_comments} total comments; showing latest {JIRA_PROMPT_COMMENT_LIMIT} — jira_list_comments for more)"
         ));
     }
+    let children = if issue_type
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("epic"))
+    {
+        match fetch_jira_epic_children(client, auth, key).await {
+            Ok((children, total)) => {
+                body.push(format!(
+                    "Child issues ({} shown of {total}):",
+                    children.len()
+                ));
+                for child in &children {
+                    let status = child.status.as_deref().unwrap_or("Unknown status");
+                    body.push(format!("- {} — {} ({status})", child.key, child.summary));
+                }
+                children
+            }
+            Err(err) => {
+                tracing::warn!(
+                    issue_key = key,
+                    error = %err,
+                    "Jira epic child-issue lookup failed"
+                );
+                body.push("Child issues: unavailable".to_string());
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
     Ok(AtlassianResourceContent {
         kind: AtlassianResourceKind::Jira,
         id: key.to_string(),
@@ -1020,7 +1319,107 @@ pub(crate) async fn fetch_jira<C: AtlassianJsonRequester + ?Sized>(
         acceptance_criteria_text,
         comments,
         attachments,
+        issue_type,
+        labels,
+        priority,
+        parent_key,
+        children,
     })
+}
+
+/// Cap on the epic-children secondary lookup (gap G4/Phase 3.1): a JQL page
+/// large enough for prompt context without unbounded growth.
+const EPIC_CHILDREN_LIMIT: usize = 25;
+
+/// One extra capped JQL call for Epic issues only, rendering direct children
+/// (`parent = KEY`). Failure here must never fail the whole Jira expansion —
+/// callers render a "Child issues: unavailable" line instead.
+async fn fetch_jira_epic_children<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    key: &str,
+) -> Result<(Vec<AtlassianJiraChildIssue>, usize), AtlassianApiError> {
+    let value = client
+        .request_json(
+            Method::POST,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                "/rest/api/3/search/jql",
+            ),
+            request_auth(auth),
+            Some(serde_json::json!({
+                "jql": format!("parent = {key} ORDER BY rank"),
+                "fields": ["summary", "status", "issuetype"],
+                "maxResults": EPIC_CHILDREN_LIMIT,
+            })),
+        )
+        .await?;
+    let issues = value
+        .get("issues")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let total = value
+        .get("total")
+        .and_then(Value::as_u64)
+        .map(|total| total as usize)
+        .unwrap_or(issues.len());
+    let children = issues
+        .iter()
+        .filter_map(jira_child_issue_from_value)
+        .take(EPIC_CHILDREN_LIMIT)
+        .collect::<Vec<_>>();
+    Ok((children, total))
+}
+
+fn jira_child_issue_from_value(value: &Value) -> Option<AtlassianJiraChildIssue> {
+    let key = value
+        .get("key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let issue_fields = value.get("fields");
+    let summary = issue_fields
+        .and_then(|fields| fields.get("summary"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("(no summary)")
+        .to_string();
+    let status = issue_fields
+        .and_then(|fields| fields.get("status"))
+        .and_then(|status| status.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let issue_type = issue_fields
+        .and_then(|fields| fields.get("issuetype"))
+        .and_then(|issue_type| issue_type.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some(AtlassianJiraChildIssue {
+        key,
+        summary,
+        status,
+        issue_type,
+    })
+}
+
+/// Render a byte count as a short human-readable size (`"240 KB"`), used only
+/// for the rendered Jira attachments section — never for byte-accurate math.
+fn human_readable_size(bytes: i64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if bytes <= 0 {
+        return "0 B".to_string();
+    }
+    let mut value = bytes as f64;
+    let mut unit_index = 0;
+    while value >= 1024.0 && unit_index < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit_index += 1;
+    }
+    format!("{value:.0} {}", UNITS[unit_index])
 }
 
 pub(crate) async fn assign_jira_issue_to_current_user<C: AtlassianJsonRequester + ?Sized>(
@@ -1093,6 +1492,182 @@ pub(crate) async fn clear_jira_issue_assignee<C: AtlassianJsonRequester + ?Sized
         )
         .await?;
     Ok(())
+}
+
+/// Assign a Jira issue to a specific account. Higher precedence than
+/// `assign_to_me` in `jira_assign_issue`'s resolution order.
+pub(crate) async fn assign_jira_issue_to_account<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    issue_key: &str,
+    account_id: &str,
+) -> Result<(), String> {
+    let issue_key = required_trimmed(issue_key, "Jira issue key is required")?;
+    let account_id = required_trimmed(account_id, "Jira accountId is required")?;
+    client
+        .request_json(
+            Method::PUT,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                &format!(
+                    "/rest/api/3/issue/{}/assignee",
+                    percent_encode_path_segment(issue_key)
+                ),
+            ),
+            request_auth(auth),
+            Some(serde_json::json!({ "accountId": account_id })),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Upper bound on `jira_search_users` results, mirroring the MCP tool schema.
+const JIRA_USER_SEARCH_LIMIT: usize = 20;
+
+/// Bounded Jira user search, used to resolve an `accountId` for
+/// `jira_assign_issue`.
+pub(crate) async fn search_jira_users<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<JiraUserSummary>, String> {
+    let query = required_trimmed(query, "Jira user search query is required")?;
+    let limit = limit.clamp(1, JIRA_USER_SEARCH_LIMIT);
+    let value = client
+        .request_json(
+            Method::GET,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                &format!(
+                    "/rest/api/3/user/search?query={}&maxResults={limit}",
+                    percent_encode(query)
+                ),
+            ),
+            request_auth(auth),
+            None,
+        )
+        .await?;
+    Ok(value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(jira_user_summary_from_value)
+        .take(limit)
+        .collect())
+}
+
+fn jira_user_summary_from_value(value: &Value) -> Option<JiraUserSummary> {
+    let account_id = value
+        .get("accountId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let display_name = value
+        .get("displayName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&account_id)
+        .to_string();
+    Some(JiraUserSummary {
+        account_id,
+        display_name,
+    })
+}
+
+/// Lists comments on a Jira issue with the provider's true total, so
+/// `fetch_jira`'s inline comment-count hint can point agents here for the
+/// rest. Reuses [`jira_comment_from_value`], the same ADF→markdown comment
+/// parser `fetch_jira` uses.
+pub(crate) async fn list_jira_comments<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    issue_key: &str,
+    start_at: usize,
+    max_results: usize,
+) -> Result<JiraCommentsPage, String> {
+    let issue_key = required_trimmed(issue_key, "Jira issue key is required")?;
+    let value = client
+        .request_json(
+            Method::GET,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Jira,
+                &format!(
+                    "/rest/api/3/issue/{}/comment?startAt={start_at}&maxResults={max_results}&orderBy=-created",
+                    percent_encode_path_segment(issue_key)
+                ),
+            ),
+            request_auth(auth),
+            None,
+        )
+        .await?;
+    let total = value
+        .get("total")
+        .and_then(Value::as_u64)
+        .map(|total| total as usize)
+        .unwrap_or(0);
+    let comments = value
+        .get("comments")
+        .and_then(Value::as_array)
+        .map(|comments| comments.iter().filter_map(jira_comment_from_value).collect())
+        .unwrap_or_default();
+    Ok(JiraCommentsPage { comments, total })
+}
+
+/// Lists Confluence spaces (v2 API), used to unblock `confluence_create_page`'s
+/// otherwise-unguessable `spaceId`.
+pub(crate) async fn list_confluence_spaces<C: AtlassianJsonRequester + ?Sized>(
+    client: &C,
+    auth: &AtlassianAuthContext,
+    limit: usize,
+) -> Result<Vec<ConfluenceSpaceSummary>, String> {
+    let limit = limit.clamp(1, 250);
+    let value = client
+        .request_json(
+            Method::GET,
+            HyperAtlassianApiClient::resource_url(
+                auth,
+                AtlassianResourceKind::Confluence,
+                &format!("/wiki/api/v2/spaces?limit={limit}"),
+            ),
+            request_auth(auth),
+            None,
+        )
+        .await?;
+    Ok(value
+        .get("results")
+        .and_then(Value::as_array)
+        .map(|spaces| {
+            spaces
+                .iter()
+                .filter_map(confluence_space_summary_from_value)
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+fn confluence_space_summary_from_value(value: &Value) -> Option<ConfluenceSpaceSummary> {
+    let id = value.get("id").and_then(|id| {
+        id.as_str()
+            .map(str::to_string)
+            .or_else(|| id.as_i64().map(|id| id.to_string()))
+    })?;
+    let key = value
+        .get("key")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Some(ConfluenceSpaceSummary { id, key, name })
 }
 
 pub(crate) async fn set_jira_issue_labels<C: AtlassianJsonRequester + ?Sized>(
@@ -1554,13 +2129,93 @@ pub(crate) async fn fetch_confluence<C: AtlassianJsonRequester + ?Sized>(
         .and_then(Value::as_str)
         .map(|path| format!("{site_url}/wiki{path}"))
         .or_else(|| reference.url.clone());
+
+    let page_id = &reference.id;
+    let comments =
+        match confluence_secondary::fetch_confluence_footer_comments(client, auth, page_id).await {
+            Ok(comments) => comments,
+            Err(error) => {
+                tracing::warn!(
+                    page_id = %page_id,
+                    error = %error,
+                    "Confluence footer-comments lookup failed"
+                );
+                Vec::new()
+            }
+        };
+    let attachments =
+        match confluence_secondary::fetch_confluence_attachments(client, auth, page_id).await {
+            Ok(attachments) => attachments,
+            Err(error) => {
+                tracing::warn!(
+                    page_id = %page_id,
+                    error = %error,
+                    "Confluence attachments lookup failed"
+                );
+                Vec::new()
+            }
+        };
+    let children =
+        match confluence_secondary::fetch_confluence_child_pages(client, auth, page_id).await {
+            Ok(children) => children,
+            Err(error) => {
+                tracing::warn!(
+                    page_id = %page_id,
+                    error = %error,
+                    "Confluence child-page lookup failed"
+                );
+                Vec::new()
+            }
+        };
+
+    let mut body_lines = vec![body];
+    if !attachments.is_empty() {
+        body_lines.push(format!("Attachments ({}):", attachments.len()));
+        for attachment in &attachments {
+            let mime_type = attachment.mime_type.as_deref().unwrap_or("unknown type");
+            let size = attachment
+                .size
+                .map(human_readable_size)
+                .unwrap_or_else(|| "unknown size".to_string());
+            body_lines.push(format!("- {} ({mime_type}, {size})", attachment.filename));
+        }
+    }
+    const CONFLUENCE_PROMPT_COMMENT_LIMIT: usize = 5;
+    for comment in comments
+        .iter()
+        .rev()
+        .take(CONFLUENCE_PROMPT_COMMENT_LIMIT)
+        .rev()
+    {
+        let author = comment.author.as_deref().unwrap_or("Confluence user");
+        let timestamp = comment
+            .updated_at
+            .as_deref()
+            .or(comment.created_at.as_deref())
+            .unwrap_or("unknown date");
+        body_lines.push(format!("Comment by {author} ({timestamp}):"));
+        body_lines.push(comment.body_markdown.clone());
+    }
+    if comments.len() > CONFLUENCE_PROMPT_COMMENT_LIMIT {
+        body_lines.push(format!(
+            "({} older comments omitted)",
+            comments.len() - CONFLUENCE_PROMPT_COMMENT_LIMIT
+        ));
+    }
+    if !children.is_empty() {
+        body_lines.push(format!("Child pages ({}):", children.len()));
+        for child in &children {
+            body_lines.push(format!("- {} (id {})", child.summary, child.key));
+        }
+    }
+
     Ok(AtlassianResourceContent {
         kind: AtlassianResourceKind::Confluence,
         id: reference.id.clone(),
         key: None,
         title,
         url,
-        body,
+        body: body_lines.join("\n"),
         status: None,
         assignee: None,
         reporter: None,
@@ -1569,8 +2224,13 @@ pub(crate) async fn fetch_confluence<C: AtlassianJsonRequester + ?Sized>(
         description_text: None,
         acceptance_criteria_markdown: None,
         acceptance_criteria_text: None,
-        comments: Vec::new(),
-        attachments: Vec::new(),
+        comments,
+        attachments,
+        issue_type: None,
+        labels: Vec::new(),
+        priority: None,
+        parent_key: None,
+        children,
     })
 }
 
@@ -1638,21 +2298,7 @@ pub(super) fn jira_status_category(status: &Value, fallback_name: &str) -> Strin
 }
 
 pub(super) fn jira_comment_adf(body_markdown: &str) -> Value {
-    serde_json::json!({
-        "type": "doc",
-        "version": 1,
-        "content": [
-            {
-                "type": "paragraph",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": body_markdown,
-                    }
-                ]
-            }
-        ]
-    })
+    super::adf_markdown_writer::markdown_to_adf(body_markdown)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1959,7 +2605,7 @@ fn render_jsonish(value: &Value) -> String {
         .unwrap_or_else(|| serde_json::to_string_pretty(value).unwrap_or_default())
 }
 
-fn strip_html(value: &str) -> String {
+pub(crate) fn strip_html(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut in_tag = false;
     for ch in value.chars() {
@@ -2020,6 +2666,6 @@ fn percent_encode(value: &str) -> String {
         .collect()
 }
 
-fn percent_encode_path_segment(value: &str) -> String {
+pub(crate) fn percent_encode_path_segment(value: &str) -> String {
     percent_encode(value)
 }
