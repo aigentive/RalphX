@@ -25,7 +25,7 @@ use crate::application::agent_workspace_publish_repair_state::{
 };
 use crate::application::publish_resilience::continue_agent_workspace_repair_publish;
 use crate::domain::entities::{
-    AgentRunId, AgentRunStatus, AgentWorkspaceRepairAttempt,
+    AgentRunId, AgentRunStatus, AgentWorkspacePrAutofixIssueKind, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
 };
 
@@ -587,6 +587,53 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
                 "pre_existing_on_base is only valid for PR autofix repair attempts.",
                 None,
             ));
+        }
+        // Fail closed when the backend's own durable facts contradict the claim. This hold can
+        // never self-release once entered (its fingerprint cannot change while the repaired head
+        // is unpublished), so a wrong classification here is a permanent park. Ordered
+        // cheap-durable-first; none of these branches transition the attempt, so the run stays
+        // authorized to re-complete honestly.
+        if attempt.base_update_head_commit.is_some() {
+            return Err(json_error(
+                StatusCode::CONFLICT,
+                "A base update in this repair attempt already produced a new branch head. Verify the worktree, then report resolution 'fixed' with the current HEAD — the base-update merge commit is a real fix.",
+                None,
+            ));
+        }
+        if attempt.pr_autofix_issue_kind == Some(AgentWorkspacePrAutofixIssueKind::Mergeability) {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "pre_existing_on_base is not valid for mergeability blockers (behind/conflicting cannot be pre-existing on the base). Run update_agent_workspace_from_base and report 'fixed', or report 'needs_human'.",
+                None,
+            ));
+        }
+        if let Some(dispatch_head) = attempt.pr_autofix_dispatch_head_commit.as_deref() {
+            // Best effort: on an inspection error the hold is the safe state, and durable
+            // base-update evidence still guarantees an eventual redrive.
+            match Box::pin(inspect_agent_workspace_repair_completion(
+                state.app_state.as_ref(),
+                &workspace,
+                &attempt.target_base_ref,
+                attempt.target_base_commit.as_deref(),
+            ))
+            .await
+            {
+                Ok(validation) if validation.repair_head_commit != dispatch_head => {
+                    return Err(json_error(
+                        StatusCode::CONFLICT,
+                        "The branch head moved since this repair was dispatched, so the outcome is not 'pre-existing on base'. Report resolution 'fixed' with the current HEAD.",
+                        None,
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = conversation_id.as_str(),
+                        %error,
+                        "Could not verify the branch head before accepting a pre_existing_on_base completion"
+                    );
+                }
+            }
         }
         return match reserve_agent_workspace_pre_existing_on_base(
             Arc::clone(&state.app_state.agent_workspace_repair_repo),

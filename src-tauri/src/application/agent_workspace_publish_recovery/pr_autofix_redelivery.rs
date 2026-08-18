@@ -155,8 +155,11 @@ pub(crate) async fn evaluate_pr_autofix_successor(
     if current.pr_autofix_health_fingerprint.is_none() {
         return PrAutofixSuccessorDecision::Proceed(None);
     }
-    // A moved base is new input for the repair even when the PR still reports the same failure.
-    if repair_base_advanced(current, workspace) {
+    // A moved base is new input for the repair even when the PR still reports the same failure —
+    // but only when something *outside* this attempt moved it. A base update this attempt ran
+    // itself and has not published yet is our own unpublished work; early-returning here is
+    // exactly what strands it, because the redrive decision below is never reached.
+    if repair_base_advanced(current, workspace) && current.base_update_head_commit.is_none() {
         return PrAutofixSuccessorDecision::Proceed(None);
     }
     let Some(github) = state.github_service.as_ref() else {
@@ -255,6 +258,7 @@ pub(crate) async fn evaluate_pr_autofix_successor(
     PrAutofixSuccessorDecision::Proceed(Some(PrAutofixCarryover {
         dispatch_head_commit: health.sync_state.head_ref_oid.clone(),
         health_fingerprint: Some(issue.classification),
+        issue_kind: Some(issue.kind),
     }))
 }
 
@@ -330,7 +334,8 @@ pub(crate) fn due_pr_autofix_redispatch_message(
          infrastructure timeout, startup failure) — never for a real test, lint, coverage, or code failure\n",
     );
     out.push_str(
-        "- `pre_existing_on_base` when the same failure already exists on the base branch and this PR did not cause it\n",
+        "- `pre_existing_on_base` for check failures only, when the same check already fails on the \
+         base branch and this PR did not cause it — never for mergeability (behind/conflicting)\n",
     );
     out.push_str("- `needs_human` when the problem needs a human decision\n");
     out.push_str(
