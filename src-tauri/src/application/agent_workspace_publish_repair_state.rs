@@ -929,6 +929,39 @@ pub(crate) async fn reserve_agent_workspace_base_update(
         .map(repair_attempt_transition_outcome)
 }
 
+/// Like `reserve_agent_workspace_base_update` but keeps the existing phase and blocker intact.
+///
+/// Used for `Blocked` + `needs_human` generations admitted into the base-staleness supersession
+/// path: the phase must not move to `Ready` until a successful push proves the CI evidence is
+/// gone and `release_agent_workspace_needs_human_hold_for_new_head` atomically clears both.
+pub(crate) async fn reserve_agent_workspace_base_update_preserving_phase(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    observed_base_commit: &str,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if observed_base_commit.trim().is_empty() {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.summary = Some(summary.to_string());
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
 /// Record the base tip after the reserved update route has produced a concrete outcome. This
 /// separate CAS prevents a pre-effect crash from tripping the already-updated anti-runaway guard.
 pub(crate) async fn mark_agent_workspace_base_update_target(
@@ -953,6 +986,39 @@ pub(crate) async fn mark_agent_workspace_base_update_target(
             expected_phase,
             expected_updated_at,
             next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// Like `mark_agent_workspace_base_update_target` but keeps the existing phase intact.
+///
+/// Used with `reserve_agent_workspace_base_update_preserving_phase` so the anti-runaway
+/// `base_update_target_commit` marker lands without promoting a `Blocked` generation to `Ready`.
+pub(crate) async fn mark_agent_workspace_base_update_target_preserving_phase(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    observed_base_commit: &str,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if observed_base_commit.trim().is_empty() {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.base_update_target_commit = Some(observed_base_commit.to_string());
+    attempt.summary = Some(summary.to_string());
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
             compatibility_projection: Some(projection),
             events: Vec::new(),
         })
@@ -1029,6 +1095,10 @@ pub(crate) async fn release_agent_workspace_needs_human_hold_for_new_head(
     attempt
         .pending_reasons
         .retain(|reason| reason != NEEDS_HUMAN_REPAIR_REASON);
+    // Phase and marker move together atomically: a Blocked attempt cleared of its needs_human
+    // hold becomes Ready so that re-arming and publish can proceed. attempt.phase must equal
+    // next_phase to satisfy the matches_attempt guard in the repo CAS.
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
     attempt.summary = Some(summary.to_string());
     attempt.updated_at = next_transition_at(Some(expected_updated_at));
     repair_repo
@@ -1036,7 +1106,7 @@ pub(crate) async fn release_agent_workspace_needs_human_hold_for_new_head(
             attempt,
             expected_phase,
             expected_updated_at,
-            next_phase: expected_phase,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
             compatibility_projection: None,
             events: Vec::new(),
         })

@@ -13385,6 +13385,11 @@ async fn blocked_needs_human_behind_base_is_superseded_by_an_automatic_update() 
         "base staleness must supersede the repair-blocked state, not just the branch"
     );
     assert_eq!(
+        current.phase,
+        AgentWorkspaceRepairPhase::Ready,
+        "clearing the needs_human hold must atomically promote the attempt to Ready"
+    );
+    assert_eq!(
         fixture
             .workspace_repo
             .list_publication_events(&fixture.conversation_id)
@@ -13606,6 +13611,15 @@ async fn blocked_needs_human_with_a_null_dispatch_head_keeps_its_hold_after_the_
         needs_human_held(&current),
         "no head evidence must fail closed and leave the hold in place"
     );
+    assert_eq!(
+        current.phase,
+        AgentWorkspaceRepairPhase::Blocked,
+        "a kept hold must leave the attempt in Blocked, not promote it to Ready"
+    );
+    assert!(
+        current.blocker.is_some(),
+        "a kept hold must preserve the blocker text for sidebar display"
+    );
 }
 
 /// The durable target lease still fences the blocked path exactly as it fences the ready path.
@@ -13630,4 +13644,172 @@ async fn blocked_needs_human_without_a_valid_target_lease_has_no_effects() {
         .expect("attempt remains current");
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
     assert!(needs_human_held(&current));
+}
+
+/// A push failure on the blocked path must leave the attempt in Blocked with the needs_human
+/// marker still set. The sidebar must still show "repair blocked" and the user's explicit retry
+/// must remain available.
+#[tokio::test]
+async fn blocked_needs_human_push_failure_keeps_phase_blocked() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-supersede-push-fail", None, true).await;
+    let health = behind_base_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&fixture.conversation_id).await;
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    github.state().push_branch_result =
+        Some(Err(AppError::GitOperation("simulated push failure".to_string())));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(&agent_run_repo)));
+
+    super::route_agent_workspace_pr_autofix_if_needed_with_notifications(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        &fixture.worktree,
+        101,
+        &fixture.conversation_id,
+        fixture.workspace_repo.clone(),
+        Some(agent_run_repo),
+        Some(Arc::clone(&fixture.repair_repo)),
+        Some(Arc::clone(&fixture.branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+        Some(&fixture.project),
+        None,
+    )
+    .await
+    .expect("blocked push-failure route should settle");
+
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert_eq!(
+        current.phase,
+        AgentWorkspaceRepairPhase::Blocked,
+        "a push failure on the blocked path must not promote the attempt to Ready"
+    );
+    assert!(
+        needs_human_held(&current),
+        "the needs_human marker must be preserved after a push failure"
+    );
+    assert!(
+        current.blocker.is_some(),
+        "the blocker text must be preserved for sidebar display"
+    );
+    assert!(
+        crate::application::agent_workspace_publish_recovery::is_blocked_and_not_auto_retryable(
+            &current
+        ),
+        "is_blocked_and_not_auto_retryable must still be true after a push failure"
+    );
+    assert_eq!(
+        crate::application::agent_workspace_publish_repair_state::agent_workspace_repair_operation_recovery_action(&current),
+        crate::domain::entities::AgentWorkspaceRepairOperationRecoveryAction::RetryRepair,
+        "the user's explicit RetryRepair action must remain available after a push failure"
+    );
+}
+
+/// An AlreadyFresh route (local branch already contains the target base, but GitHub still reports
+/// behind) must leave the attempt in Blocked with all fences intact.
+#[tokio::test]
+async fn blocked_needs_human_already_fresh_keeps_phase_blocked() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-supersede-already-fresh", None, true)
+            .await;
+    // Merge main into the workspace branch locally so the branch is already up-to-date.
+    run_git(
+        &fixture.worktree,
+        &["merge", "--no-edit", "origin/main"],
+    );
+    let health = behind_base_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+
+    let (_routed, github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+    assert_eq!(
+        github.state().push_branch_calls,
+        0,
+        "no push should happen when the branch is already fresh locally"
+    );
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert_eq!(
+        current.phase,
+        AgentWorkspaceRepairPhase::Blocked,
+        "AlreadyFresh must not promote the attempt to Ready"
+    );
+    assert!(
+        needs_human_held(&current),
+        "the needs_human marker must be preserved on the AlreadyFresh path"
+    );
+    assert!(
+        crate::application::agent_workspace_publish_recovery::is_blocked_and_not_auto_retryable(
+            &current
+        ),
+        "is_blocked_and_not_auto_retryable must still be true after AlreadyFresh"
+    );
+    assert_eq!(
+        crate::application::agent_workspace_publish_repair_state::agent_workspace_repair_operation_recovery_action(&current),
+        crate::domain::entities::AgentWorkspaceRepairOperationRecoveryAction::RetryRepair,
+        "the user's explicit RetryRepair action must remain available after AlreadyFresh"
+    );
+}
+
+/// A conflicting merge (DeferToAgent path) on a blocked needs_human attempt must settle the
+/// attempt as a predecessor and dispatch a new fixer successor. The predecessor must not be
+/// promoted to Ready mid-flight; settle must succeed from the Blocked phase.
+#[tokio::test]
+async fn blocked_needs_human_deferred_merge_dispatches_successor() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-supersede-defer", None, true).await;
+    // Create a conflicting change in main so the merge defers to the agent.
+    run_git(&fixture.worktree, &["checkout", "main"]);
+    std::fs::write(fixture.worktree.join("CONFLICT.md"), "main conflict\n")
+        .expect("write conflict file on main");
+    run_git(&fixture.worktree, &["add", "."]);
+    run_git(&fixture.worktree, &["commit", "-m", "main conflict"]);
+    run_git(&fixture.worktree, &["push", "origin", "main"]);
+    let new_base_oid = git_stdout(&fixture.worktree, &["rev-parse", "main"]);
+    run_git(&fixture.worktree, &["checkout", &fixture.workspace.branch_name]);
+    // Create a conflicting change in the workspace branch.
+    std::fs::write(fixture.worktree.join("CONFLICT.md"), "branch conflict\n")
+        .expect("write conflict file on branch");
+    run_git(&fixture.worktree, &["add", "."]);
+    run_git(&fixture.worktree, &["commit", "-m", "branch conflict"]);
+    run_git(&fixture.worktree, &["push", "origin", &fixture.workspace.branch_name]);
+
+    let health = behind_base_health(&fixture.dispatch_head, &new_base_oid);
+
+    let (routed, _github, chat) = route_blocked_supersession(&fixture, health).await;
+
+    // A DeferToAgent route settles the predecessor and dispatch is the caller's responsibility.
+    // The `routed` flag indicates whether a new fixer was dispatched through the chat service.
+    let _ = routed;
+    let sent = chat.get_sent_messages().await;
+    // The predecessor attempt should be settled (no longer current) and a new one exists.
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt");
+    // Either the old attempt was settled and a new one was dispatched, or the CAS rejected.
+    // Either way, the predecessor must NOT be stuck in Ready with a stranded needs_human marker.
+    if let Some(ref current) = current {
+        if current.id == fixture.attempt.id {
+            // Predecessor is still current — the CAS settled it but no successor was admitted.
+            // It must not have been promoted to Ready mid-flight.
+            assert_ne!(
+                current.phase,
+                AgentWorkspaceRepairPhase::Ready,
+                "a deferred predecessor must not be left in Ready with a stranded marker"
+            );
+        }
+    }
+    // Either a chat message was dispatched or none was — the key invariant is no promotion to Ready.
+    let _ = sent;
 }

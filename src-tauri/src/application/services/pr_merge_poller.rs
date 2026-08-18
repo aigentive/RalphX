@@ -35,10 +35,12 @@ use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_is_base_stale_held, agent_workspace_repair_is_ci_held,
     agent_workspace_repair_is_health_held, classify_agent_workspace_repair_delivery,
     held_repair_has_unpublished_head, mark_agent_workspace_base_update_target,
+    mark_agent_workspace_base_update_target_preserving_phase,
     release_agent_workspace_base_stale_hold, release_agent_workspace_needs_human_hold_for_new_head,
     release_and_clear_agent_workspace_repair_target_lease,
     reserve_agent_workspace_base_parity_transient, reserve_agent_workspace_base_stale_hold,
-    reserve_agent_workspace_base_update, reserve_agent_workspace_repair_dispatch,
+    reserve_agent_workspace_base_update, reserve_agent_workspace_base_update_preserving_phase,
+    reserve_agent_workspace_repair_dispatch,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
     start_or_join_agent_workspace_repair_without_projection,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
@@ -3787,7 +3789,9 @@ async fn settle_ready_agent_workspace_repair_attempt(
         .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
             attempt_id: attempt.id.clone(),
             generation: attempt.generation,
-            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            // Use the actual current phase so a Blocked attempt on the DeferToAgent path
+            // can settle from Blocked, not just from Ready.
+            expected_phase: attempt.phase,
             expected_updated_at: attempt.updated_at,
             outcome: crate::domain::entities::AgentWorkspaceRepairOutcome::Succeeded,
             settled_at: chrono::Utc::now(),
@@ -3906,6 +3910,7 @@ async fn mark_behind_base_update_route(
     route: BehindBaseUpdateRoute,
     observed_base_oid: &str,
     auto_merge_current: Option<bool>,
+    preserve_phase: bool,
 ) -> crate::AppResult<BehindBaseUpdateRoute> {
     let (attempt, summary) = match &route {
         BehindBaseUpdateRoute::Updated { reserved } => (
@@ -3918,19 +3923,37 @@ async fn mark_behind_base_update_route(
         BehindBaseUpdateRoute::Blocked { reserved, message } => (reserved.clone(), message.clone()),
         BehindBaseUpdateRoute::Rejected => return Ok(route),
     };
-    let marked = match mark_agent_workspace_base_update_target(
-        repair_repo,
-        attempt,
-        observed_base_oid,
-        &summary,
-        auto_merge_current,
-    )
-    .await?
-    {
-        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
-        AgentWorkspaceRepairTransitionOutcome::Stale(_)
-        | AgentWorkspaceRepairTransitionOutcome::Missing => {
-            return Ok(BehindBaseUpdateRoute::Rejected)
+    let marked = if preserve_phase {
+        match mark_agent_workspace_base_update_target_preserving_phase(
+            repair_repo,
+            attempt,
+            observed_base_oid,
+            &summary,
+            auto_merge_current,
+        )
+        .await?
+        {
+            AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+            AgentWorkspaceRepairTransitionOutcome::Stale(_)
+            | AgentWorkspaceRepairTransitionOutcome::Missing => {
+                return Ok(BehindBaseUpdateRoute::Rejected)
+            }
+        }
+    } else {
+        match mark_agent_workspace_base_update_target(
+            repair_repo,
+            attempt,
+            observed_base_oid,
+            &summary,
+            auto_merge_current,
+        )
+        .await?
+        {
+            AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+            AgentWorkspaceRepairTransitionOutcome::Stale(_)
+            | AgentWorkspaceRepairTransitionOutcome::Missing => {
+                return Ok(BehindBaseUpdateRoute::Rejected)
+            }
         }
     };
     Ok(match route {
@@ -4037,20 +4060,39 @@ async fn drive_agent_workspace_behind_base_update(
     attempt: AgentWorkspaceRepairAttempt,
     observed_base_oid: &str,
     summary: &str,
+    preserve_blocked_phase: bool,
 ) -> crate::AppResult<BehindBaseUpdateRoute> {
-    let reserved = match reserve_agent_workspace_base_update(
-        Arc::clone(&repair_repo),
-        attempt,
-        observed_base_oid,
-        summary,
-        workspace.pr_auto_merge_current,
-    )
-    .await?
-    {
-        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
-        AgentWorkspaceRepairTransitionOutcome::Stale(_)
-        | AgentWorkspaceRepairTransitionOutcome::Missing => {
-            return Ok(BehindBaseUpdateRoute::Rejected)
+    let reserved = if preserve_blocked_phase {
+        match reserve_agent_workspace_base_update_preserving_phase(
+            Arc::clone(&repair_repo),
+            attempt,
+            observed_base_oid,
+            summary,
+            workspace.pr_auto_merge_current,
+        )
+        .await?
+        {
+            AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+            AgentWorkspaceRepairTransitionOutcome::Stale(_)
+            | AgentWorkspaceRepairTransitionOutcome::Missing => {
+                return Ok(BehindBaseUpdateRoute::Rejected)
+            }
+        }
+    } else {
+        match reserve_agent_workspace_base_update(
+            Arc::clone(&repair_repo),
+            attempt,
+            observed_base_oid,
+            summary,
+            workspace.pr_auto_merge_current,
+        )
+        .await?
+        {
+            AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+            AgentWorkspaceRepairTransitionOutcome::Stale(_)
+            | AgentWorkspaceRepairTransitionOutcome::Missing => {
+                return Ok(BehindBaseUpdateRoute::Rejected)
+            }
         }
     };
     if let Some(reason) =
@@ -4061,6 +4103,7 @@ async fn drive_agent_workspace_behind_base_update(
             BehindBaseUpdateRoute::DeferToAgent { reserved, reason },
             observed_base_oid,
             workspace.pr_auto_merge_current,
+            preserve_blocked_phase,
         )
         .await;
     }
@@ -4107,13 +4150,14 @@ async fn drive_agent_workspace_behind_base_update(
             } else {
                 format!("{message} Conflicts: {}", conflict_files.join(", "))
             },
-            },
+        },
     };
     mark_behind_base_update_route(
         repair_repo,
         route,
         observed_base_oid,
         workspace.pr_auto_merge_current,
+        preserve_blocked_phase,
     )
     .await
 }
@@ -4404,6 +4448,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
                         attempt.clone(),
                         &observed_base_oid,
                         &summary,
+                        blocked_base_staleness_candidate,
                     )
                     .await?
                     {
@@ -4463,17 +4508,34 @@ async fn route_agent_workspace_pr_autofix_for_target(
                             attempt_already_settled = true;
                         }
                         BehindBaseUpdateRoute::Blocked { reserved, message } => {
-                            hold_agent_workspace_base_update_route(
-                                Arc::clone(repair_repo),
-                                workspace_repo.as_ref(),
-                                reserved,
-                                conversation_id,
-                                target.pr_number,
-                                &observed_base_oid,
-                                &message,
-                                workspace.pr_auto_merge_current,
-                            )
-                            .await?;
+                            if blocked_base_staleness_candidate {
+                                // Phase is already preserved (Blocked) by mark_behind_base_update_route.
+                                // Calling hold_agent_workspace_base_update_route would promote to Ready
+                                // via reserve_agent_workspace_base_stale_hold, destroying the fence.
+                                // Anti-loop is guarded by base_update_target_commit + BlockedStaleAfterUpdate.
+                                record_agent_workspace_base_update_route(
+                                    workspace_repo.as_ref(),
+                                    conversation_id,
+                                    target.pr_number,
+                                    &observed_base_oid,
+                                    "blocked",
+                                    &message,
+                                )
+                                .await?;
+                                drop(reserved);
+                            } else {
+                                hold_agent_workspace_base_update_route(
+                                    Arc::clone(repair_repo),
+                                    workspace_repo.as_ref(),
+                                    reserved,
+                                    conversation_id,
+                                    target.pr_number,
+                                    &observed_base_oid,
+                                    &message,
+                                    workspace.pr_auto_merge_current,
+                                )
+                                .await?;
+                            }
                             return Ok(false);
                         }
                         BehindBaseUpdateRoute::Rejected => return Ok(false),
