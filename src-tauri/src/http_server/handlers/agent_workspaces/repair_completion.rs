@@ -961,6 +961,10 @@ async fn complete_reserved_agent_workspace_repair(
 
 /// Rejects a `needs_human` escalation that RalphX can still resolve on its own.
 ///
+/// Scoped to PR-autofix repair attempts only. `transient_ci` is a PR-CI classification; steering a
+/// publish or update repair fixer toward it when the actual blocker is a merge conflict or worktree
+/// problem would park the attempt on evidence that cannot resolve it.
+///
 /// A `needs_human` marker is an absolute fence on automation, so escalating "rerun this once the
 /// workflow completes" strands the workspace until a person intervenes. When fresh health shows the
 /// current head is only waiting on in-flight runs, or carries transient failures RalphX is still
@@ -976,6 +980,9 @@ async fn needs_human_rejection_for_rerunnable_ci(
     attempt: &AgentWorkspaceRepairAttempt,
     workspace: &AgentConversationWorkspace,
 ) -> Option<String> {
+    if attempt.source != AgentWorkspaceRepairSource::PrAutofix {
+        return None;
+    }
     if attempt.ci_rerun_count >= MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES {
         return None;
     }
