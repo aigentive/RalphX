@@ -1,7 +1,7 @@
 use super::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use super::agent_workspace_publish_recovery::{
     recover_agent_workspace_repair_attempts_for_state, recover_agent_workspace_repair_continuation,
-    DurableRepairRecoveryOutcome,
+    DurableRepairRecoveryOutcome, WORKSPACE_MISSING_SETTLED_STEP,
 };
 use super::agent_workspace_publish_repair_state::AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION;
 use super::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON;
@@ -45,13 +45,13 @@ use std::sync::Arc;
 
 use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrMetadataDecision,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffect,
-    AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairPhase,
-    AgentWorkspaceRepairSource, ArtifactId, ChatConversationId, GitTargetLeaseOwner,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, NewNotification, NotificationCategory,
-    NotificationSeverity, NotificationTarget, NotificationTargetKind, PlanBranch, PlanBranchId,
-    Project,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+    AgentWorkspacePrMetadataDecision, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind,
+    AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    ArtifactId, ChatConversationId, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, NewNotification, NotificationCategory, NotificationSeverity,
+    NotificationTarget, NotificationTargetKind, PlanBranch, PlanBranchId, Project,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -5795,4 +5795,129 @@ fn automatic_blocked_repair_streak_for_test(attempt: &AgentWorkspaceRepairAttemp
         .filter_map(|streak| streak.parse::<u32>().ok())
         .max()
         .unwrap_or_default()
+}
+
+// Production-path tests for `git_mutation_recovery.rs:401-435`, the third orphan-tolerance site.
+// Both sibling sites (`durable_attempt_recovery.rs:1546` and `:1619`) have coverage; this one
+// shipped without tests and rule 25 requires production-path tests for all recovery seams.
+
+/// Test 1 — deleted worktree, parent root present: the pass returns `Ok` with one `NeedsRepair`
+/// entry, the workspace is marked recoverable-`Missing`, and one `WORKSPACE_MISSING_SETTLED_STEP`
+/// evidence row is written. Mirrors `a_deleted_worktree_is_marked_missing_once_…` in
+/// `agent_workspace_publish_recovery_tests.rs`.
+#[cfg(unix)]
+#[tokio::test]
+async fn repair_mutation_claim_marks_missing_when_workspace_worktree_is_deleted() {
+    let fixture = setup_rewritten_workspace_push().await;
+    let (state, _continuing, _effect) = state_with_in_flight_repair_push(&fixture).await;
+
+    // Delete the workspace worktree but leave its project-level parent dir intact so
+    // `parent_root_present` is `true` (a deleted workspace, not a missing volume).
+    std::fs::remove_dir_all(&fixture.workspace.worktree_path).expect("delete workspace worktree");
+
+    let outcomes = recover_repair_owned_in_flight_git_mutations(&state)
+        .await
+        .expect("a deleted worktree must not abort the repair-mutation recovery pass");
+    assert_eq!(outcomes.len(), 1, "one claim, one outcome");
+    assert!(
+        matches!(outcomes[0], GitMutationRecoveryOutcome::NeedsRepair { .. }),
+        "outcome must be NeedsRepair for a deleted worktree, got {:?}",
+        outcomes[0]
+    );
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fixture.workspace.conversation_id)
+        .await
+        .expect("reload workspace")
+        .expect("workspace exists");
+    assert_eq!(
+        workspace.status,
+        AgentConversationWorkspaceStatus::Missing,
+        "workspace must be recoverable-Missing, never terminal"
+    );
+
+    let evidence: Vec<_> = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&fixture.workspace.conversation_id)
+        .await
+        .expect("load publication events")
+        .into_iter()
+        .filter(|event| event.step == WORKSPACE_MISSING_SETTLED_STEP)
+        .collect();
+    assert_eq!(
+        evidence.len(),
+        1,
+        "exactly one evidence row for the deleted worktree"
+    );
+}
+
+/// Test 2 — missing parent root: the whole project worktree dir is gone (an unmounted volume).
+/// The pass still returns `Ok`, the workspace stays `Active`, and no evidence is written.
+/// Mirrors `a_missing_worktree_root_settles_nothing` in `agent_workspace_publish_recovery_tests.rs`.
+#[cfg(unix)]
+#[tokio::test]
+async fn repair_mutation_claim_is_noop_when_entire_worktree_root_is_gone() {
+    let fixture = setup_rewritten_workspace_push().await;
+    let (state, _continuing, _effect) = state_with_in_flight_repair_push(&fixture).await;
+
+    // Delete the project workspace dir (parent of the worktree) so that
+    // `parent_root_present` is `false` — the whole volume looks absent, not just this workspace.
+    let worktree_path = PathBuf::from(&fixture.workspace.worktree_path);
+    let project_workspace_dir = worktree_path
+        .parent()
+        .expect("workspace parent is the project workspace dir");
+    std::fs::remove_dir_all(project_workspace_dir).expect("delete the project workspace root");
+
+    let outcomes = recover_repair_owned_in_flight_git_mutations(&state)
+        .await
+        .expect("a missing root must not abort the repair-mutation recovery pass");
+    assert_eq!(outcomes.len(), 1, "one claim, one outcome");
+    assert!(
+        matches!(outcomes[0], GitMutationRecoveryOutcome::NeedsRepair { .. }),
+        "outcome must still be NeedsRepair even for a missing root (pass must not abort)"
+    );
+
+    let unchanged = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fixture.workspace.conversation_id)
+        .await
+        .expect("reload workspace")
+        .expect("workspace exists");
+    assert_eq!(
+        unchanged.status,
+        AgentConversationWorkspaceStatus::Active,
+        "workspace must stay Active; a missing root is volume trouble, not a deleted workspace"
+    );
+    assert!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.workspace.conversation_id)
+            .await
+            .expect("load publication events")
+            .iter()
+            .all(|event| event.step != WORKSPACE_MISSING_SETTLED_STEP),
+        "no evidence may be written when the whole worktree root is absent"
+    );
+}
+
+/// Test 3 — non-path resolution failure (directory exists but is not a git worktree): the
+/// error propagates unchanged as `Err`, ensuring the missing-worktree branch does not swallow
+/// real errors. Matches `return Err(error)` at `git_mutation_recovery.rs:421`.
+#[cfg(unix)]
+#[tokio::test]
+async fn repair_mutation_claim_propagates_err_for_not_git_resolution_failure() {
+    let fixture = setup_rewritten_workspace_push().await;
+    let (state, _continuing, _effect) = state_with_in_flight_repair_push(&fixture).await;
+
+    // Remove only the `.git` pointer file from the worktree. The directory itself remains, so the
+    // classifier returns `NotGit` rather than `Missing`, and the original error propagates.
+    let git_entry = PathBuf::from(&fixture.workspace.worktree_path).join(".git");
+    std::fs::remove_file(&git_entry).expect("remove .git pointer from worktree");
+
+    recover_repair_owned_in_flight_git_mutations(&state)
+        .await
+        .expect_err(
+            "a NotGit workspace must propagate Err, not be silently converted to NeedsRepair",
+        );
 }
