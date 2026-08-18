@@ -107,6 +107,9 @@ describe("DataRetentionSection", () => {
     render(<DataRetentionSection />);
 
     const days = await screen.findByLabelText("Keep tool-call detail for");
+    // The input renders (disabled) before settings finish loading, so wait for
+    // it to become interactive before clearing — otherwise this races the load.
+    await waitFor(() => expect(days).toBeEnabled());
     await user.clear(days);
     await user.type(days, "30");
     await user.tab();
