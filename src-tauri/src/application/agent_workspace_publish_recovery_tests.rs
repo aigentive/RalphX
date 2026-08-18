@@ -697,7 +697,9 @@ async fn block_push_handoff_base_advanced_repair(
     );
     attempt.source = AgentWorkspaceRepairSource::PrAutofix;
     attempt.phase = AgentWorkspaceRepairPhase::Blocked;
-    attempt.target_base_commit = Some(stale_base_commit.clone());
+    // Production retarget_agent_workspace_repair_pr_handoff now mirrors the fresh base onto
+    // the attempt's target_base_commit so that auto-retry successors inherit it correctly.
+    attempt.target_base_commit = Some(fresh_base_commit.clone());
     attempt.summary = Some(blocker.clone());
     attempt.blocker = Some(blocker);
     attempt.pending_reasons = (retry_streak > 0)
@@ -5234,21 +5236,15 @@ async fn block_pr_autofix_attempt_with_fingerprint(
         .await
         .expect("load attempt to block")
         .expect("attempt exists to block");
-    let workspace = state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(conversation_id)
-        .await
-        .expect("load workspace for blocked fixture")
-        .expect("workspace exists for blocked fixture");
     let expected_phase = attempt.phase;
     let expected_updated_at = attempt.updated_at;
     attempt.source = AgentWorkspaceRepairSource::PrAutofix;
     attempt.phase = AgentWorkspaceRepairPhase::Blocked;
     attempt.pr_autofix_health_fingerprint = fingerprint;
     attempt.pr_autofix_dispatch_head_commit = Some("dispatch-head".to_string());
-    // Base parity keeps the base-advance escape hatch out of the way; these fixtures exercise the
-    // health comparison itself.
-    attempt.target_base_commit = workspace.base_commit.clone();
+    // Leaving target_base_commit at None keeps the base-advance check (repair_base_advanced) false
+    // vacuously; these fixtures exercise the health fingerprint comparison, not the base-moved path.
+    attempt.target_base_commit = None;
     attempt.blocker = Some("transient_ci".to_string());
     attempt.updated_at = chrono::Utc::now() - chrono::Duration::seconds(1_000);
     match state
@@ -6182,18 +6178,147 @@ async fn pr_autofix_successor_withholds_when_github_cannot_be_read_at_all() {
 
 #[tokio::test]
 async fn pr_autofix_successor_proceeds_when_the_repair_base_moved() {
-    let state = AppState::new_test();
-    let conversation_id = conversation_id(71);
-    let mut workspace = needs_agent_workspace(conversation_id.clone());
-    workspace.base_commit = Some("base-b".to_string());
+    // The check now compares against health.sync_state.base_ref_oid (live GitHub evidence) rather
+    // than workspace.base_commit (the diff baseline), so this test needs a seeded workspace + real
+    // GitHub mock to reach the health-fetch gate.
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(71).await;
+    let mut health = failing_check_pr_health("head-sha", "Rust Tests");
+    // GitHub reports a base that differs from the attempt's dispatch-time target — base has moved.
+    health.sync_state.base_ref_oid = Some("observed-base-b".to_string());
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    state.github_service = Some(github as Arc<dyn crate::domain::services::GithubServiceTrait>);
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
     let mut attempt = blocked_pr_autofix_attempt(&conversation_id, "ci:Clippy:failure");
-    attempt.target_base_commit = Some("base-a".to_string());
+    // The attempt targets the older base; GitHub now reports a newer one.
+    attempt.target_base_commit = Some("original-base-a".to_string());
 
-    // A moved base is new input independent of the PR, so it authorizes a successor before the
-    // gate ever reaches GitHub.
     assert_eq!(
         evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
         PrAutofixSuccessorDecision::Proceed(None)
+    );
+}
+
+#[tokio::test]
+async fn supersede_base_skew_does_not_bypass_hold_when_observed_base_matches_target() {
+    // Falsifying test for review blocker 1: after the supersede/defer routes, workspace.base_commit
+    // is the branch-point while the attempt carries the observed base. Before the fix,
+    // repair_base_advanced compared against workspace.base_commit and permanently answered true,
+    // short-circuiting HoldUnchanged and spending extra fixer generations on unchanged PR health.
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(204).await;
+    let mut health = failing_check_pr_health("head-sha", "Rust Tests");
+    let fingerprint = health_fingerprint(684, &health);
+    // GitHub reports the same base the attempt was targeted at — no base movement.
+    health.sync_state.base_ref_oid = Some("observed-base".to_string());
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    state.github_service = Some(github as Arc<dyn crate::domain::services::GithubServiceTrait>);
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+    // Supersede/defer shape: attempt targets the observed base; workspace stays at branch point.
+    workspace.base_commit = Some("branch-point".to_string());
+    let mut attempt = blocked_pr_autofix_attempt(&conversation_id, &fingerprint);
+    attempt.target_base_commit = Some("observed-base".to_string());
+
+    // Without the fix, repair_base_advanced(attempt, workspace) is permanently true because
+    // "observed-base" != "branch-point", so it returns Proceed(None) instead of HoldUnchanged.
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
+        PrAutofixSuccessorDecision::HoldUnchanged
+    );
+}
+
+#[tokio::test]
+async fn blocked_repair_retry_successor_inherits_predecessor_target_base_commit() {
+    // Falsifying test for review blocker 2: the auto-retry successor was built with
+    // workspace.base_commit (the diff baseline / branch point), but after the supersede/defer
+    // routes the attempt carries the observed base in target_base_commit. The successor must
+    // inherit the predecessor's target so completion validates against the right base.
+    let (state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(205).await;
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+
+    // Transition the generation to Blocked with a skewed state: attempt targets the observed base,
+    // workspace stays at the branch point (the supersede/defer shape after the poller fix).
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt exists");
+    let expected_updated_at = attempt.updated_at;
+    let mut blocked = attempt.clone();
+    blocked.source = AgentWorkspaceRepairSource::PrAutofix;
+    blocked.phase = AgentWorkspaceRepairPhase::Blocked;
+    blocked.target_base_commit = Some("observed-base-sha".to_string());
+    blocked.pr_autofix_health_fingerprint = None; // no fingerprint → Proceed(None) immediately
+    blocked.blocker = Some("transient_ci".to_string());
+    blocked.updated_at = chrono::Utc::now() - chrono::Duration::seconds(1_000);
+    let blocked = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: blocked,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("transition to blocked")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(a) => a,
+        outcome => panic!("must apply, got {outcome:?}"),
+    };
+
+    // Workspace base stays at branch-point, distinct from attempt's target.
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+    workspace.base_commit = Some("branch-point-sha".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("persist branch-point workspace");
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("recovery pass runs");
+
+    let successor = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load successor attempt")
+        .expect("successor attempt exists");
+    assert_ne!(
+        successor.id, blocked.id,
+        "a new generation must have been started"
+    );
+    assert_eq!(
+        successor.target_base_commit.as_deref(),
+        Some("observed-base-sha"),
+        "successor must inherit the predecessor's target, not workspace.base_commit"
+    );
+    assert_ne!(
+        successor.target_base_commit.as_deref(),
+        Some("branch-point-sha"),
+        "branch-point workspace base must not be propagated to the successor"
     );
 }
 
@@ -6310,7 +6435,8 @@ async fn evaluate_successor_with_heads(
             "github_pr_autofix:684:checks:different"
         },
     );
-    attempt.target_base_commit = workspace.base_commit.clone();
+    // No target_base_commit means repair_base_advanced is false vacuously; these fixtures exercise
+    // the head-publication and fingerprint paths, not the base-moved escape hatch.
     attempt.repair_head_commit = repair_head.map(str::to_string);
 
     evaluate_pr_autofix_successor(&state, &attempt, &workspace).await

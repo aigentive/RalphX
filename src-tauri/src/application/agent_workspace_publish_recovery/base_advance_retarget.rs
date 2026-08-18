@@ -59,15 +59,14 @@ pub(super) async fn retarget_reserved_repair_to_advanced_base(
     workspace: &AgentConversationWorkspace,
     new_target_base_commit: &str,
 ) -> AppResult<DurableRepairRecoveryOutcome> {
-    if !repair_base_advanced(&reserved, workspace) {
-        // The durable workspace base has not caught up yet. The classifier read Git directly, so it
+    if !repair_base_advanced(&reserved, Some(new_target_base_commit)) {
+        // The durable attempt target has not caught up yet. The classifier read Git directly, so it
         // is the authority, but the disagreement is worth seeing in logs.
         tracing::info!(
             conversation_id = reserved.conversation_id.as_str(),
             durable_target_base = reserved.target_base_commit.as_deref().unwrap_or("<none>"),
-            durable_workspace_base = workspace.base_commit.as_deref().unwrap_or("<none>"),
             observed_target_base = new_target_base_commit,
-            "Retargeting an interrupted repair on Git evidence the durable workspace base does not show yet"
+            "Retargeting an interrupted repair on Git evidence the durable attempt target does not show yet"
         );
     }
     // The canonical target lease is owned per attempt id, so the superseded generation has to let

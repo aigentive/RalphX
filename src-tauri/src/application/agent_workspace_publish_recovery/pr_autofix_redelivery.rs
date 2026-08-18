@@ -121,20 +121,20 @@ async fn resolve_pr_autofix_pr_number(
     plan_branch.pr_number
 }
 
-/// True when the workspace's base has moved since this generation was targeted. That is new input
-/// for the repair independent of anything GitHub reports about the PR, so it authorizes a
-/// successor on its own.
+/// True when the base GitHub currently reports has moved past what this generation was targeted
+/// at. That is new input for the repair independent of anything GitHub reports about PR checks,
+/// so it authorizes a successor on its own.
 pub(super) fn repair_base_advanced(
     current: &AgentWorkspaceRepairAttempt,
-    workspace: &AgentConversationWorkspace,
+    observed_base: Option<&str>,
 ) -> bool {
-    let (Some(target), Some(workspace_base)) = (
+    let (Some(target), Some(obs)) = (
         current.target_base_commit.as_deref(),
-        workspace.base_commit.as_deref(),
+        observed_base,
     ) else {
         return false;
     };
-    !target.trim().is_empty() && !workspace_base.trim().is_empty() && target != workspace_base
+    !target.trim().is_empty() && !obs.trim().is_empty() && target != obs
 }
 
 /// Decides whether a blocked PR autofix attempt may start a successor generation.
@@ -153,13 +153,6 @@ pub(crate) async fn evaluate_pr_autofix_successor(
     // failure (legacy rows, base-update blockers routed through a PR autofix attempt). There is
     // nothing to compare, so the existing retry behavior stands.
     if current.pr_autofix_health_fingerprint.is_none() {
-        return PrAutofixSuccessorDecision::Proceed(None);
-    }
-    // A moved base is new input for the repair even when the PR still reports the same failure —
-    // but only when something *outside* this attempt moved it. A base update this attempt ran
-    // itself and has not published yet is our own unpublished work; early-returning here is
-    // exactly what strands it, because the redrive decision below is never reached.
-    if repair_base_advanced(current, workspace) && current.base_update_head_commit.is_none() {
         return PrAutofixSuccessorDecision::Proceed(None);
     }
     let Some(github) = state.github_service.as_ref() else {
@@ -244,6 +237,18 @@ pub(crate) async fn evaluate_pr_autofix_successor(
             return PrAutofixSuccessorDecision::Withhold("pr_health_unreadable");
         }
     };
+    // A moved base is new input for the repair even when the PR still reports the same failure —
+    // but only when something *outside* this attempt moved it. A base update this attempt ran
+    // itself and has not published yet is our own unpublished work; early-returning here would
+    // strand it by never reaching the redrive decision below.
+    // The comparison is against the live GitHub-observed base, not workspace.base_commit: after
+    // the supersede/defer routes, workspace.base_commit stays at the branch point while the
+    // attempt carries the observed base, so a workspace comparison would be permanently true.
+    if repair_base_advanced(current, health.sync_state.base_ref_oid.as_deref())
+        && current.base_update_head_commit.is_none()
+    {
+        return PrAutofixSuccessorDecision::Proceed(None);
+    }
     let Some(issue) = classify_agent_workspace_pr_autofix_issue(pr_number, &health) else {
         // Nothing is failing on the PR any more. A fixer generation dispatched now would have
         // nothing to fix, which is exactly the wasted generation this path exists to prevent.
