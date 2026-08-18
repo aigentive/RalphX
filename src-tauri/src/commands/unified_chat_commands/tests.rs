@@ -5275,11 +5275,87 @@ async fn base_update_retry_returns_successful_repair_started_response() {
     .await
     .expect("explicit retry should return a successful repair-started response");
 
+    // The mechanical merge now runs first and found nothing to do (the branch already contains its
+    // base tip), so the blocked-repair retry is still the useful action here. The reported base is
+    // the one the mechanical path actually resolved — this workspace's persisted
+    // `feature/deleted-base` retargets to `main` — rather than the stale persisted ref.
     assert!(response.repair_started);
-    assert_eq!(response.target_ref, workspace.base_ref);
-    assert_eq!(
-        response.base_commit,
-        workspace.base_commit.unwrap_or_default()
+    assert!(!response.updated);
+    assert_eq!(response.target_ref, "main");
+    assert_ne!(response.target_ref, workspace.base_ref);
+    assert!(!response.base_commit.is_empty());
+}
+
+/// "Update from base" on a repair-blocked workspace whose base genuinely moved must actually update
+/// the branch. Dispatching a repair successor instead is what let a repair-blocked workspace stay
+/// stranded on a stale base: the button restarted the fixer and never merged, so the branch never
+/// moved and CI never reran.
+#[tokio::test]
+async fn base_update_on_a_blocked_repair_updates_the_branch_instead_of_restarting_the_fixer() {
+    let (temp, state, conversation_id, _github) = setup_publish_command_state(
+        "blocked-repair-mechanical-first",
+        true,
+        None,
+        Arc::new(MockGithubService::new()),
+    )
+    .await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    seed_blocked_command_repair_attempt(&state, &workspace).await;
+
+    let repo_path = temp.path().join("repo");
+    commit_file(
+        &repo_path,
+        "base-change.txt",
+        "base change\n",
+        "advance base branch",
+    );
+    let behind = super::get_agent_conversation_workspace_freshness_for_app_state(
+        &conversation_id,
+        Some("full"),
+        &state,
+    )
+    .await
+    .expect("freshness should load before updating");
+    assert!(behind.is_base_ahead, "fixture must start behind its base");
+
+    let response = update_agent_conversation_workspace_from_base_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        conversation_id.clone(),
+        AgentConversationWorkspaceBaseSelection {
+            kind: None,
+            branch_mode: None,
+            base_ref: None,
+            display_name: None,
+            source_pull_request: None,
+        },
+    )
+    .await
+    .expect("a clean mergeable base must update even while a repair is blocked");
+
+    assert!(
+        response.updated,
+        "the branch must actually update rather than only restarting the fixer"
+    );
+    assert!(
+        !response.repair_started,
+        "a clean mechanical merge needs no repair successor"
+    );
+    let current = super::get_agent_conversation_workspace_freshness_for_app_state(
+        &conversation_id,
+        Some("full"),
+        &state,
+    )
+    .await
+    .expect("freshness should load after updating");
+    assert!(
+        !current.is_base_ahead,
+        "the branch must now contain its base"
     );
 }
 

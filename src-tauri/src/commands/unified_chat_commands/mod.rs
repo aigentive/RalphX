@@ -6806,37 +6806,12 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
     let explicit_base = normalize_explicit_publish_base_selection(selection)?;
     let repair_service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
 
-    if created_by_run_id.is_none()
-        && explicit_base.is_none()
-        && retry_blocked_agent_workspace_repair_for_explicit_user_action(
-            state,
-            &workspace,
-            &repair_service,
-            AgentWorkspacePostRepairAction::UpdateOnly,
-        )
-        .await
-    {
-        let refreshed = state
-            .agent_conversation_workspace_repo
-            .get_by_conversation_id(&conversation_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .unwrap_or(workspace);
-        return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
-            target_ref: refreshed.base_ref.clone(),
-            base_commit: refreshed.base_commit.clone().unwrap_or_default(),
-            workspace: agent_workspace_response_with_pr_supervision_for_state(
-                state,
-                execution_state,
-                refreshed,
-            )
-            .await?,
-            updated: false,
-            repair_started: true,
-            base_status: BaseStatus::Valid.as_str().to_string(),
-            effective_base_display_name: None,
-        });
-    }
+    // "Update from base" attempts the mechanical merge first, always. Dispatching a repair
+    // successor before trying is what let a repair-blocked workspace stay stranded on a stale base:
+    // the button restarted the fixer and never updated the branch, even when the merge was clean
+    // and would have restarted CI on its own. The retry is now the fallback for the one case where
+    // the mechanical path has nothing to offer — see `blocked_repair_retry` below.
+    let blocked_repair_retry_allowed = created_by_run_id.is_none();
 
     let project = state
         .project_repo
@@ -6945,30 +6920,6 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             .create_or_update(workspace)
             .await
             .map_err(|e| e.to_string())?;
-        if created_by_run_id.is_none()
-            && retry_blocked_agent_workspace_repair_for_explicit_user_action(
-                state,
-                &workspace,
-                &repair_service,
-                AgentWorkspacePostRepairAction::UpdateOnly,
-            )
-            .await
-        {
-            return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
-                target_ref: workspace.base_ref.clone(),
-                base_commit: workspace.base_commit.clone().unwrap_or_default(),
-                workspace: agent_workspace_response_with_pr_supervision_for_state(
-                    state,
-                    execution_state,
-                    workspace,
-                )
-                .await?,
-                updated: false,
-                repair_started: true,
-                base_status: BaseStatus::Valid.as_str().to_string(),
-                effective_base_display_name: None,
-            });
-        }
         let retargeted_base = BaseResolutionResult {
             status: BaseStatus::Retargeted,
             old_base_ref: previous_base_ref,
@@ -7083,7 +7034,58 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         PublishBranchFreshnessOutcome::AlreadyFresh {
             base_commit,
             target_ref,
-        } => (false, target_ref, base_commit),
+        } => {
+            // The branch already contains its base tip, so there is no mechanical work left. Only
+            // now is restarting a blocked repair the most useful thing the button can do. A
+            // conflict or operational failure takes the arms below instead, and those already
+            // dispatch a repair successor with the correct context.
+            if blocked_repair_retry_allowed
+                && retry_blocked_agent_workspace_repair_for_explicit_user_action(
+                    state,
+                    &workspace,
+                    &repair_service,
+                    AgentWorkspacePostRepairAction::UpdateOnly,
+                )
+                .await
+            {
+                let refreshed = state
+                    .agent_conversation_workspace_repo
+                    .get_by_conversation_id(&conversation_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or(workspace);
+                return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
+                    target_ref,
+                    base_commit,
+                    workspace: agent_workspace_response_with_pr_supervision_for_state(
+                        state,
+                        execution_state,
+                        refreshed,
+                    )
+                    .await?,
+                    updated: false,
+                    repair_started: true,
+                    // Derived exactly as the normal return below does. The mechanical path already
+                    // ran, so its resolved base is real information the caller should not lose
+                    // just because a repair successor was also dispatched.
+                    base_status: base_resolution
+                        .as_ref()
+                        .map(|resolution| resolution.status)
+                        .unwrap_or(BaseStatus::Valid)
+                        .as_str()
+                        .to_string(),
+                    effective_base_display_name: explicit_base
+                        .as_ref()
+                        .map(|selection| selection.display_name.clone())
+                        .or_else(|| {
+                            base_resolution
+                                .as_ref()
+                                .and_then(|resolution| resolution.display_name.clone())
+                        }),
+                });
+            }
+            (false, target_ref, base_commit)
+        }
         PublishBranchFreshnessOutcome::Updated {
             base_commit,
             target_ref,
