@@ -6668,6 +6668,85 @@ async fn conflict_router_defers_unpublished_repair_head_without_join_or_agent_in
     );
 }
 
+/// The persisted health fingerprint hashes the blocker category away, so the completion guard can
+/// only see it if dispatch stamps the typed kind on the attempt itself.
+async fn dispatched_pr_autofix_issue_kind(
+    label: &str,
+    health: crate::domain::services::github_service::PrHealth,
+) -> Option<crate::domain::entities::AgentWorkspacePrAutofixIssueKind> {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(label, &format!("project-{label}"), worktree.path());
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some(format!("base-{label}"));
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo,
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+    )
+    .await
+    .expect("autofix routing should succeed");
+    assert!(routed, "{label} health should dispatch a fixer generation");
+
+    repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("repair attempt should load")
+        .expect("dispatched attempt should be current")
+        .pr_autofix_issue_kind
+}
+
+#[tokio::test]
+async fn pr_autofix_dispatch_stamps_the_backend_observed_issue_kind() {
+    let mut mergeability_health = open_pr_health("kind-mergeability-head");
+    mergeability_health.sync_state.merge_state_status = Some(PrMergeStateStatus::Behind);
+    assert_eq!(
+        dispatched_pr_autofix_issue_kind("kind-mergeability", mergeability_health).await,
+        Some(crate::domain::entities::AgentWorkspacePrAutofixIssueKind::Mergeability)
+    );
+
+    let mut checks_health = open_pr_health("kind-checks-head");
+    checks_health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/1".to_string()),
+    });
+    assert_eq!(
+        dispatched_pr_autofix_issue_kind("kind-checks", checks_health).await,
+        Some(crate::domain::entities::AgentWorkspacePrAutofixIssueKind::Checks)
+    );
+
+    let mut review_health = open_pr_health("kind-review-head");
+    review_health.review_decision = Some("CHANGES_REQUESTED".to_string());
+    assert_eq!(
+        dispatched_pr_autofix_issue_kind("kind-review", review_health).await,
+        Some(crate::domain::entities::AgentWorkspacePrAutofixIssueKind::Review)
+    );
+}
+
 #[tokio::test]
 async fn live_pr_autofix_suppresses_same_fingerprint_while_ci_rerun_is_pending() {
     let worktree = tempfile::tempdir().expect("worktree path");

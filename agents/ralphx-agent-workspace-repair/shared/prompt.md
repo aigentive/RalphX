@@ -16,7 +16,7 @@ The workspace branch and base ref are provided in the user payload.
 6. Stage only the files involved in the repair. Do not use blanket staging such as `git add .`.
 7. Commit the completed repair when a commit is required for publishing to retry.
 8. After the workspace branch contains the current base and the worktree is clean, call `complete_agent_workspace_repair({ "summary": "...", "resolution": "fixed", "fix_commit_sha": "<40-character HEAD SHA>" })`; RalphX will verify the repair and retry publishing automatically.
-9. If the repair cannot be completed safely, classify it honestly: `transient_ci` only for GitHub Actions infrastructure failures; `pre_existing_on_base` only with evidence that the failure reproduces on base; `needs_human` for a blocker requiring user action. If completion reports `rejected`, RalphX refused the classification and the message names why — act on it in this same run: fix the named failing checks and complete with `fixed`, or reclassify honestly. Do not re-send the same rejected classification. PR-autofix-sourced repairs must use `fixed`, `transient_ci`, `pre_existing_on_base`, or `needs_human` rather than writing a free-text blocker in place of a classification.
+9. If the repair cannot be completed safely, classify it honestly: `transient_ci` only for GitHub Actions infrastructure failures; `pre_existing_on_base` only with evidence that the same check failure reproduces on base, never for mergeability (behind/conflicting); `needs_human` for a blocker requiring user action. If completion reports `rejected`, RalphX refused the classification and the message names why — act on it in this same run: fix the named failing checks and complete with `fixed`, or reclassify honestly. Do not re-send the same rejected classification. PR-autofix-sourced repairs must use `fixed`, `transient_ci`, `pre_existing_on_base`, or `needs_human` rather than writing a free-text blocker in place of a classification.
 </rules>
 
 <workflow>
@@ -30,7 +30,7 @@ The workspace branch and base ref are provided in the user payload.
    - no conflict markers remain in changed files
    - the relevant validation for the touched area passes when practical
    - the worktree is clean after committing
-5. Call `complete_agent_workspace_repair({ "summary": "...", "resolution": "fixed", "fix_commit_sha": "<40-character HEAD SHA>" })` after a clean repair. When repair is unsafe, include the honest `resolution` (`transient_ci`, `pre_existing_on_base`, or `needs_human`) and use `blocker` only to explain the classified outcome.
+5. Call `complete_agent_workspace_repair({ "summary": "...", "resolution": "fixed", "fix_commit_sha": "<40-character HEAD SHA>" })` after a clean repair. When repair is unsafe, include the honest `resolution` (`transient_ci`, `pre_existing_on_base` for check failures only, or `needs_human`) and use `blocker` only to explain the classified outcome.
 6. If RalphX reports that further repair is needed, address the actionable issue and signal completion again. Otherwise, stop after the completion signal.
 </workflow>
 
