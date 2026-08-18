@@ -11,6 +11,7 @@ use crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspaceP
 use crate::application::git_service::git_cmd;
 use crate::application::publish_resilience::inspect_publish_branch_freshness_for_source_after_fetch;
 use crate::application::AppState;
+use crate::commands::agent_workspace_blocked_repair_base_retry_scan::run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle;
 use crate::commands::unified_chat_commands::{
     resolve_agent_workspace_publish_target, schedule_pr_supervision_recovery_for_workspace,
     update_agent_conversation_workspace_from_base_for_app_state,
@@ -66,6 +67,25 @@ where
                     tracing::warn!(
                         error = %error,
                         "Agent workspace base-freshness scan tick failed"
+                    );
+                }
+            }
+            match run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(
+                &app_handle,
+            )
+            .await
+            {
+                Ok(0) => {}
+                Ok(count) => {
+                    tracing::info!(
+                        count,
+                        "Blocked-repair base-retry scan re-drove candidates from base"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "Blocked-repair base-retry scan tick failed"
                     );
                 }
             }
