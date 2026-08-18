@@ -6,6 +6,7 @@ import {
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -1063,6 +1064,7 @@ describe("AgentsView publish", () => {
   });
 
   it("disables the resume action while Workspace Review gates publishing", async () => {
+    const user = userEvent.setup();
     configurePublishPane({
       workspace: { maintenanceOperation: readyResumeOperation },
       changes: [],
@@ -1072,15 +1074,17 @@ describe("AgentsView publish", () => {
     const actionbar = await openPublishPane();
     await settleChangedFileCount(0);
 
-    const resume = within(actionbar).getByTestId(
-      "agents-publish-resume-maintenance",
+    // Re-query inside waitFor: the button is remounted when the tooltip wrapper is added.
+    await waitFor(
+      () => expect(within(actionbar).getByTestId("agents-publish-resume-maintenance")).toBeDisabled(),
+      deferredHydrationTimeout,
     );
-    await waitFor(() => expect(resume).toBeDisabled());
+    const resume = within(actionbar).getByTestId("agents-publish-resume-maintenance");
     expect(resume).toHaveTextContent("Reviewing");
-    expect(resume).toHaveAttribute(
-      "title",
-      expect.stringContaining("Workspace Review"),
-    );
+    // The review-gate reason must surface to the user through the tooltip, not just
+    // the DOM title attribute (which is hidden on disabled buttons with pointer-events-none).
+    await user.hover(resume.parentElement!);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(/Workspace Review/i);
   });
 
   it("disables the retry action while Workspace Review gates publishing", async () => {
@@ -1104,6 +1108,7 @@ describe("AgentsView publish", () => {
   });
 
   it("explains why a maintenance action is disabled by a blocked base", async () => {
+    const user = userEvent.setup();
     configurePublishPane({
       workspace: { maintenanceOperation: readyResumeOperation },
       freshness: {
@@ -1116,17 +1121,38 @@ describe("AgentsView publish", () => {
     });
 
     const actionbar = await openPublishPane();
-    const resume = within(actionbar).getByTestId(
-      "agents-publish-resume-maintenance",
-    );
 
     // The banner replaces the base-blocked remediation button, so a disabled
     // action here must say why instead of just refusing.
-    await waitFor(() => expect(resume).toBeDisabled());
-    expect(resume).toHaveAttribute(
-      "title",
-      expect.stringContaining("base branch"),
+    // Re-query inside waitFor: the button is remounted when the tooltip wrapper is added.
+    await waitFor(
+      () => expect(within(actionbar).getByTestId("agents-publish-resume-maintenance")).toBeDisabled(),
+      deferredHydrationTimeout,
     );
+    const resume = within(actionbar).getByTestId("agents-publish-resume-maintenance");
+    // The blocked reason must reach the user via the tooltip, not just the hidden
+    // DOM title attribute (disabled buttons have pointer-events-none on them).
+    await user.hover(resume.parentElement!);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(/base branch/i);
+  });
+
+  it("shows no blocked-reason tooltip on an enabled maintenance button", async () => {
+    const user = userEvent.setup();
+    configurePublishPane({
+      workspace: { maintenanceOperation: readyResumeOperation },
+      changes: [],
+    });
+    const actionbar = await openPublishPane();
+    await settleChangedFileCount(0);
+
+    const resume = within(actionbar).getByTestId(
+      "agents-publish-resume-maintenance",
+    );
+    expect(resume).toBeEnabled();
+    // An enabled button (blockedReason === null) renders without a tooltip wrapper.
+    // Hovering it must not produce any tooltip content.
+    await user.hover(resume);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 
   it("retries blocked maintenance through the normal non-task-pipeline publish flow", async () => {

@@ -265,6 +265,26 @@ export type AgentPublishReviewEvidence =
   | { status: "error"; error: Error }
   | { status: "ready"; changeCount: number };
 
+function MaintenanceActionWrapper({
+  gate,
+  children,
+}: {
+  gate: { disabled: boolean; blockedReason: string | null };
+  children: ReactNode;
+}) {
+  if (gate.blockedReason === null) {
+    return <>{children}</>;
+  }
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild>
+        <span className="inline-flex">{children}</span>
+      </TooltipTrigger>
+      <TooltipContent>{gate.blockedReason}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function AgentPublishPanel({
   workspace,
   conversationTitle,
@@ -1659,31 +1679,33 @@ export function AgentPublishPanel({
                   {maintenancePresentation.title}
                 </Button>
               ) : maintenancePresentation?.action === "none" ? null : maintenancePresentation?.action === "retry" ? (
-                <Button
-                  type="button"
-                  className={primaryActionClassName}
-                  onClick={confirmMaintenancePublish}
-                  disabled={maintenancePublishGate.disabled}
-                  title={maintenancePublishGate.blockedReason ?? undefined}
-                  data-testid="agents-publish-retry-maintenance"
-                >
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  {maintenancePublishGate.label ?? retryRepairLabel}
-                </Button>
+                <MaintenanceActionWrapper gate={maintenancePublishGate}>
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    onClick={confirmMaintenancePublish}
+                    disabled={maintenancePublishGate.disabled}
+                    data-testid="agents-publish-retry-maintenance"
+                  >
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    {maintenancePublishGate.label ?? retryRepairLabel}
+                  </Button>
+                </MaintenanceActionWrapper>
               ) : maintenancePresentation?.action === "publish" ? (
-                <Button
-                  type="button"
-                  className={primaryActionClassName}
-                  onClick={confirmMaintenancePublish}
-                  disabled={maintenancePublishGate.disabled}
-                  title={maintenancePublishGate.blockedReason ?? undefined}
-                  data-testid="agents-publish-resume-maintenance"
-                >
-                  <GitPullRequestArrow className="h-3.5 w-3.5" />
-                  {/* The branch is already committed and pushed; only the parked
-                      durable attempt still needs to settle. */}
-                  {maintenancePublishGate.label ?? "Resume publish"}
-                </Button>
+                <MaintenanceActionWrapper gate={maintenancePublishGate}>
+                  <Button
+                    type="button"
+                    className={primaryActionClassName}
+                    onClick={confirmMaintenancePublish}
+                    disabled={maintenancePublishGate.disabled}
+                    data-testid="agents-publish-resume-maintenance"
+                  >
+                    <GitPullRequestArrow className="h-3.5 w-3.5" />
+                    {/* The branch is already committed and pushed; only the parked
+                        durable attempt still needs to settle. */}
+                    {maintenancePublishGate.label ?? "Resume publish"}
+                  </Button>
+                </MaintenanceActionWrapper>
               ) : isRepairPending ? (
                 <Button
                   type="button"
