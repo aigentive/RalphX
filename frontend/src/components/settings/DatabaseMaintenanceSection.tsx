@@ -16,7 +16,9 @@ const SKIP_REASON_COPY: Record<string, string> = {
   insufficient_disk_headroom: "Not enough free disk space",
   disk_headroom_unavailable: "Free disk space could not be checked",
   database_missing: "No database file was found",
-  database_above_auto_limit: "Database is above the automatic size limit — schedule it manually",
+  // No longer produced: the size gate was removed because it locked large databases out of the
+  // self-healing they most needed. Kept so pre-existing sidecar records still read cleanly.
+  database_above_auto_limit: "Database was above the old automatic size limit (no longer applied)",
   freelist_below_auto_limit: "Too little reclaimable space to be worth it",
   wal_checkpoint_incomplete: "The database was still being written to",
   swap_interrupted:

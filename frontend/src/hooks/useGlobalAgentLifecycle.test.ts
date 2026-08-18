@@ -14,7 +14,7 @@
  * - Verification cache invalidated on abnormal child termination
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
 // ============================================================================
@@ -100,7 +100,10 @@ vi.mock("@/lib/logger", () => ({
 // Import hook and stores after mocks
 // ============================================================================
 
-import { useGlobalAgentLifecycle } from "./useGlobalAgentLifecycle";
+import {
+  AGENT_SIDEBAR_INVALIDATION_DEBOUNCE_MS,
+  useGlobalAgentLifecycle,
+} from "./useGlobalAgentLifecycle";
 import { agentSidebarConversationKeys } from "./agentSidebarConversationKeys";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { toast } from "sonner";
@@ -162,7 +165,18 @@ function mkError(contextType: string, contextId: string, error = "process crashe
 // ============================================================================
 
 describe("useGlobalAgentLifecycle", () => {
+  /**
+   * Sidebar invalidation is debounced, so every assertion about it must let the trailing timer
+   * fire. Non-sidebar invalidation (verification cache) stays synchronous.
+   */
+  function flushSidebarInvalidation() {
+    act(() => {
+      vi.advanceTimersByTime(AGENT_SIDEBAR_INVALIDATION_DEBOUNCE_MS);
+    });
+  }
+
   beforeEach(() => {
+    vi.useFakeTimers();
     subscriptions.clear();
     mockInvalidateQueries.mockClear();
     mockGetQueryData.mockReturnValue(undefined);
@@ -189,6 +203,50 @@ describe("useGlobalAgentLifecycle", () => {
       planArtifact: null,
       activeVerificationChildId: {},
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // --------------------------------------------------------------------------
+  // sidebar invalidation debounce
+  // --------------------------------------------------------------------------
+
+  it("collapses a burst of lifecycle events into one sidebar invalidation", () => {
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      for (let i = 0; i < 5; i += 1) {
+        fireEvent("agent:run_started", mkRunStarted("project", `project-${i}`));
+        vi.advanceTimersByTime(AGENT_SIDEBAR_INVALIDATION_DEBOUNCE_MS / 5);
+      }
+    });
+    expect(mockInvalidateQueries).not.toHaveBeenCalled();
+
+    flushSidebarInvalidation();
+    expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: agentSidebarConversationKeys.all,
+    });
+
+    act(() => {
+      fireEvent("agent:run_started", mkRunStarted("project", "project-later"));
+    });
+    flushSidebarInvalidation();
+    expect(mockInvalidateQueries).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops a pending sidebar invalidation when the hook unmounts", () => {
+    const { unmount } = renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:run_started", mkRunStarted("project", "project-1"));
+    });
+    unmount();
+    flushSidebarInvalidation();
+
+    expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 
   // --------------------------------------------------------------------------
@@ -371,6 +429,7 @@ describe("useGlobalAgentLifecycle", () => {
         fireEvent("agent:run_started", mkRunStarted(contextType, `${contextType}-1`));
       });
 
+      flushSidebarInvalidation();
       expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
         queryKey: agentSidebarConversationKeys.all,
@@ -385,6 +444,7 @@ describe("useGlobalAgentLifecycle", () => {
       fireEvent("agent:run_started", mkRunStarted("task_execution", "task-1"));
     });
 
+    flushSidebarInvalidation();
     expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 
@@ -542,6 +602,7 @@ describe("useGlobalAgentLifecycle", () => {
     expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
     expect(chatStoreMocks.activeAgentRunIds["project:conv-project-1"]).toBe("run-new");
     expect(chatStoreMocks.activeAgentRunHarnesses["project:conv-project-1"]).toBe("codex");
+    flushSidebarInvalidation();
     expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 
@@ -567,6 +628,7 @@ describe("useGlobalAgentLifecycle", () => {
     expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
     expect(chatStoreMocks.activeAgentRunIds["project:conv-project-1"]).toBe("run-new");
     expect(chatStoreMocks.activeAgentRunHarnesses["project:conv-project-1"]).toBe("codex");
+    flushSidebarInvalidation();
     expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 
@@ -608,6 +670,7 @@ describe("useGlobalAgentLifecycle", () => {
       });
     });
 
+    flushSidebarInvalidation();
     expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: agentSidebarConversationKeys.all,
@@ -689,6 +752,7 @@ describe("useGlobalAgentLifecycle", () => {
       "project:conv-project-1",
       "waiting_for_input"
     );
+    flushSidebarInvalidation();
     expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 
@@ -706,6 +770,7 @@ describe("useGlobalAgentLifecycle", () => {
       });
     });
 
+    flushSidebarInvalidation();
     expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: agentSidebarConversationKeys.all,
@@ -746,6 +811,7 @@ describe("useGlobalAgentLifecycle", () => {
       "idle"
     );
     expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
+    flushSidebarInvalidation();
     expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 
@@ -765,6 +831,7 @@ describe("useGlobalAgentLifecycle", () => {
       });
     });
 
+    flushSidebarInvalidation();
     expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: agentSidebarConversationKeys.all,
@@ -855,6 +922,7 @@ describe("useGlobalAgentLifecycle", () => {
       "idle"
     );
     expect(toast.error).not.toHaveBeenCalled();
+    flushSidebarInvalidation();
     expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 
@@ -874,6 +942,7 @@ describe("useGlobalAgentLifecycle", () => {
     });
 
     expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
+    flushSidebarInvalidation();
     expect(mockInvalidateQueries).not.toHaveBeenCalled();
   });
 
@@ -892,6 +961,7 @@ describe("useGlobalAgentLifecycle", () => {
       });
     });
 
+    flushSidebarInvalidation();
     expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: agentSidebarConversationKeys.all,
