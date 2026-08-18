@@ -4947,7 +4947,7 @@ fn blocked_workspace_repair_retry_context_carries_blocker_commit_and_base_retarg
             .to_string(),
     ];
 
-    let context = compose_blocked_repair_retry_context(&attempt, "main");
+    let context = compose_blocked_repair_retry_context(&attempt, "main", None);
 
     assert!(context.contains("old base ref was deleted after its PR merged"));
     assert!(context.contains("bba066f"));
@@ -4977,7 +4977,7 @@ fn blocked_workspace_repair_retry_context_uses_summary_when_no_human_reason_exis
     ];
     attempt.summary = Some("repair summary retained for retry".to_string());
 
-    let context = compose_blocked_repair_retry_context(&attempt, "main");
+    let context = compose_blocked_repair_retry_context(&attempt, "main", None);
 
     assert!(context.contains("repair summary retained for retry"));
     assert!(!context.contains(
@@ -5001,7 +5001,7 @@ fn blocked_workspace_repair_retry_context_prefers_human_reason_over_summary() {
     attempt.pending_reasons = vec!["real reason".to_string()];
     attempt.summary = Some("internal delivery message".to_string());
 
-    let context = compose_blocked_repair_retry_context(&attempt, "main");
+    let context = compose_blocked_repair_retry_context(&attempt, "main", None);
 
     assert!(context.contains("real reason"));
     assert!(!context.contains("internal delivery message"));
@@ -5021,7 +5021,7 @@ fn blocked_workspace_repair_retry_context_uses_default_without_human_context() {
         chrono::Utc::now(),
     );
 
-    let context = compose_blocked_repair_retry_context(&attempt, "main");
+    let context = compose_blocked_repair_retry_context(&attempt, "main", None);
 
     assert!(context.contains("Retrying blocked workspace repair."));
 }
@@ -5040,11 +5040,98 @@ fn blocked_workspace_repair_retry_context_omits_retarget_details_for_same_base()
         chrono::Utc::now(),
     );
     attempt.blocker = Some("still needs a repair".to_string());
+    attempt.target_base_commit = Some("aaaaaaa".to_string());
 
-    let context = compose_blocked_repair_retry_context(&attempt, "main");
+    let context = compose_blocked_repair_retry_context(&attempt, "main", Some("aaaaaaa"));
 
     assert!(context.contains("still needs a repair"));
     assert!(!context.contains("The base has since been updated"));
+    assert!(!context.contains("has since moved"));
+}
+
+/// A `main` → `main` retarget where only the commit moved is exactly the incident shape: the ref
+/// name comparison alone reports "same base" and the successor never learns its base is stale.
+#[test]
+fn blocked_workspace_repair_retry_context_reports_a_moved_base_commit_on_the_same_ref() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-moved-commit".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.blocker = Some("CI shard was preempted".to_string());
+    attempt.target_base_commit = Some("1111111".to_string());
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main", Some("2222222"));
+
+    assert!(context.contains("CI shard was preempted"));
+    assert!(context.contains("has since moved"));
+    assert!(context.contains("1111111"));
+    assert!(context.contains("2222222"));
+    assert!(
+        !context.contains("The base has since been updated"),
+        "the ref name did not change, so the retarget wording must not fire"
+    );
+}
+
+/// Unknown commits on either side are not evidence that the base moved.
+#[test]
+fn blocked_workspace_repair_retry_context_omits_moved_base_hint_without_commit_evidence() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-unknown-commit".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.blocker = Some("still needs a repair".to_string());
+
+    assert!(
+        !compose_blocked_repair_retry_context(&attempt, "main", Some("2222222"))
+            .contains("has since moved")
+    );
+
+    attempt.target_base_commit = Some("1111111".to_string());
+    assert!(
+        !compose_blocked_repair_retry_context(&attempt, "main", None).contains("has since moved")
+    );
+    assert!(
+        !compose_blocked_repair_retry_context(&attempt, "main", Some("   "))
+            .contains("has since moved")
+    );
+}
+
+/// A genuine ref retarget keeps its existing wording and does not additionally emit the
+/// same-ref moved-commit hint.
+#[test]
+fn blocked_workspace_repair_retry_context_prefers_retarget_wording_over_moved_commit() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-retarget-and-move".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "ralphx/old",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.blocker = Some("still needs a repair".to_string());
+    attempt.target_base_commit = Some("1111111".to_string());
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main", Some("2222222"));
+
+    assert!(context.contains("The base has since been updated"));
+    assert!(!context.contains("has since moved"));
 }
 
 #[tokio::test]

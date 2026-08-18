@@ -10788,7 +10788,11 @@ where
         worktree_path: Some(resolved.path),
     };
 
-    let error = compose_blocked_repair_retry_context(&attempt, &target.base_ref);
+    let error = compose_blocked_repair_retry_context(
+        &attempt,
+        &target.base_ref,
+        retry_workspace.base_commit.as_deref(),
+    );
     mark_agent_workspace_failure_with_routing_and_action_classified(
         state,
         &retry_workspace,
@@ -10834,9 +10838,15 @@ fn repair_handoff_verification_result(
 /// Successor context for a user-directed retry of a blocked repair. Prefer the previous fixer's
 /// blocker and human-authored reason before the durable delivery summary; machine markers in
 /// `pending_reasons` must never become the successor's only context.
+///
+/// `new_base_commit` is the freshly resolved tip of `new_base_ref`. It exists because a ref-name
+/// comparison alone misses a `main` → `main` retarget where only the commit moved, which is the
+/// exact shape that leaves a successor believing its stale base is current. An unreadable commit
+/// on either side is not evidence of a move, so the hint stays silent.
 fn compose_blocked_repair_retry_context(
     attempt: &AgentWorkspaceRepairAttempt,
     new_base_ref: &str,
+    new_base_commit: Option<&str>,
 ) -> String {
     let core = attempt
         .blocker
@@ -10866,6 +10876,21 @@ fn compose_blocked_repair_retry_context(
             " The base has since been updated from {} to {new_base_ref}; verify the workspace against the new base.",
             attempt.target_base_ref
         ));
+    } else if let (Some(previous_commit), Some(current_commit)) = (
+        attempt
+            .target_base_commit
+            .as_deref()
+            .map(str::trim)
+            .filter(|commit| !commit.is_empty()),
+        new_base_commit
+            .map(str::trim)
+            .filter(|commit| !commit.is_empty()),
+    ) {
+        if previous_commit != current_commit {
+            context.push_str(&format!(
+                " The base {new_base_ref} has since moved from {previous_commit} to {current_commit}; verify the workspace against the new base tip."
+            ));
+        }
     }
     context
 }
