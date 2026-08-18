@@ -27,6 +27,7 @@ mod agent_workspace_auto_publish_tests;
 pub(crate) mod agent_workspace_auto_review;
 #[cfg(test)]
 mod agent_workspace_auto_review_tests;
+pub(crate) mod agent_workspace_blocked_repair_base_retry_scan;
 pub(crate) mod agent_workspace_repair_reconciliation_scan;
 #[cfg(test)]
 mod agent_workspace_repair_reconciliation_scan_tests;
