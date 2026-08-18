@@ -1612,23 +1612,24 @@ describe("getAgentWorkspaceMaintenancePublishGate", () => {
   });
 
   it.each([
-    ["hasPublishHandler", { hasPublishHandler: false }],
-    ["isManagedByTaskPipeline", { isManagedByTaskPipeline: true }],
-    ["effectivePublishing", { effectivePublishing: true }],
-    ["isAutomationPreferenceSaving", { isAutomationPreferenceSaving: true }],
-    ["baseBlocked", { baseBlocked: true }],
-    ["hasPrConflict", { hasPrConflict: true }],
-    ["hasTerminalPublication", { hasTerminalPublication: true }],
-    ["workspaceMissing", { workspaceMissing: true }],
-  ] satisfies [string, Partial<AgentWorkspaceMaintenancePublishGateInput>][])(
+    ["hasPublishHandler", { hasPublishHandler: false }, "unavailable"],
+    ["isManagedByTaskPipeline", { isManagedByTaskPipeline: true }, "task pipeline"],
+    ["effectivePublishing", { effectivePublishing: true }, "already in progress"],
+    ["isAutomationPreferenceSaving", { isAutomationPreferenceSaving: true }, "automation preferences"],
+    ["baseBlocked", { baseBlocked: true }, "base branch"],
+    ["hasPrConflict", { hasPrConflict: true }, "pull request conflicts"],
+    ["hasTerminalPublication", { hasTerminalPublication: true }, "already merged or closed"],
+    ["workspaceMissing", { workspaceMissing: true }, "files are missing"],
+  ] satisfies [string, Partial<AgentWorkspaceMaintenancePublishGateInput>, string][])(
     "disables the maintenance action for %s and explains why",
-    (_name, overrides) => {
+    (_name, overrides, expectedSubstring) => {
       const gate = getAgentWorkspaceMaintenancePublishGate(gateInput(overrides));
       expect(gate.disabled).toBe(true);
       // The banner replaces the base/PR-conflict remediation buttons, so a
       // disabled maintenance action must carry its own user-facing reason.
       expect(gate.blockedReason).toEqual(expect.any(String));
       expect(gate.blockedReason?.trim().length ?? 0).toBeGreaterThan(0);
+      expect(gate.blockedReason).toContain(expectedSubstring);
     },
   );
 
