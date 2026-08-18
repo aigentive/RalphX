@@ -152,10 +152,7 @@ pub(crate) async fn run_agent_workspace_repair_reconciliation_scan_tick_for_stat
         // routing.
         schedule_pr_supervision_recovery_for_workspace(
             state,
-            crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
-                state,
-                Arc::clone(execution_state),
-            ),
+            execution_state,
             &workspace,
             AgentWorkspacePrSupervisionRecoveryTrigger::PeriodicScan,
             false,

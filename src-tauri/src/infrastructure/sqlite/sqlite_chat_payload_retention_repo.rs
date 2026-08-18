@@ -140,8 +140,54 @@ impl SqliteChatPayloadRetentionRepository {
             .await
     }
 
-    /// Full payload scan. Multi-GB of reads on a large database — at most once per cycle,
-    /// and never on a UI/IPC request path.
+    /// One bounded slice of the payload measurement, keyset-paginated on `block_id` (the payload
+    /// table's own key, so no join is needed and the walk is stable under concurrent deletes).
+    ///
+    /// Returns the slice's partial usage plus the cursor to resume from, or `None` at the end.
+    /// Callers sum the slices; each call holds a pooled connection for one bounded read instead of
+    /// the whole table.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AppError::Database` when the batch query fails.
+    pub async fn payload_usage_batch(
+        &self,
+        batch_rows: u32,
+        cursor: Option<String>,
+    ) -> AppResult<(PayloadUsage, Option<String>)> {
+        self.db
+            .run(move |conn| {
+                let mut statement = conn.prepare(&format!(
+                    r#"
+                    SELECT payload.block_id, {PAYLOAD_BYTES_EXPR} AS payload_bytes
+                    FROM chat_message_block_payloads AS payload
+                    WHERE (?2 IS NULL OR payload.block_id > ?2)
+                    ORDER BY payload.block_id ASC
+                    LIMIT ?1
+                    "#
+                ))?;
+                let mut rows = statement.query(params![batch_rows, cursor])?;
+                let mut usage = PayloadUsage::default();
+                let mut last_block_id: Option<String> = None;
+                while let Some(row) = rows.next()? {
+                    last_block_id = Some(row.get::<_, String>(0)?);
+                    usage.total_bytes += row.get::<_, i64>(1)?.max(0) as u64;
+                    usage.row_count += 1;
+                }
+                // A short batch means the walk is done; only a full batch can have more behind it.
+                let next_cursor = if usage.row_count == u64::from(batch_rows) {
+                    last_block_id
+                } else {
+                    None
+                };
+                Ok((usage, next_cursor))
+            })
+            .await
+    }
+
+    /// Full payload scan in a single statement. Multi-GB of reads on a large database, held for
+    /// the whole query — production measurement goes through [`Self::payload_usage_batch`]; this
+    /// remains as the equivalence oracle for tests.
     ///
     /// # Errors
     ///

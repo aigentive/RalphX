@@ -170,11 +170,15 @@ fn skips_and_consumes_marker_when_database_missing_but_records_the_reason_first(
     assert_eq!(record.reason.as_deref(), Some("database_missing"));
 }
 
+/// Proof obligation 4: a database far above `auto_max_db_bytes` compacts on the auto path. The
+/// old gate inverted the intent — the bigger the database, the *less* likely it was to be
+/// compacted — so a bloated production database could never self-heal.
 #[test]
-fn auto_path_skips_database_above_size_limit() {
+fn auto_path_compacts_database_above_size_limit() {
     let dir = TempDir::new().unwrap();
     let paths = temp_paths(&dir);
     seed_bloated_db(&paths);
+    let before = std::fs::metadata(&paths.database_path).unwrap().len();
     let outcome = compact_before_pool_opens_at(
         &paths,
         CompactionConfig {
@@ -184,9 +188,33 @@ fn auto_path_skips_database_above_size_limit() {
         },
     )
     .unwrap();
+    let CompactionOutcome::Compacted { reclaimed_bytes } = outcome else {
+        panic!("a database above the auto size limit must still compact, got {outcome:?}");
+    };
+    assert!(reclaimed_bytes > 0);
+    assert!(std::fs::metadata(&paths.database_path).unwrap().len() < before);
+}
+
+/// The size limit is gone, but the other auto guards are not: an oversized database whose freelist
+/// share is below the threshold still skips with a recorded reason, so removing one arm of the
+/// chain did not collapse the rest.
+#[test]
+fn auto_path_above_size_limit_still_honors_the_freelist_threshold() {
+    let dir = TempDir::new().unwrap();
+    let paths = temp_paths(&dir);
+    seed_bloated_db(&paths);
+    let outcome = compact_before_pool_opens_at(
+        &paths,
+        CompactionConfig {
+            auto_enabled: true,
+            auto_max_db_bytes: 1,
+            auto_min_freelist_percent: 101,
+        },
+    )
+    .unwrap();
     assert_eq!(
         outcome,
-        CompactionOutcome::Skipped("database_above_auto_limit")
+        CompactionOutcome::Skipped("freelist_below_auto_limit")
     );
 }
 
