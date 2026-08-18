@@ -10,6 +10,7 @@ use axum::{
 };
 
 use super::*;
+use crate::application::agent_workspace_ci_rerun::{transient_ci_rerun_plan, TransientCiPlan};
 use crate::application::agent_workspace_publish_repair_state::{
     block_agent_workspace_repair_completion, block_agent_workspace_repair_needs_human,
     classify_agent_workspace_repair_completion_authority,
@@ -20,7 +21,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     reserve_agent_workspace_pre_existing_on_base,
     reserve_agent_workspace_repair_completion_validation,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairTransitionOutcome,
-    PublishAuthority,
+    PublishAuthority, MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES,
 };
 use crate::application::publish_resilience::continue_agent_workspace_repair_publish;
 use crate::domain::entities::{
@@ -548,6 +549,11 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
         req.resolution,
         Some(AgentWorkspacePrFixResolution::NeedsHuman)
     ) {
+        if let Some(rejection) =
+            needs_human_rejection_for_rerunnable_ci(state, &attempt, &workspace).await
+        {
+            return Err(json_error(StatusCode::CONFLICT, rejection, None));
+        }
         return match block_agent_workspace_repair_needs_human(
             Arc::clone(&state.app_state.agent_workspace_repair_repo),
             Arc::clone(&state.app_state.branch_update_repo),
@@ -904,4 +910,50 @@ async fn complete_reserved_agent_workspace_repair(
         "accepted",
         "Workspace repair verified; RalphX will continue the stored workflow.",
     ))
+}
+
+/// Rejects a `needs_human` escalation that RalphX can still resolve on its own.
+///
+/// A `needs_human` marker is an absolute fence on automation, so escalating "rerun this once the
+/// workflow completes" strands the workspace until a person intervenes. When fresh health shows the
+/// current head is only waiting on in-flight runs, or carries transient failures RalphX is still
+/// budgeted to rerun, `transient_ci` is the correct classification and RalphX performs the rerun
+/// itself.
+///
+/// Fails open in every unknown case — an absent GitHub service, an unresolvable PR target, a failed
+/// health fetch, or an exhausted rerun budget. A GitHub outage must never trap a fixer that
+/// legitimately needs human input, and once RalphX has spent its automatic remedies a human really
+/// is the next step.
+async fn needs_human_rejection_for_rerunnable_ci(
+    state: &HttpServerState,
+    attempt: &AgentWorkspaceRepairAttempt,
+    workspace: &AgentConversationWorkspace,
+) -> Option<String> {
+    if attempt.ci_rerun_count >= MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES {
+        return None;
+    }
+    let github = state.app_state.github_service.as_ref()?;
+    let target = resolve_agent_workspace_pr_fix_target(state.app_state.as_ref(), workspace)
+        .await
+        .ok()
+        .flatten()?;
+    let health = github
+        .fetch_pr_health(&target.working_dir, target.pr_number)
+        .await
+        .ok()?;
+
+    match transient_ci_rerun_plan(&health) {
+        TransientCiPlan::AwaitRuns(_) => Some(
+            "Rejected `needs_human`: fresh PR health reports the current head is still waiting on in-progress GitHub Actions runs, so no user action is required yet. Complete with `transient_ci` instead — RalphX holds the attempt and reruns the run automatically once it finishes."
+                .to_string(),
+        ),
+        TransientCiPlan::Rerun { .. } => Some(
+            "Rejected `needs_human`: fresh PR health reports only infrastructure failures at the current head, which RalphX can still rerun. Complete with `transient_ci` instead."
+                .to_string(),
+        ),
+        TransientCiPlan::MissingHead
+        | TransientCiPlan::NoObservedFailure
+        | TransientCiPlan::NoFailuresAtHead
+        | TransientCiPlan::DeterministicFailures(_) => None,
+    }
 }
