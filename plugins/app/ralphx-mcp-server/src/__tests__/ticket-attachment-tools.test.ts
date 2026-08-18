@@ -35,6 +35,9 @@ describe("ticket attachment MCP tools", () => {
 
   it("registers exactly the read-only attachment tool schemas", () => {
     const allTools = getAllTools();
+    // "path" is deliberately excluded here: fetch_ticket_attachment's
+    // description now documents the contentPath delivery shape. Argument
+    // shape stays covered below via inputSchema.properties.
     const forbiddenSchemaTerms = [
       "url",
       "token",
@@ -42,7 +45,6 @@ describe("ticket attachment MCP tools", () => {
       "authorization",
       "download",
       "cache",
-      "path",
       "source",
       "handle",
     ];
@@ -63,6 +65,15 @@ describe("ticket attachment MCP tools", () => {
           "cache_path",
         ])
       );
+      // Arguments never accept a path/location/handle-shaped input, even
+      // though the response may now carry a materialized contentPath.
+      const inputSchemaText = JSON.stringify(tool!.inputSchema).toLowerCase();
+      for (const term of [...forbiddenSchemaTerms, "path"]) {
+        expect(
+          inputSchemaText,
+          `${name} input schema must not expose ${term}`
+        ).not.toContain(term);
+      }
       const schemaText = JSON.stringify(tool).toLowerCase();
       for (const term of forbiddenSchemaTerms) {
         expect(schemaText, `${name} schema must not expose ${term}`).not.toContain(
@@ -269,6 +280,94 @@ describe("ticket attachment MCP tools", () => {
     expect(JSON.stringify(shaped)).not.toContain("https://");
     expect(JSON.stringify(shaped)).not.toContain("Bearer");
     expect(JSON.stringify(shaped)).not.toContain("/tmp/cache");
+  });
+
+  it("lets a materialized contentPath survive redaction even under /Users/", () => {
+    const shaped = safeTicketAttachmentResult({
+      content: {
+        kind: "ticket_attachment_content",
+        id: "ta_456",
+        trust: "untrusted_external_content",
+        available: true,
+        contentPath:
+          "/Users/agent/Library/Application Support/com.ralphx.app/ticket_attachments/ta/content.txt",
+      },
+    });
+
+    expect(shaped).toEqual({
+      content: {
+        kind: "ticket_attachment_content",
+        id: "ta_456",
+        trust: "untrusted_external_content",
+        available: true,
+        contentPath:
+          "/Users/agent/Library/Application Support/com.ralphx.app/ticket_attachments/ta/content.txt",
+      },
+    });
+  });
+
+  it("lets small inline contentText survive redaction", () => {
+    const shaped = safeTicketAttachmentResult({
+      content: {
+        kind: "ticket_attachment_content",
+        id: "ta_456",
+        trust: "untrusted_external_content",
+        available: true,
+        contentText: "Steps to reproduce:\n1. Open the app\n2. Click save",
+      },
+    });
+
+    expect(shaped).toEqual({
+      content: {
+        kind: "ticket_attachment_content",
+        id: "ta_456",
+        trust: "untrusted_external_content",
+        available: true,
+        contentText: "Steps to reproduce:\n1. Open the app\n2. Click save",
+      },
+    });
+  });
+
+  it("still redacts a provider URL carried on any key other than contentPath", () => {
+    const shaped = safeTicketAttachmentResult({
+      content: {
+        kind: "ticket_attachment_content",
+        id: "ta_456",
+        trust: "untrusted_external_content",
+        available: true,
+        contentText: "See https://example.test/download?token=secret for the original",
+      },
+    });
+
+    expect(shaped).toEqual({
+      content: {
+        kind: "ticket_attachment_content",
+        id: "ta_456",
+        trust: "untrusted_external_content",
+        available: true,
+      },
+    });
+  });
+
+  it("still redacts /Users/ under an unrelated allowed key", () => {
+    const shaped = safeTicketAttachmentResult({
+      attachments: [
+        {
+          provider: "jira",
+          id: "ta_123",
+          fileName: "/Users/agent/Library/Application Support/leak.txt",
+        },
+      ],
+    });
+
+    expect(shaped).toEqual({
+      attachments: [
+        {
+          provider: "jira",
+          id: "ta_123",
+        },
+      ],
+    });
   });
 
   it("identifies only ticket attachment tool names", () => {

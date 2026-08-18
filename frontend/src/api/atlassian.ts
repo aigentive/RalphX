@@ -54,6 +54,7 @@ export const SearchAtlassianResourcesResponseSchema = z.object({
 export const AtlassianResourceUrlResolutionSchema = z.object({
   inputUrl: z.string(),
   resource: AtlassianResourceSummarySchema.nullable().optional(),
+  referenceKind: z.string().nullable().optional(),
 });
 
 export type AtlassianResourceUrlResolution = z.infer<

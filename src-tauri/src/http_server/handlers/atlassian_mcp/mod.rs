@@ -8,6 +8,7 @@
 //! `AgentRun::launch_role` is display attribution covering three agents and is
 //! never consulted for authorization.
 
+pub mod agile;
 pub mod confluence;
 pub mod jira;
 pub mod raw;

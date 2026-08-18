@@ -18,8 +18,20 @@ use crate::domain::integrations::validate_atlassian_raw_path as validate_raw_pat
 
 use super::atlassian_mcp_client::{
     confluence_create_page, confluence_get_page, confluence_update_page, create_jira_issue,
-    plain_text_adf, raw_api_request, update_jira_issue,
+    raw_api_request, update_jira_issue,
 };
+
+/// Expected ADF document for a description with no markdown structure.
+fn plain_text_adf(text: &str) -> Value {
+    json!({
+        "type": "doc",
+        "version": 1,
+        "content": [{
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": text }]
+        }]
+    })
+}
 
 #[derive(Clone, Debug)]
 struct RecordedRequest {
@@ -104,6 +116,7 @@ async fn create_jira_issue_posts_v3_fields_and_wraps_description_in_adf() {
         description: Some("Plain text body".to_string()),
         labels: vec!["ralphx".to_string()],
         priority: Some("High".to_string()),
+        ..JiraIssueCreateRequest::default()
     };
 
     let created = create_jira_issue(&requester, &api_token_auth(), &request)
@@ -133,19 +146,113 @@ async fn create_jira_issue_posts_v3_fields_and_wraps_description_in_adf() {
     );
 }
 
-#[test]
-fn plain_text_adf_builds_a_minimal_document() {
+#[tokio::test]
+async fn create_jira_issue_maps_parent_key_assignee_and_components() {
+    let requester = FakeRequester::ok(vec![json!({ "id": "10101", "key": "PROJ-7" })]);
+    let request = JiraIssueCreateRequest {
+        project_key: "PROJ".to_string(),
+        issue_type: "Story".to_string(),
+        summary: "Wire the richer create path".to_string(),
+        parent_key: Some("PROJ-1".to_string()),
+        assignee_account_id: Some("account-9".to_string()),
+        components: vec!["Backend".to_string(), "API".to_string()],
+        ..JiraIssueCreateRequest::default()
+    };
+
+    create_jira_issue(&requester, &api_token_auth(), &request)
+        .await
+        .expect("issue should be created");
+
+    let recorded = requester.requests();
+    let fields = recorded[0].body.as_ref().unwrap().get("fields").unwrap();
+    assert_eq!(fields.get("parent").unwrap(), &json!({ "key": "PROJ-1" }));
     assert_eq!(
-        plain_text_adf("hello"),
-        json!({
-            "type": "doc",
-            "version": 1,
-            "content": [{
-                "type": "paragraph",
-                "content": [{ "type": "text", "text": "hello" }]
-            }]
-        })
+        fields.get("assignee").unwrap(),
+        &json!({ "accountId": "account-9" })
     );
+    assert_eq!(
+        fields.get("components").unwrap(),
+        &json!([{ "name": "Backend" }, { "name": "API" }])
+    );
+}
+
+#[tokio::test]
+async fn create_jira_issue_omits_parent_assignee_and_components_when_absent() {
+    let requester = FakeRequester::ok(vec![json!({ "id": "10101", "key": "PROJ-7" })]);
+    let request = JiraIssueCreateRequest {
+        project_key: "PROJ".to_string(),
+        issue_type: "Task".to_string(),
+        summary: "Minimal issue".to_string(),
+        ..JiraIssueCreateRequest::default()
+    };
+
+    create_jira_issue(&requester, &api_token_auth(), &request)
+        .await
+        .expect("issue should be created");
+
+    let recorded = requester.requests();
+    let fields = recorded[0].body.as_ref().unwrap().get("fields").unwrap();
+    assert!(fields.get("parent").is_none());
+    assert!(fields.get("assignee").is_none());
+    assert!(fields.get("components").is_none());
+}
+
+#[tokio::test]
+async fn create_jira_issue_renders_markdown_description_via_the_writer() {
+    // Regression: description must go through markdown_to_adf, not
+    // plain_text_adf, so headings/lists render as real ADF nodes.
+    let requester = FakeRequester::ok(vec![json!({ "id": "10101", "key": "PROJ-7" })]);
+    let request = JiraIssueCreateRequest {
+        project_key: "PROJ".to_string(),
+        issue_type: "Task".to_string(),
+        summary: "Wire the writer".to_string(),
+        description: Some("## Context\n\n- one\n- two".to_string()),
+        ..JiraIssueCreateRequest::default()
+    };
+
+    create_jira_issue(&requester, &api_token_auth(), &request)
+        .await
+        .expect("issue should be created");
+
+    let recorded = requester.requests();
+    let description = recorded[0]
+        .body
+        .as_ref()
+        .unwrap()
+        .get("fields")
+        .unwrap()
+        .get("description")
+        .unwrap();
+    let content = description["content"].as_array().expect("content array");
+    assert_eq!(content[0]["type"], "heading");
+    assert_eq!(content[0]["attrs"]["level"], 2);
+    assert_eq!(content[1]["type"], "bulletList");
+}
+
+#[tokio::test]
+async fn update_jira_issue_renders_markdown_description_via_the_writer() {
+    let requester = FakeRequester::ok(vec![Value::Null]);
+    let request = JiraIssueUpdateRequest {
+        description: Some("**bold** text".to_string()),
+        ..JiraIssueUpdateRequest::default()
+    };
+
+    update_jira_issue(&requester, &api_token_auth(), "PROJ-7", &request)
+        .await
+        .expect("update should succeed");
+
+    let recorded = requester.requests();
+    let description = recorded[0]
+        .body
+        .as_ref()
+        .unwrap()
+        .get("fields")
+        .unwrap()
+        .get("description")
+        .unwrap();
+    let span = &description["content"][0]["content"][0];
+    assert_eq!(span["text"], "bold");
+    assert_eq!(span["marks"][0]["type"], "strong");
 }
 
 #[tokio::test]
@@ -254,8 +361,9 @@ async fn confluence_create_page_posts_storage_representation() {
     let request = ConfluencePageCreateRequest {
         space_id: "789".to_string(),
         title: "Runbook".to_string(),
-        body_storage: "<p>new</p>".to_string(),
+        body_storage: Some("<p>new</p>".to_string()),
         parent_id: Some("111".to_string()),
+        ..ConfluencePageCreateRequest::default()
     };
 
     confluence_create_page(&requester, &api_token_auth(), &request)
@@ -275,6 +383,62 @@ async fn confluence_create_page_posts_storage_representation() {
         body.get("body").unwrap(),
         &json!({ "representation": "storage", "value": "<p>new</p>" })
     );
+}
+
+#[tokio::test]
+async fn confluence_create_page_converts_markdown_to_storage_xhtml() {
+    let requester = FakeRequester::ok(vec![confluence_page_payload(1)]);
+    let request = ConfluencePageCreateRequest {
+        space_id: "789".to_string(),
+        title: "Runbook".to_string(),
+        body_markdown: Some("# Title\n\n- one\n- two".to_string()),
+        ..ConfluencePageCreateRequest::default()
+    };
+
+    confluence_create_page(&requester, &api_token_auth(), &request)
+        .await
+        .expect("page should be created");
+
+    let recorded = requester.requests();
+    let body = recorded[0].body.as_ref().unwrap();
+    let storage = body["body"]["value"].as_str().expect("storage string");
+    assert_eq!(storage, "<h1>Title</h1><ul><li>one</li><li>two</li></ul>");
+}
+
+#[tokio::test]
+async fn confluence_create_page_rejects_neither_storage_nor_markdown() {
+    let requester = FakeRequester::ok(vec![confluence_page_payload(1)]);
+    let request = ConfluencePageCreateRequest {
+        space_id: "789".to_string(),
+        title: "Runbook".to_string(),
+        ..ConfluencePageCreateRequest::default()
+    };
+
+    let error = confluence_create_page(&requester, &api_token_auth(), &request)
+        .await
+        .expect_err("missing body should be rejected");
+
+    assert_eq!(error.status, None);
+    assert!(requester.requests().is_empty());
+}
+
+#[tokio::test]
+async fn confluence_create_page_rejects_both_storage_and_markdown() {
+    let requester = FakeRequester::ok(vec![confluence_page_payload(1)]);
+    let request = ConfluencePageCreateRequest {
+        space_id: "789".to_string(),
+        title: "Runbook".to_string(),
+        body_storage: Some("<p>storage</p>".to_string()),
+        body_markdown: Some("markdown".to_string()),
+        ..ConfluencePageCreateRequest::default()
+    };
+
+    let error = confluence_create_page(&requester, &api_token_auth(), &request)
+        .await
+        .expect_err("supplying both should be rejected");
+
+    assert_eq!(error.status, None);
+    assert!(requester.requests().is_empty());
 }
 
 #[tokio::test]
@@ -302,6 +466,43 @@ async fn confluence_update_page_reads_the_current_version_and_increments_it() {
         body.get("body").unwrap(),
         &json!({ "representation": "storage", "value": "<p>updated</p>" })
     );
+}
+
+#[tokio::test]
+async fn confluence_update_page_converts_markdown_to_storage_xhtml() {
+    let requester = FakeRequester::ok(vec![confluence_page_payload(4), confluence_page_payload(5)]);
+    let request = ConfluencePageUpdateRequest {
+        body_markdown: Some("**bold**".to_string()),
+        ..ConfluencePageUpdateRequest::default()
+    };
+
+    confluence_update_page(&requester, &api_token_auth(), "12345", &request)
+        .await
+        .expect("page should be updated");
+
+    let recorded = requester.requests();
+    let body = recorded[1].body.as_ref().unwrap();
+    assert_eq!(
+        body.get("body").unwrap(),
+        &json!({ "representation": "storage", "value": "<p><strong>bold</strong></p>" })
+    );
+}
+
+#[tokio::test]
+async fn confluence_update_page_rejects_both_storage_and_markdown_before_any_request() {
+    let requester = FakeRequester::ok(vec![confluence_page_payload(4)]);
+    let request = ConfluencePageUpdateRequest {
+        body_storage: Some("<p>storage</p>".to_string()),
+        body_markdown: Some("markdown".to_string()),
+        ..ConfluencePageUpdateRequest::default()
+    };
+
+    let error = confluence_update_page(&requester, &api_token_auth(), "12345", &request)
+        .await
+        .expect_err("supplying both should be rejected");
+
+    assert_eq!(error.status, None);
+    assert!(requester.requests().is_empty());
 }
 
 #[tokio::test]

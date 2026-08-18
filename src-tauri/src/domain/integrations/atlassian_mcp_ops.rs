@@ -70,17 +70,21 @@ pub struct JiraIssueCreateRequest {
     pub project_key: String,
     pub issue_type: String,
     pub summary: String,
-    /// Plain text; wrapped into a minimal ADF paragraph for Jira Cloud v3.
+    /// Markdown; converted to Jira rich text (ADF) for Jira Cloud v3.
     pub description: Option<String>,
     pub labels: Vec<String>,
     pub priority: Option<String>,
+    /// Epic/parent link (`fields.parent`).
+    pub parent_key: Option<String>,
+    pub assignee_account_id: Option<String>,
+    pub components: Vec<String>,
 }
 
 /// Fields accepted when updating a Jira issue. `None` leaves the field alone.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JiraIssueUpdateRequest {
     pub summary: Option<String>,
-    /// Plain text; wrapped into a minimal ADF paragraph for Jira Cloud v3.
+    /// Markdown; converted to Jira rich text (ADF) for Jira Cloud v3.
     pub description: Option<String>,
     pub labels: Option<Vec<String>>,
     pub priority: Option<String>,
@@ -116,27 +120,35 @@ pub struct ConfluencePageContent {
     pub url: Option<String>,
 }
 
-/// Fields accepted when creating a Confluence page.
+/// Fields accepted when creating a Confluence page. Exactly one of
+/// `body_storage`/`body_markdown` is required; callers validate that
+/// constraint before construction.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfluencePageCreateRequest {
     pub space_id: String,
     pub title: String,
-    /// Confluence storage-format body.
-    pub body_storage: String,
+    /// Confluence storage-format body (XHTML-like).
+    pub body_storage: Option<String>,
+    /// Markdown body; converted to Confluence storage format.
+    pub body_markdown: Option<String>,
     pub parent_id: Option<String>,
 }
 
 /// Fields accepted when updating a Confluence page. The current version is read
-/// first and incremented, so callers never supply a version number.
+/// first and incremented, so callers never supply a version number. At most one
+/// of `body_storage`/`body_markdown` may be supplied; both omitted leaves the
+/// body unchanged.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfluencePageUpdateRequest {
     pub title: Option<String>,
     pub body_storage: Option<String>,
+    /// Markdown body; converted to Confluence storage format.
+    pub body_markdown: Option<String>,
 }
 
 impl ConfluencePageUpdateRequest {
     pub fn is_empty(&self) -> bool {
-        self.title.is_none() && self.body_storage.is_none()
+        self.title.is_none() && self.body_storage.is_none() && self.body_markdown.is_none()
     }
 }
 
