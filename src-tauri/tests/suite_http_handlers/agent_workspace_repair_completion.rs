@@ -2215,6 +2215,39 @@ async fn review_fixer_needs_human_blocks_and_pr_autofix_resolutions_are_rejected
 }
 
 #[tokio::test]
+async fn review_fixer_with_resolution_fixed_completes_as_accepted() {
+    let state = test_state();
+    let (conversation_id, run_id) = seed_active_review_fixer(&state).await;
+
+    let response = repair_completion_http_response_with_body(
+        state.clone(),
+        &conversation_id,
+        completion_headers(conversation_id, run_id),
+        serde_json::json!({
+            "summary": "Applied all requested review changes and committed the fix.",
+            "resolution": "fixed",
+        }),
+    )
+    .await;
+
+    let (status, response_status) = response_status(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response_status, "accepted");
+
+    // resolution: "fixed" must not settle the fixer or create a durable repair attempt.
+    let (fixer_status, last_error) = review_fixer_status(&state, &conversation_id).await;
+    assert_eq!(fixer_status.as_deref(), Some("running"));
+    assert!(last_error.is_none());
+    assert!(state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_repair_attempt_for_run(&conversation_id, &run_id)
+        .await
+        .expect("read repair attempt")
+        .is_none());
+}
+
+#[tokio::test]
 async fn review_fixer_completion_is_idempotent_after_settlement() {
     let state = test_state();
     let (conversation_id, run_id) = seed_active_review_fixer(&state).await;
