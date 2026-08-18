@@ -24,8 +24,8 @@ use crate::application::agent_workspace_publish_repair_state::{
     explicit_agent_workspace_repair_retry_allowed, inspect_agent_workspace_repair_completion,
     is_machine_repair_reason_marker, last_human_repair_reason,
     load_agent_workspace_repair_operation_recovery_action, mark_agent_workspace_base_update_target,
-    reconcile_active_agent_workspace_repair, record_agent_workspace_repair_validation,
-    release_agent_workspace_base_stale_hold,
+    reconcile_active_agent_workspace_repair, record_agent_workspace_pr_autofix_base_update_head,
+    record_agent_workspace_repair_validation, release_agent_workspace_base_stale_hold,
     reopen_agent_workspace_repair_after_validation_failure, repair_attempt_projection,
     repair_event_authorizes_active_run, rerun_agent_workspace_ci_for_hold,
     reserve_agent_workspace_base_parity_transient, reserve_agent_workspace_base_stale_hold,
@@ -57,7 +57,8 @@ use crate::application::chat_service::{ChatServiceError, SendResult};
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentRun, AgentRunId, AgentWorkspaceRepairAttempt,
+    AgentConversationWorkspacePublicationEvent, AgentRun, AgentRunId,
+    AgentWorkspacePrAutofixIssueKind, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
     AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind,
     AgentWorkspaceRepairOperationRecoveryAction, AgentWorkspaceRepairOutcome,
@@ -1429,6 +1430,7 @@ async fn started_repair_carries_forward_observed_pr_autofix_evidence() {
     request.carryover_pr_autofix_evidence = Some(PrAutofixCarryover {
         dispatch_head_commit: Some("head-observed".to_string()),
         health_fingerprint: Some("ci:Clippy:failure".to_string()),
+        issue_kind: Some(AgentWorkspacePrAutofixIssueKind::Checks),
     });
 
     let attempt = match start_or_join_agent_workspace_repair(
@@ -1450,6 +1452,130 @@ async fn started_repair_carries_forward_observed_pr_autofix_evidence() {
     assert_eq!(
         attempt.pr_autofix_health_fingerprint.as_deref(),
         Some("ci:Clippy:failure")
+    );
+    assert_eq!(
+        attempt.pr_autofix_issue_kind,
+        Some(AgentWorkspacePrAutofixIssueKind::Checks),
+        "the fingerprint hashes the kind away, so the successor needs it carried explicitly"
+    );
+    assert_eq!(
+        attempt.base_update_head_commit, None,
+        "each generation must earn its own unpublished-head evidence"
+    );
+}
+
+/// Base-update evidence is recorded while the fixer run is usually still mid-flight, so the CAS
+/// must preserve the current phase and never touch the base-staleness fields other dispositions
+/// read.
+#[tokio::test]
+async fn recording_a_base_update_head_preserves_phase_and_fails_closed_on_stale_input() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let repair_repo = Arc::clone(&workspace_repo) as Arc<dyn AgentWorkspaceRepairRepository>;
+    let conversation_id = ChatConversationId::from_string("repair-base-update-head");
+    workspace_repo
+        .create_or_update(repair_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let mut attempt = start_or_join_agent_workspace_repair(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        repair_start_request(
+            conversation_id.clone(),
+            AgentWorkspaceRepairSource::PrAutofix,
+            AgentWorkspaceRepairContinuation::ResumePrSupervision,
+            "PR is behind base",
+        ),
+    )
+    .await
+    .expect("start repair")
+    .into_attempt();
+
+    // A live fixer run: mid-flight, not Ready.
+    let expected_phase = attempt.phase;
+    attempt.phase = AgentWorkspaceRepairPhase::Repairing;
+    attempt.updated_at += chrono::Duration::microseconds(1);
+    let AgentWorkspaceRepairAttemptTransitionOutcome::Applied(repairing) = repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at: {
+                repair_repo
+                    .get_current_repair_attempt(&conversation_id)
+                    .await
+                    .expect("load attempt to move into repairing")
+                    .expect("attempt exists")
+                    .updated_at
+            },
+            next_phase: AgentWorkspaceRepairPhase::Repairing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("move attempt into the repairing phase")
+    else {
+        panic!("the repairing checkpoint must apply");
+    };
+
+    assert!(matches!(
+        record_agent_workspace_pr_autofix_base_update_head(
+            Arc::clone(&repair_repo),
+            repairing.clone(),
+            "   ",
+        )
+        .await
+        .expect("empty head is a harmless no-op"),
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+    ));
+
+    let stale_snapshot = repairing.clone();
+    let AgentWorkspaceRepairTransitionOutcome::Applied(recorded) =
+        record_agent_workspace_pr_autofix_base_update_head(
+            Arc::clone(&repair_repo),
+            repairing,
+            " base-update-merge-head ",
+        )
+        .await
+        .expect("record the base-update head")
+    else {
+        panic!("the current attempt must accept its base-update evidence");
+    };
+    assert_eq!(
+        recorded.base_update_head_commit.as_deref(),
+        Some("base-update-merge-head")
+    );
+    assert_eq!(
+        recorded.phase,
+        AgentWorkspaceRepairPhase::Repairing,
+        "the fixer run is still mid-flight; recording evidence must not move its phase"
+    );
+    assert_eq!(
+        recorded.repair_head_commit, None,
+        "base-update evidence is not an accepted completion"
+    );
+    assert_eq!(recorded.base_update_target_commit, None);
+    assert_eq!(recorded.target_base_commit.as_deref(), Some("base-a"));
+
+    assert!(matches!(
+        record_agent_workspace_pr_autofix_base_update_head(
+            Arc::clone(&repair_repo),
+            stale_snapshot,
+            "second-head",
+        )
+        .await
+        .expect("a stale snapshot is a harmless no-op"),
+        AgentWorkspaceRepairTransitionOutcome::Stale(_)
+    ));
+    assert_eq!(
+        repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("reload attempt")
+            .expect("attempt exists")
+            .base_update_head_commit
+            .as_deref(),
+        Some("base-update-merge-head"),
+        "a stale snapshot cannot overwrite recorded evidence"
     );
 }
 
