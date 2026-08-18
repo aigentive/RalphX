@@ -5797,9 +5797,9 @@ fn automatic_blocked_repair_streak_for_test(attempt: &AgentWorkspaceRepairAttemp
         .unwrap_or_default()
 }
 
-/// Production-path tests for `git_mutation_recovery.rs:401-435`, the third orphan-tolerance site.
-/// Both sibling sites (`durable_attempt_recovery.rs:1546` and `:1619`) have coverage; this one
-/// shipped without tests and rule 25 requires production-path tests for all recovery seams.
+// Production-path tests for `git_mutation_recovery.rs:401-435`, the third orphan-tolerance site.
+// Both sibling sites (`durable_attempt_recovery.rs:1546` and `:1619`) have coverage; this one
+// shipped without tests and rule 25 requires production-path tests for all recovery seams.
 
 /// Test 1 — deleted worktree, parent root present: the pass returns `Ok` with one `NeedsRepair`
 /// entry, the workspace is marked recoverable-`Missing`, and one `WORKSPACE_MISSING_SETTLED_STEP`
@@ -5813,8 +5813,7 @@ async fn repair_mutation_claim_marks_missing_when_workspace_worktree_is_deleted(
 
     // Delete the workspace worktree but leave its project-level parent dir intact so
     // `parent_root_present` is `true` (a deleted workspace, not a missing volume).
-    std::fs::remove_dir_all(&fixture.workspace.worktree_path)
-        .expect("delete workspace worktree");
+    std::fs::remove_dir_all(&fixture.workspace.worktree_path).expect("delete workspace worktree");
 
     let outcomes = recover_repair_owned_in_flight_git_mutations(&state)
         .await
@@ -5846,7 +5845,11 @@ async fn repair_mutation_claim_marks_missing_when_workspace_worktree_is_deleted(
         .into_iter()
         .filter(|event| event.step == WORKSPACE_MISSING_SETTLED_STEP)
         .collect();
-    assert_eq!(evidence.len(), 1, "exactly one evidence row for the deleted worktree");
+    assert_eq!(
+        evidence.len(),
+        1,
+        "exactly one evidence row for the deleted worktree"
+    );
 }
 
 /// Test 2 — missing parent root: the whole project worktree dir is gone (an unmounted volume).
@@ -5864,8 +5867,7 @@ async fn repair_mutation_claim_is_noop_when_entire_worktree_root_is_gone() {
     let project_workspace_dir = worktree_path
         .parent()
         .expect("workspace parent is the project workspace dir");
-    std::fs::remove_dir_all(project_workspace_dir)
-        .expect("delete the project workspace root");
+    std::fs::remove_dir_all(project_workspace_dir).expect("delete the project workspace root");
 
     let outcomes = recover_repair_owned_in_flight_git_mutations(&state)
         .await
