@@ -420,6 +420,13 @@ async fn recover_repair_owned_git_mutation_claim(
             else {
                 return Err(error);
             };
+            let claim_id = claim.claim_id.clone();
+            // `release_target_lease` returns `MutationInFlight` while a claim is active.
+            // The worktree is gone so the push can never complete; completing the claim first
+            // is safe and required for `settle_missing_workspace_resolution` to release the lease.
+            let _ =
+                complete_repair_claim(state.branch_update_repo.as_ref(), claim, effect.id.as_str())
+                    .await?;
             settle_missing_workspace_resolution(
                 state,
                 &workspace,
@@ -428,10 +435,10 @@ async fn recover_repair_owned_git_mutation_claim(
                 "git_mutation_recovery",
             )
             .await?;
-            return Ok(repair_claim_needs_repair(
-                claim,
-                "repair mutation workspace worktree is missing",
-            ));
+            return Ok(GitMutationRecoveryOutcome::NeedsRepair {
+                claim_id,
+                reason: "repair mutation workspace worktree is missing".into(),
+            });
         }
     };
     let observed_identity =
