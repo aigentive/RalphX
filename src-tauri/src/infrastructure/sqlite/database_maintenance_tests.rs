@@ -5,6 +5,7 @@
 //! debug profiles points at the shared dev database.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use rusqlite::Connection;
 use tempfile::TempDir;
@@ -16,8 +17,8 @@ use super::database_maintenance::{
     DEFAULT_AUTO_COMPACT_MAX_DB_BYTES, DEFAULT_AUTO_COMPACT_MIN_FREELIST_PERCENT,
 };
 use super::database_maintenance_outcome::{
-    read_record, CompactionRecord, COMPACTION_OUTCOME_FILE_NAME, OUTCOME_COMPACTED, OUTCOME_ERROR,
-    OUTCOME_SKIPPED,
+    read_record, write_record, CompactionRecord, COMPACTION_OUTCOME_FILE_NAME, OUTCOME_COMPACTED,
+    OUTCOME_ERROR, OUTCOME_SKIPPED, REASON_SWAP_INTERRUPTED,
 };
 
 fn temp_paths(dir: &TempDir) -> MaintenancePaths {
@@ -169,11 +170,15 @@ fn skips_and_consumes_marker_when_database_missing_but_records_the_reason_first(
     assert_eq!(record.reason.as_deref(), Some("database_missing"));
 }
 
+/// Proof obligation 4: a database far above `auto_max_db_bytes` compacts on the auto path. The
+/// old gate inverted the intent — the bigger the database, the *less* likely it was to be
+/// compacted — so a bloated production database could never self-heal.
 #[test]
-fn auto_path_skips_database_above_size_limit() {
+fn auto_path_compacts_database_above_size_limit() {
     let dir = TempDir::new().unwrap();
     let paths = temp_paths(&dir);
     seed_bloated_db(&paths);
+    let before = std::fs::metadata(&paths.database_path).unwrap().len();
     let outcome = compact_before_pool_opens_at(
         &paths,
         CompactionConfig {
@@ -183,9 +188,33 @@ fn auto_path_skips_database_above_size_limit() {
         },
     )
     .unwrap();
+    let CompactionOutcome::Compacted { reclaimed_bytes } = outcome else {
+        panic!("a database above the auto size limit must still compact, got {outcome:?}");
+    };
+    assert!(reclaimed_bytes > 0);
+    assert!(std::fs::metadata(&paths.database_path).unwrap().len() < before);
+}
+
+/// The size limit is gone, but the other auto guards are not: an oversized database whose freelist
+/// share is below the threshold still skips with a recorded reason, so removing one arm of the
+/// chain did not collapse the rest.
+#[test]
+fn auto_path_above_size_limit_still_honors_the_freelist_threshold() {
+    let dir = TempDir::new().unwrap();
+    let paths = temp_paths(&dir);
+    seed_bloated_db(&paths);
+    let outcome = compact_before_pool_opens_at(
+        &paths,
+        CompactionConfig {
+            auto_enabled: true,
+            auto_max_db_bytes: 1,
+            auto_min_freelist_percent: 101,
+        },
+    )
+    .unwrap();
     assert_eq!(
         outcome,
-        CompactionOutcome::Skipped("database_above_auto_limit")
+        CompactionOutcome::Skipped("freelist_below_auto_limit")
     );
 }
 
@@ -597,14 +626,74 @@ fn verification_failure_leaves_original_intact() {
     );
 }
 
-// Obligation 6(c): rename-in failure — original survives at the backup, phase recorded.
+// Obligation 6(c): rename-in failure — the restore puts the original back at the LIVE path.
 //
-// A non-empty directory is placed at the live path between steps (e) and (f) so that
-// fs::rename(compacting → live) fails with ENOTEMPTY/EISDIR.  The restore rename also
-// fails for the same reason; the test therefore checks the backup path rather than the
-// live path for the original bytes.
+// The hook deletes the `.compacting` source between steps (e) and (f), so the rename-in
+// fails with ENOENT while the live path stays free. That is the only shape in which the
+// restore at (f) can actually run, which is the arm this obligation is about.
 #[test]
-fn rename_in_failure_records_the_phase_and_original_survives_in_backup() {
+fn rename_in_failure_restores_the_original_to_the_live_path() {
+    let dir = TempDir::new().unwrap();
+    let paths = temp_paths(&dir);
+    seed_wal_mode_db(&paths);
+    let original_bytes = std::fs::read(&paths.database_path).unwrap();
+    set_pending_compaction_at(&paths.marker_path, true).unwrap();
+
+    let compacting_path = PathBuf::from(format!("{}.compacting", paths.database_path.display()));
+    let database_path = paths.database_path.clone();
+    let hook_target = compacting_path.clone();
+    let hook = move || {
+        assert!(
+            !database_path.exists(),
+            "the live path must be empty inside the swap window"
+        );
+        std::fs::remove_file(&hook_target).expect("the compacted replacement must exist here");
+    };
+    let result = compact_before_pool_opens_at_with_seams(
+        &paths,
+        config(false),
+        &|_path| Ok(()),
+        Some(&hook),
+    );
+
+    assert!(
+        result.is_err(),
+        "rename-in failure must propagate as an error"
+    );
+    assert!(
+        paths.database_path.exists(),
+        "the restore must put a database back at the live path"
+    );
+    let after_bytes = std::fs::read(&paths.database_path).unwrap();
+    assert_eq!(
+        original_bytes, after_bytes,
+        "the restored database must be byte-identical to the pre-call original"
+    );
+    assert!(
+        !paths.backup_dir.join("ralphx.db.pre-vacuum").exists(),
+        "a successful restore moves the original out of the backup, it does not copy it"
+    );
+
+    let record = read_record(&paths.outcome_path).expect("error must be recorded in sidecar");
+    assert_eq!(record.outcome, OUTCOME_ERROR);
+    let reason = record.reason.as_deref().unwrap_or("");
+    assert!(
+        reason.starts_with("swap_rename:"),
+        "sidecar reason must carry the swap_rename phase prefix, got: {reason}"
+    );
+    assert!(
+        reason.contains(&format!(
+            "original restored to {}",
+            paths.database_path.display()
+        )),
+        "the recorded location must be where the database actually is, got: {reason}"
+    );
+}
+
+// The other arm of the same failure: when the restore cannot run either, the record must
+// point at the backup instead of claiming a restore that never happened.
+#[test]
+fn failed_restore_records_the_backup_as_the_surviving_location() {
     let dir = TempDir::new().unwrap();
     let paths = temp_paths(&dir);
     seed_wal_mode_db(&paths);
@@ -613,8 +702,8 @@ fn rename_in_failure_records_the_phase_and_original_survives_in_backup() {
 
     let database_path = paths.database_path.clone();
     let hook = move || {
-        // The live path is free at this point (original has been renamed to backup).
-        // Creating a non-empty directory here makes the rename-in fail.
+        // A non-empty directory at the now-free live path fails the rename-in and the
+        // restore alike (ENOTEMPTY/EISDIR).
         std::fs::create_dir_all(&database_path).ok();
         std::fs::write(database_path.join("blocker"), b"x").ok();
     };
@@ -625,27 +714,80 @@ fn rename_in_failure_records_the_phase_and_original_survives_in_backup() {
         Some(&hook),
     );
 
-    // The restore rename also fails against the non-empty dir; remove it so
-    // TempDir can clean up and so further assertions are unambiguous.
+    // Remove the planted directory so TempDir can clean up.
     if paths.database_path.is_dir() {
         std::fs::remove_dir_all(&paths.database_path).ok();
     }
 
-    assert!(result.is_err(), "rename-in failure must propagate as an error");
+    assert!(
+        result.is_err(),
+        "rename-in failure must propagate as an error"
+    );
 
     let record = read_record(&paths.outcome_path).expect("error must be recorded in sidecar");
     assert_eq!(record.outcome, OUTCOME_ERROR);
     let reason = record.reason.as_deref().unwrap_or("");
+    let backup = paths.backup_dir.join("ralphx.db.pre-vacuum");
     assert!(
-        reason.starts_with("swap_rename:"),
-        "sidecar reason must carry the swap_rename phase prefix, got: {reason}"
+        reason.contains("restore failed:")
+            && reason.contains(&format!("original preserved at {}", backup.display())),
+        "a failed restore must be reported as such, with the backup location, got: {reason}"
     );
 
-    let backup = paths.backup_dir.join("ralphx.db.pre-vacuum");
     assert!(backup.exists(), "original must survive at the backup path");
-    let backup_bytes = std::fs::read(&backup).unwrap();
     assert_eq!(
-        original_bytes, backup_bytes,
+        original_bytes,
+        std::fs::read(&backup).unwrap(),
         "backup must be byte-identical to the pre-call snapshot"
+    );
+}
+
+// The rename-out empties the live path until the rename-in lands. Without a breadcrumb,
+// dying inside that window leaves the previous run's record — usually `compacted` —
+// describing a database that is no longer there.
+#[test]
+fn swap_window_is_marked_interrupted_until_the_swap_completes() {
+    let dir = TempDir::new().unwrap();
+    let paths = temp_paths(&dir);
+    seed_wal_mode_db(&paths);
+    set_pending_compaction_at(&paths.marker_path, true).unwrap();
+
+    // Stand in for the stale record a previous successful run would have left behind.
+    write_record(
+        &paths.outcome_path,
+        &CompactionRecord::compacted(4_096, 512),
+    );
+
+    let observed: Mutex<Option<CompactionRecord>> = Mutex::new(None);
+    let outcome_path = paths.outcome_path.clone();
+    let database_path = paths.database_path.clone();
+    let hook = || {
+        assert!(
+            !database_path.exists(),
+            "the live path must be empty inside the swap window"
+        );
+        *observed.lock().unwrap() = read_record(&outcome_path);
+    };
+    let outcome = compact_before_pool_opens_at_with_seams(
+        &paths,
+        config(false),
+        &|_path| Ok(()),
+        Some(&hook),
+    )
+    .expect("the swap itself must succeed");
+
+    let in_window = observed
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("a record must exist while the live path has no database");
+    assert_eq!(in_window.outcome, OUTCOME_ERROR);
+    assert_eq!(in_window.reason.as_deref(), Some(REASON_SWAP_INTERRUPTED));
+
+    assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
+    let final_record = read_record(&paths.outcome_path).expect("final record must be written");
+    assert_eq!(
+        final_record.outcome, OUTCOME_COMPACTED,
+        "a completed swap must overwrite the breadcrumb"
     );
 }

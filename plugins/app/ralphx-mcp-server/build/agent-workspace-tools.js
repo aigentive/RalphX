@@ -479,12 +479,20 @@ export const AGENT_WORKSPACE_TOOLS = [
                 resolution: {
                     type: "string",
                     enum: ["fixed", "transient_ci", "pre_existing_on_base", "needs_human"],
-                    description: "Use fixed only after pushing a real fix. transient_ci is only for GitHub Actions infrastructure failures; pre_existing_on_base requires evidence the failure reproduces on base; needs_human is for a blocker needing user action. Classify honestly rather than fabricating a commit.",
+                    description: "Use fixed only after pushing a real fix. transient_ci is only for GitHub Actions infrastructure failures; pre_existing_on_base applies to check failures only and requires evidence the same check fails on base, never mergeability; needs_human is for a blocker needing user action. A completed base update is a real fix — report fixed with the new HEAD. Classify honestly rather than fabricating a commit.",
                 },
                 fix_commit_sha: {
                     type: "string",
                     pattern: "^[0-9a-f]{40}$",
                     description: "Full 40-character SHA of the current committed workspace HEAD. Required for a fixed completion; RalphX verifies the actual branch head changed from dispatch.",
+                },
+                what_happened: {
+                    type: "string",
+                    description: "Optional 1-2 plain-language sentences describing what happened. Write for someone who doesn't know what a CI runner is; summary stays the engineer-facing field. Max 480 characters; over-cap is rejected, not truncated.",
+                },
+                what_i_did: {
+                    type: "string",
+                    description: "Optional 1-2 plain-language sentences describing what you did about it. Write for someone who doesn't know what a CI runner is; summary stays the engineer-facing field. Max 480 characters; over-cap is rejected, not truncated.",
                 },
             },
             required: ["conversation_id", "summary"],
@@ -510,12 +518,20 @@ export const AGENT_WORKSPACE_TOOLS = [
                 resolution: {
                     type: "string",
                     enum: ["fixed", "transient_ci", "pre_existing_on_base", "needs_human"],
-                    description: "Classify the repair outcome honestly: fixed after a real repair, transient_ci only for GitHub Actions infrastructure failures, pre_existing_on_base with evidence the failure reproduces on base, or needs_human for a blocker requiring user action.",
+                    description: "Classify the repair outcome honestly: fixed after a real repair, transient_ci only for GitHub Actions infrastructure failures, pre_existing_on_base for check failures only with evidence the same check fails on base (never mergeability), or needs_human for a blocker requiring user action. A completed base update is a real fix — report fixed with the new HEAD.",
                 },
                 fix_commit_sha: {
                     type: "string",
                     pattern: "^[0-9a-f]{40}$",
                     description: "Full 40-character SHA of the current committed workspace HEAD. Required for a fixed repair completion; RalphX verifies the actual branch head changed from dispatch.",
+                },
+                what_happened: {
+                    type: "string",
+                    description: "Optional 1-2 plain-language sentences describing what happened. Write for someone who doesn't know what a CI runner is; summary stays the engineer-facing field. Max 480 characters; over-cap is rejected, not truncated.",
+                },
+                what_i_did: {
+                    type: "string",
+                    description: "Optional 1-2 plain-language sentences describing what you did about it. Write for someone who doesn't know what a CI runner is; summary stays the engineer-facing field. Max 480 characters; over-cap is rejected, not truncated.",
                 },
             },
             required: ["summary"],
@@ -778,17 +794,19 @@ export async function callReadAgentWorkspacePrCommentTool(callTauriGet, args) {
     return callTauriGet(`agent-workspaces/${conversation_id}/pr-comments/${encodeURIComponent(comment_id)}`);
 }
 export async function callCompleteAgentWorkspacePrFixTool(callTauri, args, runtimeContext) {
-    const { conversation_id, summary, blocker, resolution, fix_commit_sha } = args;
+    const { conversation_id, summary, blocker, resolution, fix_commit_sha, what_happened, what_i_did } = args;
     return callTauri(`agent-workspaces/${conversation_id}/complete-pr-fix`, {
         summary,
         blocker,
         resolution,
         fix_commit_sha,
         created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
+        ...(what_happened === undefined ? {} : { what_happened }),
+        ...(what_i_did === undefined ? {} : { what_i_did }),
     });
 }
 export async function callCompleteAgentWorkspaceRepairTool(callTauri, args, runtimeContext) {
-    const { summary, blocker, resolution, fix_commit_sha } = (args && typeof args === "object" ? args : {});
+    const { summary, blocker, resolution, fix_commit_sha, what_happened, what_i_did } = (args && typeof args === "object" ? args : {});
     const conversation_id = resolveRuntimeAgentWorkspaceConversationId("complete_agent_workspace_repair", runtimeContext);
     const headers = buildRuntimeIdentityTransportHeaders({
         agentRunId: runtimeContext?.agentRunId,
@@ -802,6 +820,8 @@ export async function callCompleteAgentWorkspaceRepairTool(callTauri, args, runt
         blocker,
         ...(resolution === undefined ? {} : { resolution }),
         ...(fix_commit_sha === undefined ? {} : { reported_fix_commit_sha: fix_commit_sha }),
+        ...(what_happened === undefined ? {} : { what_happened }),
+        ...(what_i_did === undefined ? {} : { what_i_did }),
     }, { headers });
 }
 export async function callSubmitAgentWorkspacePrDescriptionTool(callTauri, args) {

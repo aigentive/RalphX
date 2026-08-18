@@ -61,10 +61,10 @@ mod chat_service_runtime_handoff_tests;
 mod continuation_runtime_tests;
 
 use crate::application::agent_conversation_workspace::{
-    ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
-    resolve_agent_conversation_workspace_path_for_send,
+    classify_agent_conversation_workspace_path, ensure_linked_plan_branch_agent_worktree,
+    is_terminal_agent_conversation_publication_status,
     rollover_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceSetupMode,
-    AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
+    WorkspacePathResolution, AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
 use crate::application::agent_runtime_context::{
     branch_status::BranchStatusCache, compose_agent_runtime_context, AgentRuntimeContextDeps,
@@ -4065,13 +4065,13 @@ impl AppChatService {
             }
         }
 
-        match resolve_agent_conversation_workspace_path_for_send(&project, workspace) {
+        let resolution = classify_agent_conversation_workspace_path(&project, workspace)
+            .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?;
+        let worktree_missing = matches!(resolution, WorkspacePathResolution::Missing { .. });
+        match resolution.into_valid_path(workspace) {
             Ok(path) => Ok(path),
             Err(error) => {
-                if error
-                    .to_string()
-                    .contains("Agent conversation workspace is missing")
-                {
+                if worktree_missing {
                     self.mark_agent_conversation_workspace_missing(workspace)
                         .await;
                 }
@@ -4475,6 +4475,7 @@ impl AppChatService {
             total_available,
             None, // effort_override: callers pre-resolve if needed
             None, // model_override: callers pre-resolve if needed
+            &[],  // extra_allowed_mcp_tools: dead-code fallback path
             agent_runtime_context.as_deref(),
             None, // attachment_context_override
         )
@@ -7448,6 +7449,28 @@ impl ChatService for AppChatService {
                 )
                 .await
             };
+
+        // Role-tiered Atlassian MCP grants. This is a runtime-injected layer on
+        // top of the canonical per-agent allowlist: it depends on the routing
+        // role, the project, and live integration state, none of which exist at
+        // generated-plugin materialization time. Any launch path without both
+        // services injects nothing.
+        resolved_spawn_settings.extra_allowed_mcp_tools = match (
+            self.atlassian_integration_service.as_ref(),
+            self.manual_role_default_service.as_ref(),
+        ) {
+            (Some(integration), Some(defaults)) => {
+                crate::application::atlassian_mcp_tools_for_spawn(
+                    integration,
+                    defaults,
+                    Some(routing_role),
+                    project_id.as_deref(),
+                    project_root.as_deref(),
+                )
+                .await
+            }
+            _ => Vec::new(),
+        };
         if let Some(runtime) = continuation_runtime.as_ref() {
             runtime.apply_defaults(
                 &mut resolved_spawn_settings,
@@ -7672,6 +7695,11 @@ impl ChatService for AppChatService {
             effective_effort: Some(effective_effort),
         };
         pre_spawn_assistant_attribution = Some(assistant_message_attribution.clone());
+
+        // Authoritative spawn-time identity for per-request authorization
+        // (Atlassian MCP tiers). `launch_role` above stays display attribution.
+        agent_run.routing_role = Some(routing_role);
+        agent_run.project_id = project_id.clone();
 
         let run_agent_name = agent_run.agent_name.clone();
         let run_launch_role = agent_run.launch_role.clone();

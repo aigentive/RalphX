@@ -6,6 +6,7 @@ import {
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -13,6 +14,7 @@ import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
   AgentConversationWorkspacePublicationEvent,
+  AgentWorkspaceMaintenanceOperation,
   AgentWorkspaceReviewContext,
 } from "@/api/chat";
 import type { FileChange } from "@/api/diff";
@@ -187,6 +189,49 @@ async function openPublishPane() {
   return screen.findByTestId(
     "agents-publish-actionbar",
     undefined,
+    deferredHydrationTimeout,
+  );
+}
+
+const readyResumeOperation: AgentWorkspaceMaintenanceOperation = {
+  operationId: "maintenance-1",
+  generation: 1,
+  source: "base_update",
+  stage: "ready",
+  status: "ready",
+  recoveryAction: "resume_publish",
+  summary: "Base update completed",
+  blocker: null,
+  automaticContinuation: false,
+  startedAt: "2026-07-25T10:00:00Z",
+  updatedAt: "2026-07-25T10:01:00Z",
+};
+
+const blockedRetryOperation: AgentWorkspaceMaintenanceOperation = {
+  operationId: "maintenance-2",
+  generation: 2,
+  source: "publish",
+  stage: "blocked",
+  status: "blocked",
+  recoveryAction: "retry_repair",
+  summary: "Repair cannot continue",
+  blocker: "Resolve the protected branch policy.",
+  automaticContinuation: false,
+  startedAt: "2026-07-25T10:00:00Z",
+  updatedAt: "2026-07-25T10:01:00Z",
+};
+
+/**
+ * The changed-file verdict feeding the publish guard only exists after the
+ * deferred review query resolves. The Changes tab badge renders that same
+ * `reviewQuery.isSuccess` count, so it is the anchor for "evidence has settled".
+ */
+async function settleChangedFileCount(count: number) {
+  await waitFor(
+    () =>
+      expect(screen.getByTestId("agents-publish-tab-changes")).toHaveTextContent(
+        String(count),
+      ),
     deferredHydrationTimeout,
   );
 }
@@ -986,6 +1031,130 @@ describe("AgentsView publish", () => {
 
   });
 
+  it("resumes a parked publish that has no local changes left to commit", async () => {
+    configurePublishPane({
+      workspace: { maintenanceOperation: readyResumeOperation },
+      // A repaired branch is already pushed, so zero local delta is the
+      // expected state for this banner — not a reason to refuse the click.
+      changes: [],
+    });
+
+    const actionbar = await openPublishPane();
+    // The zero-change verdict only exists once the review query settles. Clicking
+    // before then exercises the pre-settlement state and proves nothing.
+    await settleChangedFileCount(0);
+
+    const resume = within(actionbar).getByTestId(
+      "agents-publish-resume-maintenance",
+    );
+    expect(resume).toBeEnabled();
+    expect(resume).toHaveTextContent("Resume publish");
+
+    fireEvent.click(resume);
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Commit & Publish" }),
+    );
+
+    await waitFor(() =>
+      expect(publishAgentConversationWorkspaceMock).toHaveBeenCalledWith(
+        "conversation-1",
+      ),
+    );
+  });
+
+  it("disables the resume action while Workspace Review gates publishing", async () => {
+    const user = userEvent.setup();
+    configurePublishPane({
+      workspace: { maintenanceOperation: readyResumeOperation },
+      changes: [],
+      reviewGateStatus: "reviewing",
+    });
+
+    const actionbar = await openPublishPane();
+    await settleChangedFileCount(0);
+
+    // Re-query inside waitFor: the button is remounted when the tooltip wrapper is added.
+    await waitFor(
+      () => expect(within(actionbar).getByTestId("agents-publish-resume-maintenance")).toBeDisabled(),
+      deferredHydrationTimeout,
+    );
+    const resume = within(actionbar).getByTestId("agents-publish-resume-maintenance");
+    expect(resume).toHaveTextContent("Reviewing");
+    // The review-gate reason must surface to the user through the tooltip, not just
+    // the DOM title attribute (which is hidden on disabled buttons with pointer-events-none).
+    await user.hover(resume.parentElement!);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(/Workspace Review/i);
+  });
+
+  it("disables the retry action while Workspace Review gates publishing", async () => {
+    configurePublishPane({
+      workspace: {
+        linkedPlanBranchId: null,
+        maintenanceOperation: blockedRetryOperation,
+      },
+      changes: [],
+      reviewGateStatus: "reviewing",
+    });
+
+    const actionbar = await openPublishPane();
+    await settleChangedFileCount(0);
+
+    const retry = within(actionbar).getByTestId(
+      "agents-publish-retry-maintenance",
+    );
+    await waitFor(() => expect(retry).toBeDisabled());
+    expect(retry).toHaveTextContent("Reviewing");
+  });
+
+  it("explains why a maintenance action is disabled by a blocked base", async () => {
+    const user = userEvent.setup();
+    configurePublishPane({
+      workspace: { maintenanceOperation: readyResumeOperation },
+      freshness: {
+        baseStatus: "blocked",
+        effectiveBaseRef: null,
+        effectiveBaseDisplayName: null,
+        baseBlockReason: "Saved base cannot be resolved.",
+      },
+      changes: [],
+    });
+
+    const actionbar = await openPublishPane();
+
+    // The banner replaces the base-blocked remediation button, so a disabled
+    // action here must say why instead of just refusing.
+    // Re-query inside waitFor: the button is remounted when the tooltip wrapper is added.
+    await waitFor(
+      () => expect(within(actionbar).getByTestId("agents-publish-resume-maintenance")).toBeDisabled(),
+      deferredHydrationTimeout,
+    );
+    const resume = within(actionbar).getByTestId("agents-publish-resume-maintenance");
+    // The blocked reason must reach the user via the tooltip, not just the hidden
+    // DOM title attribute (disabled buttons have pointer-events-none on them).
+    await user.hover(resume.parentElement!);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(/base branch/i);
+  });
+
+  it("shows no blocked-reason tooltip on an enabled maintenance button", async () => {
+    const user = userEvent.setup();
+    configurePublishPane({
+      workspace: { maintenanceOperation: readyResumeOperation },
+      changes: [],
+    });
+    const actionbar = await openPublishPane();
+    await settleChangedFileCount(0);
+
+    const resume = within(actionbar).getByTestId(
+      "agents-publish-resume-maintenance",
+    );
+    expect(resume).toBeEnabled();
+    // An enabled button (blockedReason === null) renders without a tooltip wrapper.
+    // Hovering it must not produce any tooltip content.
+    await user.hover(resume);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  });
+
   it("retries blocked maintenance through the normal non-task-pipeline publish flow", async () => {
     configurePublishPane({
       workspace: {
@@ -1092,7 +1261,7 @@ describe("AgentsView publish", () => {
 
     const actionbar = await openPublishPane();
     const card = await screen.findByTestId("agents-publish-hold-card");
-    expect(card).toHaveTextContent("Nothing is running");
+    expect(card).toHaveTextContent("Repair paused — waiting for new CI evidence");
     expect(within(card).getByRole("button", { name: "Re-check PR health" })).toBeEnabled();
     expect(
       within(actionbar).getByTestId("agents-publish-recheck-pr-health"),

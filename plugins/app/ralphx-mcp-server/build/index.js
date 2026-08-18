@@ -28,6 +28,7 @@ import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
 import { callAgentWorkspaceTool, isAgentWorkspaceToolName, } from "./agent-workspace-tools.js";
 import { callAutomationSetupTool, isAutomationSetupToolName, } from "./automation-tools.js";
 import { callTicketAttachmentTool, isTicketAttachmentToolName, } from "./ticket-attachment-tools.js";
+import { callAtlassianTool, isAtlassianToolName } from "./atlassian-tools.js";
 import { callPersonaTool, isPersonaToolName } from "./persona-tools.js";
 import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
 import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
@@ -569,6 +570,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         else if (isTicketAttachmentToolName(name)) {
             result = await callTicketAttachmentTool(name, callTauri, args);
+        }
+        else if (isAtlassianToolName(name)) {
+            result = await callAtlassianTool(name, callTauri, args, {
+                conversationId: RALPHX_CONVERSATION_ID,
+                agentRunId: RALPHX_AGENT_RUN_ID,
+            });
         }
         else if (isPersonaToolName(name)) {
             result = await callPersonaTool(name, callTauri, callTauriGet, args, {

@@ -19,7 +19,7 @@ use crate::application::agent_workspace_publish_lease::{
     begin_publish_operation_scope, publish_operation_lease_is_live,
     spawn_publish_operation_lease_heartbeat_for_scope, stop_publish_operation_lease_heartbeat,
 };
-use crate::application::agent_workspace_publish_recovery::is_blocked_and_not_auto_retryable;
+use crate::application::agent_workspace_publish_recovery::blocked_repair_fences_new_base_work;
 use crate::application::agent_workspace_publish_recovery::{
     AGENT_WORKSPACE_PUBLISH_REDRIVE_PENDING_STATUS, AGENT_WORKSPACE_PUBLISH_REDRIVE_REQUESTED,
 };
@@ -460,7 +460,7 @@ where
             .get_current_repair_attempt(&conversation_id)
             .await;
         let blocked_exhausted = match attempt {
-            Ok(Some(attempt)) => is_blocked_and_not_auto_retryable(&attempt),
+            Ok(Some(attempt)) => blocked_repair_fences_new_base_work(state.inner(), &attempt).await,
             Ok(None) => false,
             Err(error) => {
                 tracing::warn!(
@@ -474,7 +474,7 @@ where
         if blocked_exhausted {
             tracing::debug!(
                 conversation_id = conversation_id.as_str(),
-                "Skipping stale-base agent workspace auto-publish: durable repair is blocked and exhausted"
+                "Skipping stale-base agent workspace auto-publish: blocked durable repair still fences new base work"
             );
             continue;
         }
@@ -683,13 +683,12 @@ where
         .get_current_repair_attempt(&conversation_id)
         .await
         .map_err(|error| format!("durable repair gate failed closed: {error}"))?;
-    if repair_attempt
-        .as_ref()
-        .is_some_and(is_blocked_and_not_auto_retryable)
-    {
-        return Ok(AutoPublishDecision::Skip(
-            AutoPublishSkipReason::DurableRepairBlockedExhausted,
-        ));
+    if let Some(attempt) = repair_attempt.as_ref() {
+        if blocked_repair_fences_new_base_work(state, attempt).await {
+            return Ok(AutoPublishDecision::Skip(
+                AutoPublishSkipReason::DurableRepairBlockedExhausted,
+            ));
+        }
     }
 
     let project = state

@@ -1,30 +1,41 @@
 use super::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use super::agent_workspace_publish_recovery::{
     recover_agent_workspace_repair_attempts_for_state, recover_agent_workspace_repair_continuation,
-    DurableRepairRecoveryOutcome,
+    DurableRepairRecoveryOutcome, WORKSPACE_MISSING_SETTLED_STEP,
 };
 use super::agent_workspace_publish_repair_state::AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION;
+use super::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON;
 use super::git_mutation_recovery::{
     recover_in_flight_git_mutations_for_state, recover_repair_owned_in_flight_git_mutations,
     GitMutationRecoveryOutcome,
 };
 use super::publish_resilience::{
-    continue_agent_workspace_repair_publish, has_observed_agent_workspace_repair_pr_handoff,
-    initialize_agent_workspace_repair_push_effect, next_effect_checkpoint_at,
-    observe_agent_workspace_repair_pr_handoff_effect, observe_agent_workspace_repair_push_effect,
+    continue_agent_workspace_repair_publish, fail_agent_workspace_repair_effect_for_phase,
+    has_observed_agent_workspace_repair_pr_handoff, initialize_agent_workspace_repair_push_effect,
+    next_effect_checkpoint_at, observe_agent_workspace_repair_pr_handoff_effect,
+    observe_agent_workspace_repair_pr_handoff_effect_for_phase,
+    observe_agent_workspace_repair_push_effect, observed_repair_push_receipt_for_head,
     observed_workspace_repair_push_outcome, prepare_agent_workspace_repair_pr_handoff_effect,
     prepare_agent_workspace_repair_push_attempt, push_agent_workspace_repair_branch,
     reconcile_agent_workspace_repair_pr_handoff,
+    reconcile_blocked_agent_workspace_repair_create_pr_effect,
     reconcile_blocked_agent_workspace_repair_pr_handoff,
     reconcile_linked_plan_agent_workspace_repair_pr_handoff,
-    reconcile_open_agent_workspace_repair_push_effect, repair_pr_handoff_from_observed_push,
+    reconcile_open_agent_workspace_repair_push_effect, repair_effect_base_idempotency_key,
+    repair_pr_handoff_from_observed_push, resolve_repair_effect_identity,
     retarget_agent_workspace_repair_pr_handoff,
+    terminate_orphaned_blocked_repair_pr_handoff_effect,
     try_acquire_agent_workspace_repair_publish_continuation_guard,
     verify_agent_workspace_repair_pr_handoff, verify_workspace_repair_push_remote_precondition,
     AgentWorkspaceRepairOpenPushEffectReconciliation, AgentWorkspaceRepairPrHandoff,
     AgentWorkspaceRepairPrHandoffResult, AgentWorkspaceRepairPublishContinuation,
     AgentWorkspaceRepairPushOutcome, AgentWorkspaceRepairPushRequest,
-    BlockedRepairPrHandoffReconciliation, PublishAfterRepairPushError, RepairPrHandoffVerification,
+    BlockedCreatePrEffectReconciliation, BlockedRepairPrHandoffReconciliation,
+    PublishAfterRepairPushError, RepairEffectIdentity, RepairPrHandoffVerification,
+};
+use super::publish_resilience_create_pr_reconciliation::{
+    REPAIR_CREATE_PR_AMBIGUOUS_STEP, REPAIR_CREATE_PR_EFFECT_ADOPTED_STEP,
+    REPAIR_CREATE_PR_EFFECT_NOT_APPLIED_STEP,
 };
 use super::{AppState, GitService};
 use chrono::{Duration, Utc};
@@ -34,20 +45,23 @@ use std::sync::Arc;
 
 use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrMetadataDecision,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffect,
-    AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairPhase,
-    AgentWorkspaceRepairSource, ArtifactId, ChatConversationId, GitTargetLeaseOwner,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, Project,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+    AgentWorkspacePrMetadataDecision, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind,
+    AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    ArtifactId, ChatConversationId, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, NewNotification, NotificationCategory, NotificationSeverity,
+    NotificationTarget, NotificationTargetKind, PlanBranch, PlanBranchId, Project,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
     AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
-    AgentWorkspaceRepairRepository, BeginGitMutation, BranchUpdateRepository, CompleteGitMutation,
-    CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome,
+    AgentWorkspaceRepairRepository, BeginGitMutation, BranchUpdateRepository,
+    CompleteAgentWorkspaceRepairEffect, CompleteAgentWorkspaceRepairEffectOutcome,
+    CompleteGitMutation, CreateAgentWorkspaceRepairEffect, CreateAgentWorkspaceRepairEffectOutcome,
     StartOrJoinAgentWorkspaceRepairAttempt, StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
-use crate::domain::services::github_service::{PrStatus, PrSyncState};
+use crate::domain::services::github_service::{PrBranchMatch, PrStatus, PrSyncState};
 use crate::domain::services::GithubServiceTrait;
 use crate::error::AppError;
 use crate::infrastructure::memory::memory_agent_conversation_workspace_repo::ForcedCreateAgentWorkspaceRepairEffectOutcome;
@@ -4282,4 +4296,1628 @@ async fn repair_claim_recovery_blocks_a_stale_fencing_epoch_without_git_or_githu
         [GitMutationRecoveryOutcome::NeedsRepair { .. }]
     ));
     assert_eq!(github.state().push_branch_calls, 0);
+}
+
+async fn setup_blocked_new_pr_handoff() -> (
+    RepairPushFixture,
+    AppState,
+    AgentWorkspaceRepairAttempt,
+    Arc<MockGithubService>,
+) {
+    let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let (mut state, _identity) = state_with_recoverable_repair_continuation(&fixture).await;
+    let github = Arc::new(MockGithubService::new());
+    github.state().perform_real_git_pushes = true;
+    state.github_service = Some(github.clone());
+    state.install_agent_workspace_repair_publish_continuation(Arc::new(
+        FailedRepairPublishContinuation,
+    ));
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.workspace.conversation_id)
+        .await
+        .expect("load repair continuation")
+        .expect("repair continuation remains current");
+    continue_agent_workspace_repair_publish(&state, attempt)
+        .await
+        .expect_err("seed the blocked new-PR handoff");
+    let blocked = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.workspace.conversation_id)
+        .await
+        .expect("load blocked new-PR handoff")
+        .expect("blocked new-PR handoff remains current");
+    (fixture, state, blocked, github)
+}
+
+#[tokio::test]
+async fn orphaned_blocked_pr_update_effect_is_terminated_and_unfences_retry() {
+    let fixture = setup_blocked_existing_pr_preserve_handoff().await;
+    let update_key = repair_effect_base_idempotency_key(
+        &fixture.blocked,
+        AgentWorkspaceRepairEffectKind::UpdatePr,
+    );
+    let events_before = fixture
+        .state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&fixture.workspace.conversation_id)
+        .await
+        .expect("read events before termination");
+
+    assert!(
+        terminate_orphaned_blocked_repair_pr_handoff_effect(&fixture.state, &fixture.blocked)
+            .await
+            .expect("terminate the orphaned PR-update handoff"),
+        "an orphaned in-flight update_pr handoff with an observed push must be terminated"
+    );
+
+    let terminated = fixture
+        .state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&update_key)
+        .await
+        .expect("read terminated update effect")
+        .expect("terminated update effect exists");
+    assert_eq!(terminated.status, AgentWorkspaceRepairEffectStatus::Failed);
+    assert!(
+        terminated.completed_at.is_some(),
+        "a terminated effect must be closed so the attempt's open slot is released"
+    );
+    assert!(terminated
+        .last_error
+        .as_deref()
+        .is_some_and(|reason| reason.contains("orphaned in-flight PR-update handoff")));
+    assert!(
+        fixture
+            .state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&fixture.blocked.id)
+            .await
+            .expect("read open effect after termination")
+            .is_none(),
+        "terminating the handoff must clear the open-effect fence"
+    );
+    assert_eq!(
+        fixture
+            .state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&fixture.workspace.conversation_id)
+            .await
+            .expect("read attempt after termination"),
+        Some(fixture.blocked.clone()),
+        "termination must not settle or transition the blocked attempt"
+    );
+    let events_after = fixture
+        .state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&fixture.workspace.conversation_id)
+        .await
+        .expect("read events after termination");
+    assert_eq!(events_after.len(), events_before.len() + 1);
+    assert!(
+        events_after
+            .iter()
+            .any(|event| event.step == "repair_pr_handoff_effect_terminated"),
+        "termination must explain itself on the publication timeline"
+    );
+
+    assert!(
+        !terminate_orphaned_blocked_repair_pr_handoff_effect(&fixture.state, &fixture.blocked)
+            .await
+            .expect("re-running termination is safe"),
+        "a cleared fence must not be terminated twice"
+    );
+}
+
+// The receipts-only hatch still declines every `create_pr` shape; settling one is owned by
+// `reconcile_blocked_agent_workspace_repair_create_pr_effect`, which proves absence against GitHub.
+#[tokio::test]
+async fn receipts_only_hatch_declines_create_pr_effects() {
+    let (fixture, state, blocked, _github) = setup_blocked_new_pr_handoff().await;
+    let create_key =
+        repair_effect_base_idempotency_key(&blocked, AgentWorkspaceRepairEffectKind::CreatePr);
+
+    assert!(
+        !terminate_orphaned_blocked_repair_pr_handoff_effect(&state, &blocked)
+            .await
+            .expect("evaluate the create_pr fence"),
+        "an unproven pull-request creation must never be terminated"
+    );
+
+    let open = state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&blocked.id)
+        .await
+        .expect("read open effect after declined termination")
+        .expect("create_pr effect stays open");
+    assert_eq!(open.idempotency_key, create_key);
+    assert_eq!(open.kind, AgentWorkspaceRepairEffectKind::CreatePr);
+    assert_eq!(open.status, AgentWorkspaceRepairEffectStatus::InFlight);
+    drop(fixture);
+}
+
+#[tokio::test]
+async fn blocked_pr_update_termination_requires_a_matching_durable_push_receipt() {
+    let fixture = setup_blocked_existing_pr_preserve_handoff().await;
+    let repair_head = fixture
+        .blocked
+        .repair_head_commit
+        .clone()
+        .expect("blocked handoff retains its repair head");
+
+    assert_eq!(
+        observed_repair_push_receipt_for_head(
+            fixture.state.agent_workspace_repair_repo.as_ref(),
+            &fixture.blocked,
+            &repair_head,
+        )
+        .await
+        .expect("read the durable push receipt"),
+        Some(repair_head),
+        "the observed push receipt proves the head already reached the remote"
+    );
+    assert!(
+        observed_repair_push_receipt_for_head(
+            fixture.state.agent_workspace_repair_repo.as_ref(),
+            &fixture.blocked,
+            "0000000000000000000000000000000000000000",
+        )
+        .await
+        .expect("read the durable push receipt for a foreign head")
+        .is_none(),
+        "a receipt for a different head is not proof for this head"
+    );
+}
+
+#[tokio::test]
+async fn blocked_pr_update_termination_declines_after_the_repair_head_is_retargeted() {
+    let fixture = setup_blocked_existing_pr_preserve_handoff().await;
+    let mut retargeted = fixture.blocked.clone();
+    let expected_updated_at = retargeted.updated_at;
+    retargeted.repair_head_commit = Some("0000000000000000000000000000000000000000".to_string());
+    retargeted.updated_at += Duration::microseconds(1);
+    let retargeted = match fixture
+        .state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: retargeted,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("retarget the blocked repair head")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("retargeting must apply, got {outcome:?}"),
+    };
+
+    assert!(
+        !terminate_orphaned_blocked_repair_pr_handoff_effect(&fixture.state, &retargeted)
+            .await
+            .expect("evaluate the retargeted head"),
+        "a handoff whose head no longer matches the attempt must stay fenced"
+    );
+    assert!(fixture
+        .state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&fixture.blocked.id)
+        .await
+        .expect("read open effect after declined termination")
+        .is_some());
+}
+
+#[tokio::test]
+async fn blocked_pr_update_termination_declines_for_stale_attempt_authority() {
+    let fixture = setup_blocked_existing_pr_preserve_handoff().await;
+    let mut stale = fixture.blocked.clone();
+    stale.updated_at += Duration::microseconds(1);
+
+    assert!(
+        !terminate_orphaned_blocked_repair_pr_handoff_effect(&fixture.state, &stale)
+            .await
+            .expect("evaluate stale attempt authority"),
+        "stale attempt authority must not terminate a durable effect"
+    );
+    assert!(fixture
+        .state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&fixture.blocked.id)
+        .await
+        .expect("read open effect after declined termination")
+        .is_some());
+}
+
+#[tokio::test]
+async fn terminated_pr_handoff_effects_replay_under_a_fresh_ordinal_identity() {
+    let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let (state, _identity) = state_with_recoverable_repair_continuation(&fixture).await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fixture.workspace.conversation_id)
+        .await
+        .expect("load handoff workspace")
+        .expect("handoff workspace exists");
+    workspace.publication_pr_number = Some(77);
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.workspace.conversation_id)
+        .await
+        .expect("load repair continuation")
+        .expect("repair continuation remains current");
+    let attempt = prepare_agent_workspace_repair_push_attempt(
+        state.agent_workspace_repair_repo.as_ref(),
+        attempt,
+        AgentWorkspaceRepairPhase::ContinuationPending,
+    )
+    .await
+    .expect("advance the repair continuation")
+    .expect("the repair continuation advances");
+    let base_key =
+        repair_effect_base_idempotency_key(&attempt, AgentWorkspaceRepairEffectKind::UpdatePr);
+
+    let first = prepare_agent_workspace_repair_pr_handoff_effect(
+        state.agent_workspace_repair_repo.as_ref(),
+        &attempt,
+        &workspace,
+        Some(77),
+    )
+    .await
+    .expect("prepare the first PR-update handoff effect");
+    assert_eq!(first.idempotency_key, base_key);
+    assert_eq!(first.status, AgentWorkspaceRepairEffectStatus::InFlight);
+    assert!(
+        !terminate_orphaned_blocked_repair_pr_handoff_effect(&state, &attempt)
+            .await
+            .expect("evaluate a live continuation"),
+        "only a blocked attempt proves that its continuation already returned"
+    );
+
+    fail_agent_workspace_repair_effect_for_phase(
+        state.agent_workspace_repair_repo.as_ref(),
+        &attempt,
+        first,
+        AgentWorkspaceRepairPhase::Continuing,
+        "terminated for the replay regression",
+    )
+    .await
+    .expect("terminate the first handoff identity");
+
+    let replay = prepare_agent_workspace_repair_pr_handoff_effect(
+        state.agent_workspace_repair_repo.as_ref(),
+        &attempt,
+        &workspace,
+        Some(77),
+    )
+    .await
+    .expect("prepare the replacement PR-update handoff effect");
+    assert_eq!(replay.idempotency_key, format!("{base_key}#2"));
+    assert_eq!(replay.status, AgentWorkspaceRepairEffectStatus::InFlight);
+    let terminated = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&base_key)
+        .await
+        .expect("re-read the terminated identity")
+        .expect("the terminated identity is retained as history");
+    assert_eq!(terminated.status, AgentWorkspaceRepairEffectStatus::Failed);
+    assert!(terminated.completed_at.is_some());
+
+    let reused = prepare_agent_workspace_repair_pr_handoff_effect(
+        state.agent_workspace_repair_repo.as_ref(),
+        &attempt,
+        &workspace,
+        Some(77),
+    )
+    .await
+    .expect("re-enter the in-flight replacement");
+    assert_eq!(reused.id, replay.id);
+
+    observe_agent_workspace_repair_pr_handoff_effect(
+        state.agent_workspace_repair_repo.as_ref(),
+        &attempt,
+        reused,
+        77,
+        Some("https://github.com/example/repo/pull/77"),
+    )
+    .await
+    .expect("observe the replacement handoff");
+    let observed = prepare_agent_workspace_repair_pr_handoff_effect(
+        state.agent_workspace_repair_repo.as_ref(),
+        &attempt,
+        &workspace,
+        Some(77),
+    )
+    .await
+    .expect("re-enter the observed replacement");
+    assert_eq!(observed.id, replay.id);
+    assert_eq!(observed.status, AgentWorkspaceRepairEffectStatus::Observed);
+    assert!(
+        state
+            .agent_workspace_repair_repo
+            .get_repair_effect_by_idempotency_key(&format!("{base_key}#3"))
+            .await
+            .expect("probe the next ordinal identity")
+            .is_none(),
+        "an observed replacement must not mint another identity"
+    );
+    assert!(matches!(
+        resolve_repair_effect_identity(
+            state.agent_workspace_repair_repo.as_ref(),
+            &attempt,
+            AgentWorkspaceRepairEffectKind::UpdatePr,
+        )
+        .await
+        .expect("resolve the live handoff identity"),
+        RepairEffectIdentity::Live(effect) if effect.idempotency_key == format!("{base_key}#2")
+    ));
+}
+
+/// Seeds a blocked repair attempt with a terminated base push, an observed ordinal push#2, and an
+/// orphaned in-flight update_pr effect. When `use_correct_receipt_oid` is true the push#2 receipt
+/// carries `remote_oid == repair_head`; when false it carries a zeroed OID, enabling the
+/// mismatched-OID failure edge without needing to know `repair_head` before the fixture runs.
+async fn setup_blocked_with_ordinal_push_receipt(
+    use_correct_receipt_oid: bool,
+) -> (
+    AppState,
+    AgentWorkspaceRepairAttempt,
+    String,
+    tempfile::TempDir,
+) {
+    let fixture = setup_workspace_push(RepairPushRemoteHistory::FastForward).await;
+    let repair_head = fixture.local_head.clone();
+    let (state, _identity) = state_with_recoverable_repair_continuation(&fixture).await;
+    // For the failure edge, both intended_head_oid AND receipt remote_oid must differ from
+    // repair_head. `observed_workspace_repair_push_outcome` enforces intended_head_oid ==
+    // remote_oid, so a mismatched receipt is represented by setting both fields to a wrong value.
+    // `observed_repair_push_receipt_for_head` skips any push whose intended_head_oid != query head,
+    // which is the discriminating check the failure edge proves.
+    let push2_intended_head_oid = if use_correct_receipt_oid {
+        repair_head.clone()
+    } else {
+        "0000000000000000000000000000000000000000".to_string()
+    };
+    let receipt_remote_oid = push2_intended_head_oid.clone();
+
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.workspace.conversation_id)
+        .await
+        .expect("load repair attempt to block")
+        .expect("repair attempt exists to block");
+    let expected_updated_at = attempt.updated_at;
+    let mut attempt_to_block = attempt.clone();
+    attempt_to_block.phase = AgentWorkspaceRepairPhase::Blocked;
+    attempt_to_block.blocker = Some("PR continuation failed for test".to_string());
+    attempt_to_block.updated_at += Duration::microseconds(1);
+    let blocked = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: attempt_to_block,
+            expected_phase: attempt.phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("block the repair attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(a) => a,
+        outcome => panic!("blocking must apply, got {outcome:?}"),
+    };
+
+    // Base push_branch InFlight → complete to Failed (terminated prior push).
+    let push_base_key =
+        repair_effect_base_idempotency_key(&blocked, AgentWorkspaceRepairEffectKind::PushBranch);
+    let mut base_push = AgentWorkspaceRepairEffect::new(
+        blocked.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        push_base_key.clone(),
+        blocked.updated_at,
+    );
+    base_push.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    base_push.intended_head_oid = Some(repair_head.clone());
+    let base_push = match state
+        .agent_workspace_repair_repo
+        .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+            attempt_id: blocked.id.clone(),
+            generation: blocked.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_attempt_updated_at: blocked.updated_at,
+            effect: base_push,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("create base push effect")
+    {
+        CreateAgentWorkspaceRepairEffectOutcome::Created(e) => e,
+        outcome => panic!("base push must be created, got {outcome:?}"),
+    };
+    let mut failed_base_push = base_push.clone();
+    failed_base_push.status = AgentWorkspaceRepairEffectStatus::Failed;
+    failed_base_push.last_error = Some("prior push terminated".to_string());
+    failed_base_push.updated_at = base_push.updated_at + Duration::milliseconds(1);
+    failed_base_push.completed_at = Some(failed_base_push.updated_at);
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
+                attempt_id: blocked.id.clone(),
+                generation: blocked.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Blocked,
+                expected_attempt_updated_at: blocked.updated_at,
+                expected_effect_updated_at: base_push.updated_at,
+                expected_effect_status: AgentWorkspaceRepairEffectStatus::InFlight,
+                effect: failed_base_push,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("fail base push effect"),
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(_)
+    ));
+
+    // push_branch#2 InFlight → complete to Observed. Both intended_head_oid and receipt remote_oid
+    // are caller-controlled (they must agree to satisfy observed_workspace_repair_push_outcome)
+    // to allow testing both the matching and the mismatched-OID failure edge.
+    let push2_key = format!("{push_base_key}#2");
+    let mut push2 = AgentWorkspaceRepairEffect::new(
+        blocked.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        push2_key.clone(),
+        blocked.updated_at,
+    );
+    push2.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    push2.intended_head_oid = Some(push2_intended_head_oid.clone());
+    let push2 = match state
+        .agent_workspace_repair_repo
+        .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+            attempt_id: blocked.id.clone(),
+            generation: blocked.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_attempt_updated_at: blocked.updated_at,
+            effect: push2,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("create push#2 effect")
+    {
+        CreateAgentWorkspaceRepairEffectOutcome::Created(e) => e,
+        outcome => panic!("push#2 must be created, got {outcome:?}"),
+    };
+    let mut observed_push2 = push2.clone();
+    observed_push2.status = AgentWorkspaceRepairEffectStatus::Observed;
+    observed_push2.receipt_json = Some(format!(
+        "{{\"remote_ref\":\"refs/heads/ralphx/repair/publish-safety\",\"remote_oid\":\"{receipt_remote_oid}\"}}"
+    ));
+    observed_push2.updated_at = push2.updated_at + Duration::milliseconds(1);
+    observed_push2.completed_at = Some(observed_push2.updated_at);
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
+                attempt_id: blocked.id.clone(),
+                generation: blocked.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Blocked,
+                expected_attempt_updated_at: blocked.updated_at,
+                expected_effect_updated_at: push2.updated_at,
+                expected_effect_status: AgentWorkspaceRepairEffectStatus::InFlight,
+                effect: observed_push2,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("observe push#2 effect"),
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(_)
+    ));
+
+    // Orphaned update_pr InFlight (the open effect termination will clear).
+    let update_key =
+        repair_effect_base_idempotency_key(&blocked, AgentWorkspaceRepairEffectKind::UpdatePr);
+    let mut handoff = AgentWorkspaceRepairEffect::new(
+        blocked.id.clone(),
+        AgentWorkspaceRepairEffectKind::UpdatePr,
+        update_key.clone(),
+        blocked.updated_at,
+    );
+    handoff.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    handoff.intended_head_oid = Some(repair_head.clone());
+    assert!(matches!(
+        state
+            .agent_workspace_repair_repo
+            .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+                attempt_id: blocked.id.clone(),
+                generation: blocked.generation,
+                expected_phase: AgentWorkspaceRepairPhase::Blocked,
+                expected_attempt_updated_at: blocked.updated_at,
+                effect: handoff,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("seed the orphaned update_pr effect"),
+        CreateAgentWorkspaceRepairEffectOutcome::Created(_)
+    ));
+
+    (state, blocked, repair_head, fixture._temp)
+}
+
+#[tokio::test]
+async fn ordinal_push_receipt_satisfies_terminated_pr_update_termination() {
+    let (state, blocked, repair_head, _temp) = setup_blocked_with_ordinal_push_receipt(true).await;
+
+    // A terminated base push must not hide the ordinal receipt.
+    assert_eq!(
+        observed_repair_push_receipt_for_head(
+            state.agent_workspace_repair_repo.as_ref(),
+            &blocked,
+            &repair_head,
+        )
+        .await
+        .expect("read ordinal push receipt"),
+        Some(repair_head.clone()),
+        "ordinal push#2 receipt must prove the head reached the remote even after the base push was terminated"
+    );
+    // Sibling: a query for a different head must still be rejected.
+    assert_eq!(
+        observed_repair_push_receipt_for_head(
+            state.agent_workspace_repair_repo.as_ref(),
+            &blocked,
+            "0000000000000000000000000000000000000000",
+        )
+        .await
+        .expect("read ordinal push receipt for foreign head"),
+        None,
+        "the ordinal walk must still discriminate by the queried repair head"
+    );
+
+    // Termination must succeed using the ordinal receipt as the durable push proof.
+    assert!(
+        terminate_orphaned_blocked_repair_pr_handoff_effect(&state, &blocked)
+            .await
+            .expect("terminate the orphaned PR update handoff"),
+        "an ordinal push receipt must satisfy the termination proof"
+    );
+
+    // The update_pr effect must now be Failed with completed_at set.
+    let update_key =
+        repair_effect_base_idempotency_key(&blocked, AgentWorkspaceRepairEffectKind::UpdatePr);
+    let terminated_handoff = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&update_key)
+        .await
+        .expect("read terminated update_pr effect")
+        .expect("terminated update_pr effect still exists as history");
+    assert_eq!(
+        terminated_handoff.status,
+        AgentWorkspaceRepairEffectStatus::Failed,
+        "termination must mark the update_pr effect Failed"
+    );
+    assert!(
+        terminated_handoff.completed_at.is_some(),
+        "termination must set completed_at so the one-open-effect fence is released"
+    );
+
+    // The open-effect fence must be clear.
+    assert!(
+        state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&blocked.id)
+            .await
+            .expect("read open effect after termination")
+            .is_none(),
+        "termination must release the open-effect fence"
+    );
+
+    // The attempt must still be Blocked and unsettled — termination only closes the effect row.
+    let still_blocked = state
+        .agent_workspace_repair_repo
+        .get_repair_attempt(&blocked.id)
+        .await
+        .expect("read attempt after termination")
+        .expect("attempt still exists");
+    assert_eq!(still_blocked.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(still_blocked.settled_at.is_none());
+}
+
+#[tokio::test]
+async fn ordinal_push_receipt_with_mismatched_remote_oid_declines_pr_update_termination() {
+    let (state, blocked, repair_head, _temp) = setup_blocked_with_ordinal_push_receipt(false).await;
+
+    // The #2 push exists but its receipt OID does not match the repair head — no durable proof.
+    assert_eq!(
+        observed_repair_push_receipt_for_head(
+            state.agent_workspace_repair_repo.as_ref(),
+            &blocked,
+            &repair_head,
+        )
+        .await
+        .expect("read ordinal push receipt for mismatched OID"),
+        None,
+        "a push#2 receipt whose remote_oid does not match the repair head must not satisfy the proof"
+    );
+
+    // Termination must decline: the receipt discriminates, not just the loop iteration.
+    assert!(
+        !terminate_orphaned_blocked_repair_pr_handoff_effect(&state, &blocked)
+            .await
+            .expect("evaluate termination with mismatched push receipt"),
+        "an ordinal receipt with a wrong remote_oid must not unlock termination"
+    );
+
+    // The update_pr effect must remain InFlight — the fence is still closed.
+    let update_key =
+        repair_effect_base_idempotency_key(&blocked, AgentWorkspaceRepairEffectKind::UpdatePr);
+    let still_open = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&update_key)
+        .await
+        .expect("read update_pr effect after declined termination")
+        .expect("update_pr effect still exists");
+    assert_eq!(
+        still_open.status,
+        AgentWorkspaceRepairEffectStatus::InFlight,
+        "a declined termination must not mutate the update_pr effect"
+    );
+}
+
+#[tokio::test]
+async fn reconciler_resolves_ordinal_update_pr_after_base_key_termination() {
+    let fixture = setup_blocked_existing_pr_preserve_handoff().await;
+    let base_key = repair_effect_base_idempotency_key(
+        &fixture.blocked,
+        AgentWorkspaceRepairEffectKind::UpdatePr,
+    );
+    let repair_head = fixture
+        .blocked
+        .repair_head_commit
+        .clone()
+        .expect("blocked handoff retains repair head");
+
+    // Terminate the base-key handoff; the attempt stays Blocked with cleared fence.
+    assert!(
+        terminate_orphaned_blocked_repair_pr_handoff_effect(&fixture.state, &fixture.blocked)
+            .await
+            .expect("terminate orphaned update_pr"),
+        "an in-flight update_pr with a durable push receipt must be terminated"
+    );
+    let terminated = fixture
+        .state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&base_key)
+        .await
+        .expect("read terminated effect")
+        .expect("terminated effect retained as history");
+    assert_eq!(terminated.status, AgentWorkspaceRepairEffectStatus::Failed);
+    assert!(terminated.completed_at.is_some());
+
+    // Advance the attempt to Continuing so prepare_agent_workspace_repair_pr_handoff_effect
+    // can insert #2 (that function gates on expected_phase=Continuing, mirroring the redrive path).
+    let blocked_updated_at = fixture.blocked.updated_at;
+    let continuing_updated_at = next_effect_checkpoint_at(blocked_updated_at);
+    let mut continuing_snapshot = fixture.blocked.clone();
+    continuing_snapshot.phase = AgentWorkspaceRepairPhase::Continuing;
+    continuing_snapshot.updated_at = continuing_updated_at;
+    let continuing_attempt = match fixture
+        .state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: continuing_snapshot,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at: blocked_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("transition to Continuing")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(a) => a,
+        outcome => panic!("expected Applied, got {outcome:?}"),
+    };
+
+    // Prepare the #2 update_pr effect — the base key is terminated so a fresh ordinal is minted.
+    let pr2 = prepare_agent_workspace_repair_pr_handoff_effect(
+        fixture.state.agent_workspace_repair_repo.as_ref(),
+        &continuing_attempt,
+        &fixture.workspace,
+        Some(77),
+    )
+    .await
+    .expect("prepare the ordinal #2 update_pr");
+    assert_eq!(
+        pr2.idempotency_key,
+        format!("{base_key}#2"),
+        "a terminated base key must cause the next prepare to mint an ordinal identity"
+    );
+    assert_eq!(pr2.status, AgentWorkspaceRepairEffectStatus::InFlight);
+
+    // Re-block the attempt (simulates a second describer failure while the #2 row is in-flight).
+    let reblocked_updated_at = next_effect_checkpoint_at(continuing_updated_at);
+    let mut reblocked_snapshot = continuing_attempt.clone();
+    reblocked_snapshot.phase = AgentWorkspaceRepairPhase::Blocked;
+    reblocked_snapshot.updated_at = reblocked_updated_at;
+    let current = match fixture
+        .state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: reblocked_snapshot,
+            expected_phase: AgentWorkspaceRepairPhase::Continuing,
+            expected_updated_at: continuing_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("re-block the attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(a) => a,
+        outcome => panic!("expected Applied, got {outcome:?}"),
+    };
+
+    // resolve_repair_effect_identity must skip the terminated base row and surface #2 as Live.
+    assert!(matches!(
+        resolve_repair_effect_identity(
+            fixture.state.agent_workspace_repair_repo.as_ref(),
+            &current,
+            AgentWorkspaceRepairEffectKind::UpdatePr,
+        )
+        .await
+        .expect("resolve live update_pr identity"),
+        RepairEffectIdentity::Live(e) if e.idempotency_key == format!("{base_key}#2")
+    ));
+
+    // Configure GitHub to return the matching PR head.
+    fixture.github.will_return_sync_state(PrSyncState {
+        status: PrStatus::Open,
+        merge_state_status: None,
+        mergeable: None,
+        is_draft: true,
+        head_ref_name: fixture.workspace.branch_name.clone(),
+        base_ref_name: fixture.workspace.base_ref.clone(),
+        head_ref_oid: Some(repair_head.clone()),
+        base_ref_oid: None,
+    });
+
+    // The reconciler must resolve #2 as the live effect and settle the attempt successfully.
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_pr_handoff(&fixture.state, &current)
+            .await
+            .expect("reconcile with ordinal update_pr"),
+        BlockedRepairPrHandoffReconciliation::Recovered,
+        "a terminated base row must not force NotRecoverable when the ordinal #2 row is live"
+    );
+    assert!(
+        fixture
+            .state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&fixture.workspace.conversation_id)
+            .await
+            .expect("read current repair after reconciliation")
+            .is_none(),
+        "reconciler must settle the blocked attempt"
+    );
+    let events = fixture
+        .state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&fixture.workspace.conversation_id)
+        .await
+        .expect("read events after reconciliation");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.step == "repair_pr_handoff_reconciled"),
+        "reconciler must append a repair_pr_handoff_reconciled publication event"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Blocked `create_pr` postcondition reconciliation.
+//
+// These cover the only effect kind the receipts-only hatch above cannot settle: a durable row
+// cannot record whether `gh pr create` landed, so the reconciler proves the answer against GitHub
+// before it either terminates or adopts the effect.
+// ---------------------------------------------------------------------------
+
+fn open_pr_branch_match(number: i64, head_ref_name: &str) -> PrBranchMatch {
+    PrBranchMatch {
+        number,
+        url: format!("https://github.com/example/repo/pull/{number}"),
+        status: PrStatus::Open,
+        is_draft: false,
+        head_ref_name: head_ref_name.to_string(),
+        updated_at: None,
+        author_login: None,
+    }
+}
+
+async fn open_create_pr_effect(
+    state: &AppState,
+    blocked: &AgentWorkspaceRepairAttempt,
+) -> Option<AgentWorkspaceRepairEffect> {
+    state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&blocked.id)
+        .await
+        .expect("read the open create_pr effect")
+}
+
+async fn publication_event_count(
+    state: &AppState,
+    blocked: &AgentWorkspaceRepairAttempt,
+    step: &str,
+) -> usize {
+    state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&blocked.conversation_id)
+        .await
+        .expect("read publication events")
+        .iter()
+        .filter(|event| event.step == step)
+        .count()
+}
+
+async fn unread_notification_count(state: &AppState, dedupe_key: &str) -> usize {
+    state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .expect("read notifications")
+        .notifications
+        .iter()
+        .filter(|row| row.dedupe_key.as_deref() == Some(dedupe_key) && row.read_at.is_none())
+        .count()
+}
+
+#[tokio::test]
+async fn zero_prs_for_head_terminates_the_orphaned_create_pr_effect() {
+    let (fixture, state, blocked, github) = setup_blocked_new_pr_handoff().await;
+    let create_key =
+        repair_effect_base_idempotency_key(&blocked, AgentWorkspaceRepairEffectKind::CreatePr);
+    github.set_find_latest_pr_by_head_branch(Ok(None));
+
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &blocked)
+            .await
+            .expect("evaluate the orphaned create_pr effect"),
+        BlockedCreatePrEffectReconciliation::NotApplied
+    );
+
+    let terminated = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&create_key)
+        .await
+        .expect("read the terminated create effect")
+        .expect("the terminated create effect is retained as history");
+    assert_eq!(terminated.status, AgentWorkspaceRepairEffectStatus::Failed);
+    assert!(
+        terminated.completed_at.is_some(),
+        "a terminated effect must be closed so the attempt's open slot is released"
+    );
+    assert!(
+        terminated.last_error.as_deref().is_some_and(
+            |reason| reason.contains("no pull request for this head branch in any state")
+        )
+    );
+    assert!(
+        open_create_pr_effect(&state, &blocked).await.is_none(),
+        "terminating the creation must clear the open-effect fence"
+    );
+    assert!(matches!(
+        resolve_repair_effect_identity(
+            state.agent_workspace_repair_repo.as_ref(),
+            &blocked,
+            AgentWorkspaceRepairEffectKind::CreatePr,
+        )
+        .await
+        .expect("resolve the create_pr identity after termination"),
+        RepairEffectIdentity::Terminated
+    ));
+    assert_eq!(
+        state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&fixture.workspace.conversation_id)
+            .await
+            .expect("read attempt after termination"),
+        Some(blocked.clone()),
+        "termination must not settle or transition the blocked attempt"
+    );
+    assert_eq!(
+        publication_event_count(&state, &blocked, REPAIR_CREATE_PR_EFFECT_NOT_APPLIED_STEP).await,
+        1,
+        "termination must explain itself on the publication timeline"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_github_read_leaves_the_create_pr_fence_intact() {
+    let (_fixture, state, blocked, github) = setup_blocked_new_pr_handoff().await;
+    let before = open_create_pr_effect(&state, &blocked)
+        .await
+        .expect("the create_pr effect starts open");
+    let events_before = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&blocked.conversation_id)
+        .await
+        .expect("read events before the failed read");
+    github.set_find_latest_pr_by_head_branch(Err(AppError::Infrastructure(
+        "gh is unavailable".to_string(),
+    )));
+
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &blocked)
+            .await
+            .expect("a failed GitHub read must not error the sweep"),
+        BlockedCreatePrEffectReconciliation::Pending
+    );
+
+    assert_eq!(
+        open_create_pr_effect(&state, &blocked).await,
+        Some(before),
+        "an unproven read must leave the effect byte-identical"
+    );
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&blocked.conversation_id)
+            .await
+            .expect("read events after the failed read"),
+        events_before,
+        "an unproven read must not append a recovery event"
+    );
+}
+
+#[tokio::test]
+async fn a_pr_at_the_repair_head_is_adopted_and_settles_the_attempt() {
+    let (fixture, state, blocked, github) = setup_blocked_new_pr_handoff().await;
+    let repair_head = blocked
+        .repair_head_commit
+        .clone()
+        .expect("blocked handoff retains its repair head");
+    let create_key =
+        repair_effect_base_idempotency_key(&blocked, AgentWorkspaceRepairEffectKind::CreatePr);
+    github.set_find_latest_pr_by_head_branch(Ok(Some(open_pr_branch_match(
+        4242,
+        &fixture.workspace.branch_name,
+    ))));
+    github.will_return_sync_state(matching_open_pr_sync_state(&fixture.workspace, repair_head));
+
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &blocked)
+            .await
+            .expect("adopt the pull request this repair already created"),
+        BlockedCreatePrEffectReconciliation::Adopted
+    );
+
+    let observed = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&create_key)
+        .await
+        .expect("read the adopted create effect")
+        .expect("the adopted create effect exists");
+    assert_eq!(observed.status, AgentWorkspaceRepairEffectStatus::Observed);
+    assert_eq!(observed.expected_pr_number, Some(4242));
+    assert!(observed
+        .receipt_json
+        .as_deref()
+        .is_some_and(
+            |receipt| receipt.contains("\"pr_number\":4242") && receipt.contains("/pull/4242")
+        ));
+    assert!(
+        state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&fixture.workspace.conversation_id)
+            .await
+            .expect("read attempt after adoption")
+            .is_none(),
+        "adoption must settle the blocked attempt"
+    );
+    let settled_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fixture.workspace.conversation_id)
+        .await
+        .expect("load adopted workspace")
+        .expect("adopted workspace exists");
+    assert_eq!(settled_workspace.publication_pr_number, Some(4242));
+    assert_eq!(
+        settled_workspace.publication_pr_url.as_deref(),
+        Some("https://github.com/example/repo/pull/4242")
+    );
+    assert_eq!(
+        settled_workspace.publication_push_status.as_deref(),
+        Some("pushed")
+    );
+    assert_eq!(
+        settled_workspace.pr_supervision_status.as_deref(),
+        Some("monitoring")
+    );
+    assert_eq!(
+        publication_event_count(&state, &blocked, REPAIR_CREATE_PR_EFFECT_ADOPTED_STEP).await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_pr_whose_head_differs_is_never_adopted() {
+    let (fixture, state, blocked, github) = setup_blocked_new_pr_handoff().await;
+    let stale_head_sync_state = PrSyncState {
+        head_ref_oid: Some("0000000000000000000000000000000000000000".to_string()),
+        ..matching_open_pr_sync_state(
+            &fixture.workspace,
+            "0000000000000000000000000000000000000000".to_string(),
+        )
+    };
+    github.set_find_latest_pr_by_head_branch(Ok(Some(open_pr_branch_match(
+        99,
+        &fixture.workspace.branch_name,
+    ))));
+    github.will_return_sync_state(stale_head_sync_state.clone());
+
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &blocked)
+            .await
+            .expect("evaluate a pull request that is not proven current"),
+        BlockedCreatePrEffectReconciliation::AmbiguousPrExists
+    );
+
+    let still_open = open_create_pr_effect(&state, &blocked)
+        .await
+        .expect("an unproven pull request must leave the effect open");
+    assert_eq!(
+        still_open.status,
+        AgentWorkspaceRepairEffectStatus::InFlight
+    );
+    let ambiguous_key = format!(
+        "repair_create_pr_ambiguous:{}:{}",
+        blocked.conversation_id, blocked.id
+    );
+    assert_eq!(unread_notification_count(&state, &ambiguous_key).await, 1);
+    assert_eq!(
+        publication_event_count(&state, &blocked, REPAIR_CREATE_PR_AMBIGUOUS_STEP).await,
+        1
+    );
+
+    // Both one-shot mock slots must be re-armed: the head-lookup default is `Ok(None)`, which is
+    // the terminating arm, so a second pass would otherwise assert the opposite of its intent.
+    github.set_find_latest_pr_by_head_branch(Ok(Some(open_pr_branch_match(
+        99,
+        &fixture.workspace.branch_name,
+    ))));
+    github.will_return_sync_state(stale_head_sync_state);
+
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &blocked)
+            .await
+            .expect("re-evaluate the same unproven pull request"),
+        BlockedCreatePrEffectReconciliation::AmbiguousPrExists
+    );
+    assert_eq!(
+        publication_event_count(&state, &blocked, REPAIR_CREATE_PR_AMBIGUOUS_STEP).await,
+        1,
+        "repeated passes must not duplicate the attention event"
+    );
+    assert_eq!(
+        unread_notification_count(&state, &ambiguous_key).await,
+        1,
+        "repeated passes must not duplicate the attention notification"
+    );
+}
+
+#[tokio::test]
+async fn an_open_update_pr_effect_is_left_to_the_receipts_only_hatch() {
+    let fixture = setup_blocked_existing_pr_preserve_handoff().await;
+    let reads_before = fixture.github.state().find_latest_pr_by_head_branch_calls;
+
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&fixture.state, &fixture.blocked)
+            .await
+            .expect("an update_pr shape must decline without a write"),
+        BlockedCreatePrEffectReconciliation::Pending
+    );
+
+    assert_eq!(
+        fixture.github.state().find_latest_pr_by_head_branch_calls,
+        reads_before,
+        "declining an update_pr shape must not cost a GitHub read"
+    );
+    assert!(fixture
+        .state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&fixture.blocked.id)
+        .await
+        .expect("read open effect after decline")
+        .is_some());
+}
+
+#[tokio::test]
+async fn a_stale_attempt_snapshot_is_declined_without_a_write() {
+    let (_fixture, state, blocked, github) = setup_blocked_new_pr_handoff().await;
+    let before = open_create_pr_effect(&state, &blocked)
+        .await
+        .expect("the create_pr effect starts open");
+    let mut stale = blocked.clone();
+    stale.updated_at += Duration::microseconds(1);
+    let reads_before = github.state().find_latest_pr_by_head_branch_calls;
+
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &stale)
+            .await
+            .expect("evaluate stale attempt authority"),
+        BlockedCreatePrEffectReconciliation::Pending
+    );
+
+    assert_eq!(
+        github.state().find_latest_pr_by_head_branch_calls,
+        reads_before,
+        "stale authority must be rejected before any GitHub read"
+    );
+    assert_eq!(open_create_pr_effect(&state, &blocked).await, Some(before));
+}
+
+#[tokio::test]
+async fn a_needs_human_attempt_is_never_auto_settled() {
+    let (_fixture, state, blocked, github) = setup_blocked_new_pr_handoff().await;
+    let mut held = blocked.clone();
+    let expected_updated_at = held.updated_at;
+    held.pending_reasons
+        .push(NEEDS_HUMAN_REPAIR_REASON.to_string());
+    held.updated_at += Duration::microseconds(1);
+    let held = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: held,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("record the human hold")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("the human hold must apply, got {outcome:?}"),
+    };
+    let reads_before = github.state().find_latest_pr_by_head_branch_calls;
+
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &held)
+            .await
+            .expect("evaluate a human-held attempt"),
+        BlockedCreatePrEffectReconciliation::Pending
+    );
+
+    assert_eq!(
+        github.state().find_latest_pr_by_head_branch_calls,
+        reads_before,
+        "a human hold must outrank automatic settlement before any GitHub read"
+    );
+    assert!(open_create_pr_effect(&state, &held).await.is_some());
+}
+
+#[tokio::test]
+async fn a_terminated_create_pr_replays_under_an_ordinal_identity() {
+    let (fixture, state, blocked, github) = setup_blocked_new_pr_handoff().await;
+    let create_key =
+        repair_effect_base_idempotency_key(&blocked, AgentWorkspaceRepairEffectKind::CreatePr);
+    github.set_find_latest_pr_by_head_branch(Ok(None));
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &blocked)
+            .await
+            .expect("terminate the orphaned creation"),
+        BlockedCreatePrEffectReconciliation::NotApplied
+    );
+
+    // The replay itself runs on a continuing attempt, which is the phase the retry path restores
+    // once the fence is clear.
+    let mut continuing = blocked.clone();
+    let expected_updated_at = continuing.updated_at;
+    continuing.phase = AgentWorkspaceRepairPhase::Continuing;
+    continuing.updated_at += Duration::microseconds(1);
+    let continuing = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: continuing,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("resume the continuation after the fence cleared")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("resuming the continuation must apply, got {outcome:?}"),
+    };
+    assert_eq!(continuing.generation, blocked.generation);
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fixture.workspace.conversation_id)
+        .await
+        .expect("load workspace for the replay")
+        .expect("workspace exists for the replay");
+    let replay = prepare_agent_workspace_repair_pr_handoff_effect(
+        state.agent_workspace_repair_repo.as_ref(),
+        &continuing,
+        &workspace,
+        None,
+    )
+    .await
+    .expect("prepare the replacement create_pr effect");
+
+    assert_eq!(replay.idempotency_key, format!("{create_key}#2"));
+    assert_eq!(replay.kind, AgentWorkspaceRepairEffectKind::CreatePr);
+    assert_eq!(replay.status, AgentWorkspaceRepairEffectStatus::InFlight);
+}
+
+#[tokio::test]
+async fn a_terminated_create_pr_effect_resolves_both_notification_keys() {
+    let (fixture, state, blocked, github) = setup_blocked_new_pr_handoff().await;
+    github.set_find_latest_pr_by_head_branch(Ok(Some(open_pr_branch_match(
+        99,
+        &fixture.workspace.branch_name,
+    ))));
+    github.will_return_sync_state(PrSyncState {
+        head_ref_oid: Some("0000000000000000000000000000000000000000".to_string()),
+        ..matching_open_pr_sync_state(
+            &fixture.workspace,
+            "0000000000000000000000000000000000000000".to_string(),
+        )
+    });
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &blocked)
+            .await
+            .expect("raise the ambiguous-pull-request hold"),
+        BlockedCreatePrEffectReconciliation::AmbiguousPrExists
+    );
+    // The open-effect key is raised by the continuation-recovery path, not by this reconciler, so
+    // seed it directly: the point of the assertion is that terminating clears both.
+    let open_effect_key = format!(
+        "repair_open_effect:{}:{}",
+        blocked.conversation_id, blocked.id
+    );
+    let ambiguous_key = format!(
+        "repair_create_pr_ambiguous:{}:{}",
+        blocked.conversation_id, blocked.id
+    );
+    state
+        .notification_service()
+        .record(NewNotification {
+            project_id: Some(fixture.workspace.project_id.to_string()),
+            category: NotificationCategory::TaskBlocked,
+            severity: NotificationSeverity::ActionRequired,
+            title: "Workspace repair effect needs attention".to_string(),
+            body: None,
+            target: NotificationTarget {
+                kind: NotificationTargetKind::AgentConversation,
+                project_id: Some(fixture.workspace.project_id.to_string()),
+                task_id: None,
+                conversation_id: Some(blocked.conversation_id.to_string()),
+                setup_conversation_id: None,
+                automation_id: None,
+                run_id: None,
+            },
+            dedupe_key: Some(open_effect_key.clone()),
+        })
+        .await;
+    assert_eq!(unread_notification_count(&state, &open_effect_key).await, 1);
+    assert_eq!(unread_notification_count(&state, &ambiguous_key).await, 1);
+
+    // The ambiguous pull request was deleted between passes, which flips the attempt to the
+    // terminating arm. Re-arm the one-shot head lookup so that shape is what the reconciler sees.
+    github.set_find_latest_pr_by_head_branch(Ok(None));
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &blocked)
+            .await
+            .expect("terminate once GitHub reports no pull request"),
+        BlockedCreatePrEffectReconciliation::NotApplied
+    );
+
+    assert_eq!(
+        unread_notification_count(&state, &open_effect_key).await,
+        0,
+        "terminating must settle the open-effect attention notification"
+    );
+    assert_eq!(
+        unread_notification_count(&state, &ambiguous_key).await,
+        0,
+        "terminating is the only place the ambiguous notification can ever clear"
+    );
+}
+
+/// End-to-end: the exact stuck shape (blocked repair fenced by an orphaned in-flight `create_pr`)
+/// heals through the ordinary periodic sweep, with no manual intervention and no live workspace.
+#[tokio::test]
+async fn recovery_sweep_clears_an_orphaned_create_pr_fence_and_admits_the_retry() {
+    let (fixture, state, blocked, github) = setup_blocked_new_pr_handoff().await;
+    let create_key =
+        repair_effect_base_idempotency_key(&blocked, AgentWorkspaceRepairEffectKind::CreatePr);
+    github.set_find_latest_pr_by_head_branch(Ok(None));
+    // The replay is gated on an automatic continuation whose backoff has elapsed and whose streak
+    // is under the cap; the real stuck attempts are days old.
+    assert!(blocked.continuation.is_automatic());
+    let mut aged = blocked.clone();
+    let expected_updated_at = aged.updated_at;
+    aged.updated_at = Utc::now() - Duration::seconds(86_400);
+    let aged = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: aged,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("age the blocked attempt past its retry backoff")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("aging the blocked attempt must apply, got {outcome:?}"),
+    };
+    assert_eq!(automatic_blocked_repair_streak_for_test(&aged), 0);
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("the recovery sweep must survive an orphaned create_pr fence");
+
+    let terminated = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&create_key)
+        .await
+        .expect("read the create effect after the sweep")
+        .expect("the create effect is retained as history");
+    assert_eq!(terminated.status, AgentWorkspaceRepairEffectStatus::Failed);
+    assert!(terminated.completed_at.is_some());
+    assert!(
+        open_create_pr_effect(&state, &aged).await.is_none(),
+        "the sweep must clear the open-effect fence"
+    );
+    assert_eq!(
+        publication_event_count(&state, &aged, REPAIR_CREATE_PR_EFFECT_NOT_APPLIED_STEP).await,
+        1
+    );
+
+    // Secondary claim, valid only under the fixture conditions asserted above: with the fence
+    // clear the retry evaluation is admitted, which supersedes this attempt with a successor.
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.workspace.conversation_id)
+        .await
+        .expect("read the current attempt after the sweep");
+    assert!(
+        !matches!(current.as_ref(), Some(attempt) if attempt.id == aged.id),
+        "a cleared fence must admit the retry instead of leaving the same blocked attempt current"
+    );
+}
+
+#[tokio::test]
+async fn blocked_create_pr_reconciliation_declines_after_the_repair_head_is_retargeted() {
+    let (_fixture, state, blocked, github) = setup_blocked_new_pr_handoff().await;
+    let before = open_create_pr_effect(&state, &blocked)
+        .await
+        .expect("the create_pr effect starts open");
+    // Retarget the repair head so the effect's `intended_head_oid` no longer matches. Without the
+    // guard, a creation begun against an older head could be adopted against the newer head —
+    // a false success under rule 25.
+    let mut retargeted = blocked.clone();
+    let expected_updated_at = retargeted.updated_at;
+    retargeted.repair_head_commit = Some("0000000000000000000000000000000000000000".to_string());
+    retargeted.updated_at += Duration::microseconds(1);
+    let retargeted = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: retargeted,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("retarget the repair head")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("retargeting the repair head must apply, got {outcome:?}"),
+    };
+    let reads_before = github.state().find_latest_pr_by_head_branch_calls;
+
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &retargeted)
+            .await
+            .expect("evaluate the retargeted attempt"),
+        BlockedCreatePrEffectReconciliation::Pending
+    );
+
+    assert_eq!(
+        github.state().find_latest_pr_by_head_branch_calls,
+        reads_before,
+        "a retargeted head must be rejected before any GitHub read"
+    );
+    assert_eq!(
+        open_create_pr_effect(&state, &blocked).await,
+        Some(before),
+        "declining a retargeted head must leave the effect unchanged"
+    );
+}
+
+#[tokio::test]
+async fn an_already_observed_create_pr_effect_is_declined() {
+    let (_fixture, state, blocked, github) = setup_blocked_new_pr_handoff().await;
+    let effect = open_create_pr_effect(&state, &blocked)
+        .await
+        .expect("the create_pr effect starts open");
+    // Drive the effect to Observed through the same writer the adopt arm uses, so this test pins
+    // the `status != InFlight` narrowing that the module comment calls "required, not defensive".
+    observe_agent_workspace_repair_pr_handoff_effect_for_phase(
+        state.agent_workspace_repair_repo.as_ref(),
+        &blocked,
+        effect,
+        AgentWorkspaceRepairPhase::Blocked,
+        9999,
+        Some("https://github.com/example/repo/pull/9999"),
+    )
+    .await
+    .expect("drive the create_pr effect to Observed");
+    assert!(
+        open_create_pr_effect(&state, &blocked).await.is_none(),
+        "an Observed effect is closed and must not appear as open"
+    );
+    let reads_before = github.state().find_latest_pr_by_head_branch_calls;
+
+    assert_eq!(
+        reconcile_blocked_agent_workspace_repair_create_pr_effect(&state, &blocked)
+            .await
+            .expect("evaluate an already-observed create_pr effect"),
+        BlockedCreatePrEffectReconciliation::Pending
+    );
+
+    assert_eq!(
+        github.state().find_latest_pr_by_head_branch_calls,
+        reads_before,
+        "an Observed effect must be declined without a GitHub read"
+    );
+}
+
+/// Mirrors `automatic_blocked_repair_streak`, which is private to the recovery module.
+fn automatic_blocked_repair_streak_for_test(attempt: &AgentWorkspaceRepairAttempt) -> u32 {
+    attempt
+        .pending_reasons
+        .iter()
+        .filter_map(|reason| reason.strip_prefix("auto_retry_blocked_repair:"))
+        .filter_map(|streak| streak.parse::<u32>().ok())
+        .max()
+        .unwrap_or_default()
+}
+
+// Production-path tests for `git_mutation_recovery.rs:401-435`, the third orphan-tolerance site.
+// Both sibling sites (`durable_attempt_recovery.rs:1546` and `:1619`) have coverage; this one
+// shipped without tests and rule 25 requires production-path tests for all recovery seams.
+
+/// Test 1 — deleted worktree, parent root present: the pass returns `Ok` with one `NeedsRepair`
+/// entry, the workspace is marked recoverable-`Missing`, and one `WORKSPACE_MISSING_SETTLED_STEP`
+/// evidence row is written. Mirrors `a_deleted_worktree_is_marked_missing_once_…` in
+/// `agent_workspace_publish_recovery_tests.rs`.
+#[cfg(unix)]
+#[tokio::test]
+async fn repair_mutation_claim_marks_missing_when_workspace_worktree_is_deleted() {
+    let fixture = setup_rewritten_workspace_push().await;
+    let (state, _continuing, _effect) = state_with_in_flight_repair_push(&fixture).await;
+
+    // Delete the workspace worktree but leave its project-level parent dir intact so
+    // `parent_root_present` is `true` (a deleted workspace, not a missing volume).
+    std::fs::remove_dir_all(&fixture.workspace.worktree_path).expect("delete workspace worktree");
+
+    let outcomes = recover_repair_owned_in_flight_git_mutations(&state)
+        .await
+        .expect("a deleted worktree must not abort the repair-mutation recovery pass");
+    assert_eq!(outcomes.len(), 1, "one claim, one outcome");
+    assert!(
+        matches!(outcomes[0], GitMutationRecoveryOutcome::NeedsRepair { .. }),
+        "outcome must be NeedsRepair for a deleted worktree, got {:?}",
+        outcomes[0]
+    );
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fixture.workspace.conversation_id)
+        .await
+        .expect("reload workspace")
+        .expect("workspace exists");
+    assert_eq!(
+        workspace.status,
+        AgentConversationWorkspaceStatus::Missing,
+        "workspace must be recoverable-Missing, never terminal"
+    );
+
+    let evidence: Vec<_> = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&fixture.workspace.conversation_id)
+        .await
+        .expect("load publication events")
+        .into_iter()
+        .filter(|event| event.step == WORKSPACE_MISSING_SETTLED_STEP)
+        .collect();
+    assert_eq!(
+        evidence.len(),
+        1,
+        "exactly one evidence row for the deleted worktree"
+    );
+}
+
+/// Test 2 — missing parent root: the whole project worktree dir is gone (an unmounted volume).
+/// The pass still returns `Ok`, the workspace stays `Active`, and no evidence is written.
+/// Mirrors `a_missing_worktree_root_settles_nothing` in `agent_workspace_publish_recovery_tests.rs`.
+#[cfg(unix)]
+#[tokio::test]
+async fn repair_mutation_claim_is_noop_when_entire_worktree_root_is_gone() {
+    let fixture = setup_rewritten_workspace_push().await;
+    let (state, _continuing, _effect) = state_with_in_flight_repair_push(&fixture).await;
+
+    // Delete the project workspace dir (parent of the worktree) so that
+    // `parent_root_present` is `false` — the whole volume looks absent, not just this workspace.
+    let worktree_path = PathBuf::from(&fixture.workspace.worktree_path);
+    let project_workspace_dir = worktree_path
+        .parent()
+        .expect("workspace parent is the project workspace dir");
+    std::fs::remove_dir_all(project_workspace_dir).expect("delete the project workspace root");
+
+    let outcomes = recover_repair_owned_in_flight_git_mutations(&state)
+        .await
+        .expect("a missing root must not abort the repair-mutation recovery pass");
+    assert_eq!(outcomes.len(), 1, "one claim, one outcome");
+    assert!(
+        matches!(outcomes[0], GitMutationRecoveryOutcome::NeedsRepair { .. }),
+        "outcome must still be NeedsRepair even for a missing root (pass must not abort)"
+    );
+
+    let unchanged = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fixture.workspace.conversation_id)
+        .await
+        .expect("reload workspace")
+        .expect("workspace exists");
+    assert_eq!(
+        unchanged.status,
+        AgentConversationWorkspaceStatus::Active,
+        "workspace must stay Active; a missing root is volume trouble, not a deleted workspace"
+    );
+    assert!(
+        state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.workspace.conversation_id)
+            .await
+            .expect("load publication events")
+            .iter()
+            .all(|event| event.step != WORKSPACE_MISSING_SETTLED_STEP),
+        "no evidence may be written when the whole worktree root is absent"
+    );
+}
+
+/// Test 3 — non-path resolution failure (directory exists but is not a git worktree): the
+/// error propagates unchanged as `Err`, ensuring the missing-worktree branch does not swallow
+/// real errors. Matches `return Err(error)` at `git_mutation_recovery.rs:421`.
+#[cfg(unix)]
+#[tokio::test]
+async fn repair_mutation_claim_propagates_err_for_not_git_resolution_failure() {
+    let fixture = setup_rewritten_workspace_push().await;
+    let (state, _continuing, _effect) = state_with_in_flight_repair_push(&fixture).await;
+
+    // Remove only the `.git` pointer file from the worktree. The directory itself remains, so the
+    // classifier returns `NotGit` rather than `Missing`, and the original error propagates.
+    let git_entry = PathBuf::from(&fixture.workspace.worktree_path).join(".git");
+    std::fs::remove_file(&git_entry).expect("remove .git pointer from worktree");
+
+    recover_repair_owned_in_flight_git_mutations(&state)
+        .await
+        .expect_err(
+            "a NotGit workspace must propagate Err, not be silently converted to NeedsRepair",
+        );
 }

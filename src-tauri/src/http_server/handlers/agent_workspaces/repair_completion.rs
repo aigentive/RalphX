@@ -24,7 +24,7 @@ use crate::application::agent_workspace_publish_repair_state::{
 };
 use crate::application::publish_resilience::continue_agent_workspace_repair_publish;
 use crate::domain::entities::{
-    AgentRunId, AgentRunStatus, AgentWorkspaceRepairAttempt,
+    AgentRunId, AgentRunStatus, AgentWorkspacePrAutofixIssueKind, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
 };
 
@@ -255,6 +255,41 @@ pub(super) fn completion_response(
     })
 }
 
+/// Upper bound on `what_happened` / `what_i_did` narrative fields. Chosen to fit a couple of
+/// plain-language sentences; over-cap fails closed with a 400 rather than silently truncating.
+pub(crate) const MAX_REPAIR_NARRATIVE_CHARS: usize = 480;
+
+/// Shared validator for the two completion narrative fields (`what_happened`, `what_i_did`).
+/// Both the trusted `complete-repair` route and the `complete-pr-fix` compatibility route (which
+/// forwards into [`complete_agent_workspace_repair_for_trusted_run`]) fold through this one call
+/// site, so the two routes cannot drift on trim/empty/cap behavior.
+pub(super) fn validate_repair_narrative_field(
+    value: Option<String>,
+    field_name: &str,
+) -> Result<Option<String>, JsonError> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            format!("A repair {field_name} must be non-empty when supplied."),
+            None,
+        ));
+    }
+    if trimmed.chars().count() > MAX_REPAIR_NARRATIVE_CHARS {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "A repair {field_name} must be at most {MAX_REPAIR_NARRATIVE_CHARS} characters."
+            ),
+            None,
+        ));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
 fn trusted_runtime_identity(
     headers: &HeaderMap,
     conversation_id: &ChatConversationId,
@@ -453,6 +488,8 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
             None,
         ));
     }
+    let what_happened = validate_repair_narrative_field(req.what_happened, "what_happened")?;
+    let what_i_did = validate_repair_narrative_field(req.what_i_did, "what_i_did")?;
 
     let authority = current_authorized_repair_attempt(state, &conversation_id, &run_id).await?;
     let (attempt, resurrecting) = match authority {
@@ -501,6 +538,8 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
             attempt,
             &workspace,
             req.summary.trim(),
+            what_happened.as_deref(),
+            what_i_did.as_deref(),
         )
         .await;
     }
@@ -515,6 +554,8 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
             attempt,
             req.summary.trim(),
             workspace.pr_auto_merge_current,
+            what_happened.as_deref(),
+            what_i_did.as_deref(),
         )
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
@@ -541,11 +582,60 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
                 None,
             ));
         }
+        // Fail closed when the backend's own durable facts contradict the claim. This hold can
+        // never self-release once entered (its fingerprint cannot change while the repaired head
+        // is unpublished), so a wrong classification here is a permanent park. Ordered
+        // cheap-durable-first; none of these branches transition the attempt, so the run stays
+        // authorized to re-complete honestly.
+        if attempt.base_update_head_commit.is_some() {
+            return Err(json_error(
+                StatusCode::CONFLICT,
+                "A base update in this repair attempt already produced a new branch head. Verify the worktree, then report resolution 'fixed' with the current HEAD — the base-update merge commit is a real fix.",
+                None,
+            ));
+        }
+        if attempt.pr_autofix_issue_kind == Some(AgentWorkspacePrAutofixIssueKind::Mergeability) {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "pre_existing_on_base is not valid for mergeability blockers (behind/conflicting cannot be pre-existing on the base). Run update_agent_workspace_from_base and report 'fixed', or report 'needs_human'.",
+                None,
+            ));
+        }
+        if let Some(dispatch_head) = attempt.pr_autofix_dispatch_head_commit.as_deref() {
+            // Best effort: on an inspection error the hold is the safe state, and durable
+            // base-update evidence still guarantees an eventual redrive.
+            match Box::pin(inspect_agent_workspace_repair_completion(
+                state.app_state.as_ref(),
+                &workspace,
+                &attempt.target_base_ref,
+                attempt.target_base_commit.as_deref(),
+            ))
+            .await
+            {
+                Ok(validation) if validation.repair_head_commit != dispatch_head => {
+                    return Err(json_error(
+                        StatusCode::CONFLICT,
+                        "The branch head moved since this repair was dispatched, so the outcome is not 'pre-existing on base'. Report resolution 'fixed' with the current HEAD.",
+                        None,
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = conversation_id.as_str(),
+                        %error,
+                        "Could not verify the branch head before accepting a pre_existing_on_base completion"
+                    );
+                }
+            }
+        }
         return match reserve_agent_workspace_pre_existing_on_base(
             Arc::clone(&state.app_state.agent_workspace_repair_repo),
             attempt,
             req.summary.trim(),
             workspace.pr_auto_merge_current,
+            what_happened.as_deref(),
+            what_i_did.as_deref(),
         )
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
@@ -571,6 +661,8 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
             req.summary.trim(),
             blocker.trim(),
             workspace.pr_auto_merge_current,
+            what_happened.as_deref(),
+            what_i_did.as_deref(),
         )
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
@@ -649,10 +741,13 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
         req.summary.trim(),
         req.reported_fix_commit_sha.as_deref(),
         resurrecting,
+        what_happened.as_deref(),
+        what_i_did.as_deref(),
     ))
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn complete_reserved_agent_workspace_repair(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
@@ -662,6 +757,8 @@ async fn complete_reserved_agent_workspace_repair(
     summary: &str,
     reported_fix_commit_sha: Option<&str>,
     reblock_validation_failure: bool,
+    what_happened: Option<&str>,
+    what_i_did: Option<&str>,
 ) -> Result<Json<CompleteAgentWorkspaceRepairResponse>, JsonError> {
     if let Err(error) = validate_agent_workspace_repair_target_lease(
         state.app_state.branch_update_repo.as_ref(),
@@ -683,6 +780,8 @@ async fn complete_reserved_agent_workspace_repair(
             "Workspace repair completion lost canonical Git target authority.",
             "The repair generation no longer owns its canonical Git target lease. Start a new repair attempt before retrying.",
             workspace.pr_auto_merge_current,
+            what_happened,
+            what_i_did,
         )
         .await
         .map_err(|block_error| {
@@ -730,6 +829,8 @@ async fn complete_reserved_agent_workspace_repair(
                     "Workspace repair completion could not prove a clean repair.",
                     &error.to_string(),
                     workspace.pr_auto_merge_current,
+                    what_happened,
+                    what_i_did,
                 )
                 .await
             } else {
@@ -796,6 +897,8 @@ async fn complete_reserved_agent_workspace_repair(
         &validation.repair_head_commit,
         summary,
         validation.auto_merge_current,
+        what_happened,
+        what_i_did,
     )
     .await
     .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?

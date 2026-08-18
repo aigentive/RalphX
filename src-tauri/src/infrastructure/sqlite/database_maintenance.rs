@@ -7,7 +7,9 @@ use rusqlite::Connection;
 use serde::Serialize;
 use thiserror::Error;
 
-use super::database_maintenance_outcome::{read_record, write_record, CompactionRecord};
+use super::database_maintenance_outcome::{
+    read_record, write_record, CompactionRecord, REASON_SWAP_INTERRUPTED,
+};
 
 pub const DEFAULT_AUTO_COMPACT_MAX_DB_BYTES: u64 = 2_147_483_648;
 pub const DEFAULT_AUTO_COMPACT_MIN_FREELIST_PERCENT: u64 = 20;
@@ -18,6 +20,11 @@ const HEADROOM_SAFETY_DIVISOR: u64 = 5;
 #[derive(Debug, Clone, Copy)]
 pub struct CompactionConfig {
     pub auto_enabled: bool,
+    /// Deprecated and ignored. This once *skipped* auto-compaction above the limit, which inverted
+    /// the intent: the more a database needed compacting, the less likely it was to run, so a
+    /// bloated database could never self-heal. Disk headroom and freelist share are the real
+    /// guards. The field stays parsed and wired so shipped `db_auto_compact_max_db_bytes` configs
+    /// keep loading.
     pub auto_max_db_bytes: u64,
     pub auto_min_freelist_percent: u64,
 }
@@ -253,8 +260,6 @@ fn decide(
         Some("disk_headroom_unavailable")
     } else if available.is_none_or(|available| available < required_headroom) {
         Some("insufficient_disk_headroom")
-    } else if !manual && database_bytes > config.auto_max_db_bytes {
-        Some("database_above_auto_limit")
     } else if !manual && share_percent < config.auto_min_freelist_percent {
         Some("freelist_below_auto_limit")
     } else {
@@ -427,6 +432,14 @@ fn vacuum_into_swap_impl(
     // A WAL backup written by an earlier release must not survive beside a newer DB
     // backup: restoring that mismatched pair would replay unrelated WAL frames.
     let _ = fs::remove_file(paths.backup_dir.join("ralphx.db-wal.pre-vacuum"));
+    // From the next line until the rename-in at (f) the live path holds no database. Dying
+    // in that window would otherwise leave the *previous* run's record standing — usually
+    // `compacted` — describing a healthy database that is no longer there. Best-effort like
+    // every other sidecar write: a failed breadcrumb must never block startup.
+    write_record(
+        &paths.outcome_path,
+        &CompactionRecord::error(database_bytes, REASON_SWAP_INTERRUPTED),
+    );
     fs::rename(&paths.database_path, &backup_path).map_err(|e| {
         let label = format!("backup_rename: {e}");
         LabeledError { label, source: e.into() }
@@ -446,11 +459,18 @@ fn vacuum_into_swap_impl(
 
     // (f) Swap the verified replacement in; on failure put the original straight back.
     if let Err(error) = fs::rename(&compacting_path, &paths.database_path) {
-        let _ = fs::rename(&backup_path, &paths.database_path);
-        let label = format!(
-            "swap_rename: {error} (original preserved at {})",
-            backup_path.display()
-        );
+        // The restore decides where the database actually ended up, so its result — not an
+        // assumption — has to drive the recorded location.
+        let label = match fs::rename(&backup_path, &paths.database_path) {
+            Ok(()) => format!(
+                "swap_rename: {error} (original restored to {})",
+                paths.database_path.display()
+            ),
+            Err(restore_error) => format!(
+                "swap_rename: {error} (restore failed: {restore_error}; original preserved at {})",
+                backup_path.display()
+            ),
+        };
         return Err(LabeledError { label, source: error.into() });
     }
 

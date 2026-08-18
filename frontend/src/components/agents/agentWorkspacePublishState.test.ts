@@ -19,6 +19,7 @@ import {
   isAgentWorkspaceMaintenanceActive,
   blocksAgentWorkspaceGitInspection,
   canResumeAgentWorkspacePublish,
+  getAgentWorkspaceMaintenancePublishGate,
   getAgentWorkspacePrConflictSummary,
   getAgentWorkspaceReviewActionBlocker,
   isAgentWorkspaceAutoMergeDeferred,
@@ -28,6 +29,7 @@ import {
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
+import type { AgentWorkspaceMaintenancePublishGateInput } from "./agentWorkspacePublishState";
 
 describe("getAgentWorkspaceDescriptionFailurePresentation", () => {
   it("distinguishes an unopened PR from an existing linked target", () => {
@@ -342,6 +344,7 @@ describe("maintenance operation presentation", () => {
         stage: "held",
         status: "held",
         holdReason: "pr_autofix_pre_existing_on_base",
+        summary: null,
         automaticContinuation: false,
       },
     });
@@ -388,6 +391,160 @@ describe("maintenance operation presentation", () => {
     expect(getAgentWorkspaceMaintenancePresentation(current)).toBeNull();
     expect(isAgentWorkspaceMaintenanceActive(current)).toBe(false);
   });
+
+  it("renders the agent's whatHappened/whatIDid narrative verbatim over the legacy summary", () => {
+    const current = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        summary: "Resolving the base conflict",
+        whatHappened: "The install step failed with a 404.",
+        whatIDid: "Retried twice, then reported the blocker.",
+      },
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(current)?.summary).toBe(
+      "The install step failed with a 404. Retried twice, then reported the blocker.",
+    );
+  });
+
+  it("renders whatHappened alone when whatIDid is absent", () => {
+    const current = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        whatHappened: "The install step failed with a 404.",
+        whatIDid: null,
+      },
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(current)?.summary).toBe(
+      "The install step failed with a 404.",
+    );
+  });
+
+  it("renders whatIDid alone when whatHappened is absent", () => {
+    const current = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        whatHappened: null,
+        whatIDid: "Retried twice, then reported the blocker.",
+      },
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(current)?.summary).toBe(
+      "Retried twice, then reported the blocker.",
+    );
+  });
+
+  it("falls back to the legacy operation.summary when no agent narrative is present", () => {
+    const current = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        summary: "Resolving the base conflict",
+        whatHappened: null,
+        whatIDid: null,
+      },
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(current)?.summary).toBe(
+      "Resolving the base conflict",
+    );
+  });
+
+  it("renders the agent's structured narrative for a held operation ahead of the operation summary", () => {
+    const held = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        source: "pr_autofix",
+        stage: "held",
+        status: "held",
+        holdReason: "pr_autofix_unchanged_health",
+        summary: "RalphX is waiting for a new CI result.",
+        blocker: null,
+        whatHappened: "GitHub reported the identical failure again.",
+        whatIDid: "Held the repair instead of spending another generation.",
+        automaticContinuation: false,
+      },
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(held)?.summary).toBe(
+      "GitHub reported the identical failure again. Held the repair instead of spending another generation.",
+    );
+  });
+
+  it("falls back to the operation summary for a held operation when no narrative is present", () => {
+    const held = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        source: "pr_autofix",
+        stage: "held",
+        status: "held",
+        holdReason: "pr_autofix_unchanged_health",
+        summary: "RalphX is waiting for a new CI result.",
+        blocker: null,
+        whatHappened: null,
+        whatIDid: null,
+        automaticContinuation: false,
+      },
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(held)?.summary).toBe(
+      "RalphX is waiting for a new CI result.",
+    );
+  });
+
+  it("falls back to the hold-reason template for a held operation when narrative and summary are both absent", () => {
+    const held = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        source: "pr_autofix",
+        stage: "held",
+        status: "held",
+        holdReason: "pr_autofix_unchanged_health",
+        // A whitespace-only summary carries no information and must not beat the template.
+        summary: "   ",
+        blocker: null,
+        whatHappened: null,
+        whatIDid: null,
+        automaticContinuation: false,
+      },
+    });
+
+    expect(getAgentWorkspaceMaintenancePresentation(held)?.summary).toBe(
+      getAgentWorkspaceHoldPresentation(held)?.paragraph,
+    );
+  });
+
+  it("keeps a machine-authored blocker visibly separate from the agent's own narrative", () => {
+    const blocked = workspace({
+      maintenanceOperation: {
+        ...maintenanceOperation,
+        stage: "blocked",
+        status: "blocked",
+        blocker: "Pull-request continuation could not complete: GitHub rejected the push.",
+        whatHappened: "The credential rotation needs manual approval.",
+        whatIDid: "Escalated instead of guessing at the credential.",
+      },
+    });
+
+    const { summary } = getAgentWorkspaceMaintenancePresentation(blocked) ?? {};
+    expect(summary).toContain("The credential rotation needs manual approval.");
+    expect(summary).toContain("Escalated instead of guessing at the credential.");
+    expect(summary).toContain(
+      "Pull-request continuation could not complete: GitHub rejected the push.",
+    );
+    // The blocker text must be introduced by RalphX, not appended as if the agent said it.
+    const narrativeEnd = summary?.indexOf(
+      "Escalated instead of guessing at the credential.",
+    );
+    const blockerStart = summary?.indexOf(
+      "Pull-request continuation could not complete",
+    );
+    expect(narrativeEnd).toBeGreaterThan(-1);
+    expect(blockerStart).toBeGreaterThan(narrativeEnd ?? -1);
+    expect(
+      summary?.slice((narrativeEnd ?? 0) + "Escalated instead of guessing at the credential.".length, blockerStart),
+    ).toMatch(/RalphX/);
+  });
 });
 
 describe("PR autofix fingerprint spend presentation", () => {
@@ -428,6 +585,34 @@ describe("getAgentWorkspaceHoldPresentation", () => {
     updatedAt: "2026-07-25T10:01:00Z",
   };
 
+  it("returns null outside the held stage", () => {
+    expect(
+      getAgentWorkspaceHoldPresentation(
+        workspace({
+          maintenanceOperation: {
+            ...maintenanceOperation,
+            stage: "ready",
+            status: "ready",
+            holdReason: "pr_autofix_unchanged_health",
+          },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("uses one fixed pill across every hold reason", () => {
+    expect(
+      getAgentWorkspaceHoldPresentation(
+        workspace({
+          maintenanceOperation: {
+            ...maintenanceOperation,
+            holdReason: "pr_autofix_unchanged_health",
+          },
+        }),
+      )?.pill,
+    ).toBe("Auto-repair paused");
+  });
+
   it("explains a publication-effect hold in plain product language with no jargon", () => {
     const presentation = getAgentWorkspaceHoldPresentation(
       workspace({
@@ -439,15 +624,82 @@ describe("getAgentWorkspaceHoldPresentation", () => {
     );
 
     expect(presentation).not.toBeNull();
-    expect(presentation?.agentStatus).toBe("Nothing is running");
-    expect(presentation?.title).not.toBe("Repair paused — waiting for new CI evidence");
-    expect(presentation?.waitingOn).toMatch(/retry publication/i);
-    expect(presentation?.waitingOn.toLowerCase()).not.toContain("effect fence");
-    expect(presentation?.waitingOn.toLowerCase()).not.toContain("cas");
-    expect(presentation?.waitingOn.toLowerCase()).not.toContain("ci");
+    expect(presentation?.headline).toBe("Repair paused — publish not confirmed");
+    expect(presentation?.primary).toMatchObject({ kind: "retryPublication" });
+    expect(presentation?.primary.label.toLowerCase()).toContain("retry publication");
+    expect(presentation?.paragraph.toLowerCase()).not.toContain("effect fence");
+    expect(presentation?.paragraph.toLowerCase()).not.toContain("cas");
+    expect(presentation?.paragraph.toLowerCase()).not.toContain(" ci ");
   });
 
-  it("keeps the existing CI-flavoured copy for other hold reasons", () => {
+  it("falls back to the durable operation.summary when no agent narrative is present", () => {
+    const presentation = getAgentWorkspaceHoldPresentation(
+      workspace({
+        maintenanceOperation: {
+          ...maintenanceOperation,
+          holdReason: "publication_effect_attention",
+          summary: "RalphX pushed commit abc123 but GitHub returned a 502.",
+        },
+      }),
+    );
+
+    expect(presentation?.paragraph).toBe(
+      "RalphX pushed commit abc123 but GitHub returned a 502.",
+    );
+  });
+
+  it("treats a whitespace-only summary as absent and falls back to the hold-reason template", () => {
+    const presentation = getAgentWorkspaceHoldPresentation(
+      workspace({
+        maintenanceOperation: {
+          ...maintenanceOperation,
+          holdReason: "publication_effect_attention",
+          summary: "   ",
+        },
+      }),
+    );
+
+    expect(presentation?.paragraph).toBe(
+      "RalphX pushed a repair but could not confirm it reached GitHub. Retry publication to make RalphX try again.",
+    );
+  });
+
+  it("renders the agent's narrative verbatim in place of the operation summary and the template paragraph", () => {
+    const presentation = getAgentWorkspaceHoldPresentation(
+      workspace({
+        maintenanceOperation: {
+          ...maintenanceOperation,
+          holdReason: "pr_autofix_base_parity_transient",
+          summary: "RalphX is waiting on a re-run.",
+          whatHappened: "GitHub cancelled the test job before it started.",
+          whatIDid: "Left the branch untouched so a re-run can pick it up.",
+        },
+      }),
+    );
+
+    expect(presentation?.paragraph).toBe(
+      "GitHub cancelled the test job before it started. Left the branch untouched so a re-run can pick it up.",
+    );
+  });
+
+  it("keeps the template paragraph for a poller-created hold that has no narrative", () => {
+    const presentation = getAgentWorkspaceHoldPresentation(
+      workspace({
+        maintenanceOperation: {
+          ...maintenanceOperation,
+          holdReason: "pr_autofix_base_parity_transient",
+          whatHappened: null,
+          whatIDid: null,
+        },
+      }),
+    );
+
+    expect(presentation?.paragraph).toBe(
+      "GitHub cancelled or timed out the checks, and the same failure is present on the base branch. Re-running the checks can clear this.",
+    );
+  });
+
+  it("keeps the existing CI-flavoured headline for other hold reasons", () => {
     const presentation = getAgentWorkspaceHoldPresentation(
       workspace({
         maintenanceOperation: {
@@ -457,8 +709,109 @@ describe("getAgentWorkspaceHoldPresentation", () => {
       }),
     );
 
-    expect(presentation?.title).toBe("Repair paused — waiting for new CI evidence");
+    expect(presentation?.headline).toBe("Repair paused — waiting for new CI evidence");
+    expect(presentation?.primary).toMatchObject({ kind: "retryRepair" });
   });
+
+  it("names the repair cost in the retry caption when spend is tracked", () => {
+    const presentation = getAgentWorkspaceHoldPresentation(
+      workspace({
+        maintenanceOperation: {
+          ...maintenanceOperation,
+          holdReason: "pr_autofix_unchanged_health",
+        },
+        prAutofixFingerprintSpend: {
+          generations: 2,
+          minutes: 41,
+          budgetMinutes: 45,
+          isExhausted: false,
+        },
+      }),
+    );
+
+    expect(presentation?.primary.caption).toContain("2 generations · 41 min on this failure");
+  });
+
+  it("explains a base-parity-transient hold in plain product language", () => {
+    const presentation = getAgentWorkspaceHoldPresentation(
+      workspace({
+        maintenanceOperation: {
+          ...maintenanceOperation,
+          holdReason: "pr_autofix_base_parity_transient",
+        },
+      }),
+    );
+
+    expect(presentation).not.toBeNull();
+    expect(presentation?.paragraph).toMatch(/cancel|timed out/i);
+    expect(presentation?.paragraph).toMatch(/base branch/i);
+    expect(presentation?.paragraph).toMatch(/re-run/i);
+    expect(presentation?.primary).toMatchObject({ kind: "rerunChecks" });
+  });
+
+  it("names the remaining rerun budget in the rerun-checks caption when spend is tracked", () => {
+    const presentation = getAgentWorkspaceHoldPresentation(
+      workspace({
+        maintenanceOperation: {
+          ...maintenanceOperation,
+          holdReason: "pr_autofix_base_parity_transient",
+        },
+        prAutofixFingerprintSpend: {
+          generations: 1,
+          minutes: 12,
+          budgetMinutes: 45,
+          isExhausted: false,
+        },
+      }),
+    );
+
+    expect(presentation?.primary.caption).toContain("1 generations · 12 min on this failure");
+  });
+
+  it("gives the pre-existing-on-base hold a Waiting on main court chip and a recheck primary", () => {
+    const presentation = getAgentWorkspaceHoldPresentation(
+      workspace({
+        maintenanceOperation: {
+          ...maintenanceOperation,
+          holdReason: "pr_autofix_pre_existing_on_base",
+        },
+      }),
+    );
+
+    expect(presentation?.courtChip).toMatchObject({ label: "Waiting on main" });
+    expect(presentation?.primary).toMatchObject({ kind: "recheck" });
+  });
+
+  it.each([
+    ["pr_autofix_unchanged_health", "retryRepair"],
+    ["pr_autofix_pre_existing_on_base", "recheck"],
+    ["pr_autofix_ci_rerun_pending", "recheck"],
+    ["base_stale", "recheck"],
+    ["health_evidence", "recheck"],
+    ["publish_redrive", "retryPublication"],
+    ["publication_effect_attention", "retryPublication"],
+    ["pr_autofix_base_parity_transient", "rerunChecks"],
+  ] as const)(
+    "projects a full four-layer presentation for %s",
+    (holdReason, expectedPrimaryKind) => {
+      const presentation = getAgentWorkspaceHoldPresentation(
+        workspace({
+          maintenanceOperation: { ...maintenanceOperation, holdReason },
+        }),
+      );
+
+      expect(presentation).not.toBeNull();
+      expect(presentation?.pill).toBe("Auto-repair paused");
+      expect(presentation?.headline.length).toBeGreaterThan(0);
+      expect(presentation?.paragraph.length).toBeGreaterThan(0);
+      expect(presentation?.courtChip.label.length).toBeGreaterThan(0);
+      expect(presentation?.primary).toMatchObject({ kind: expectedPrimaryKind });
+      expect(presentation?.primary.label.length).toBeGreaterThan(0);
+      expect(presentation?.primary.caption.length).toBeGreaterThan(0);
+      expect(presentation?.releaseConditions.length).toBeGreaterThan(0);
+      expect(Array.isArray(presentation?.more)).toBe(true);
+    },
+  );
 });
 
 function publicationEvent(
@@ -1228,5 +1581,107 @@ describe("getAgentWorkspacePrConflictSummary", () => {
         }),
       ),
     ).toBeNull();
+  });
+});
+
+describe("getAgentWorkspaceMaintenancePublishGate", () => {
+  const gateInput = (
+    overrides: Partial<AgentWorkspaceMaintenancePublishGateInput> = {},
+  ): AgentWorkspaceMaintenancePublishGateInput => ({
+    hasPublishHandler: true,
+    isManagedByTaskPipeline: false,
+    effectivePublishing: false,
+    isAutomationPreferenceSaving: false,
+    baseBlocked: false,
+    reviewBlocksPublish: false,
+    reviewIsRunning: false,
+    reviewGateStatus: null,
+    reviewGateSummary: null,
+    hasPrConflict: false,
+    hasTerminalPublication: false,
+    workspaceMissing: false,
+    ...overrides,
+  });
+
+  it("enables the maintenance action when nothing blocks it", () => {
+    expect(getAgentWorkspaceMaintenancePublishGate(gateInput())).toEqual({
+      disabled: false,
+      label: null,
+      blockedReason: null,
+    });
+  });
+
+  it.each([
+    ["hasPublishHandler", { hasPublishHandler: false }, "unavailable"],
+    ["isManagedByTaskPipeline", { isManagedByTaskPipeline: true }, "task pipeline"],
+    ["effectivePublishing", { effectivePublishing: true }, "already in progress"],
+    ["isAutomationPreferenceSaving", { isAutomationPreferenceSaving: true }, "automation preferences"],
+    ["baseBlocked", { baseBlocked: true }, "base branch"],
+    ["hasPrConflict", { hasPrConflict: true }, "pull request conflicts"],
+    ["hasTerminalPublication", { hasTerminalPublication: true }, "already merged or closed"],
+    ["workspaceMissing", { workspaceMissing: true }, "files are missing"],
+  ] satisfies [string, Partial<AgentWorkspaceMaintenancePublishGateInput>, string][])(
+    "disables the maintenance action for %s and explains why",
+    (_name, overrides, expectedSubstring) => {
+      const gate = getAgentWorkspaceMaintenancePublishGate(gateInput(overrides));
+      expect(gate.disabled).toBe(true);
+      // The banner replaces the base/PR-conflict remediation buttons, so a
+      // disabled maintenance action must carry its own user-facing reason.
+      expect(gate.blockedReason).toEqual(expect.any(String));
+      expect(gate.blockedReason?.trim().length ?? 0).toBeGreaterThan(0);
+      expect(gate.blockedReason).toContain(expectedSubstring);
+    },
+  );
+
+  it.each([
+    [{ reviewIsRunning: true, reviewGateStatus: "reviewing" as const }, "Reviewing"],
+    [{ reviewGateStatus: "required" as const }, "Review required"],
+    [{ reviewGateStatus: "blocking" as const }, "Review blocking"],
+    [{ reviewGateStatus: "failed" as const }, "Review failed"],
+  ])("mirrors the primary publish label for review state %#", (overrides, label) => {
+    const gate = getAgentWorkspaceMaintenancePublishGate(
+      gateInput({ reviewBlocksPublish: true, ...overrides }),
+    );
+    expect(gate.disabled).toBe(true);
+    expect(gate.label).toBe(label);
+  });
+
+  it("surfaces the review gate summary as the blocked reason", () => {
+    expect(
+      getAgentWorkspaceMaintenancePublishGate(
+        gateInput({
+          reviewBlocksPublish: true,
+          reviewIsRunning: true,
+          reviewGateStatus: "reviewing",
+          reviewGateSummary: "Workspace Review is running.",
+        }),
+      ).blockedReason,
+    ).toBe("Workspace Review is running.");
+  });
+
+  it("keeps the review label off non-review blockers", () => {
+    const gate = getAgentWorkspaceMaintenancePublishGate(
+      gateInput({ baseBlocked: true }),
+    );
+    expect(gate.label).toBeNull();
+    expect(gate.blockedReason).not.toBeNull();
+  });
+
+  // These four flags are deliberately NOT gate inputs. `hasNoDetectedChanges` is
+  // the expected post-repair state, `isPublishCurrent` must still let the parked
+  // durable attempt settle, `repositoryInspectionFailed` is re-validated by the
+  // backend resume path, and `isRepairPending` is structurally false whenever a
+  // maintenance operation exists. Passing them must not change the verdict.
+  it("ignores flags the resume path deliberately exempts", () => {
+    const exemptions = {
+      hasNoDetectedChanges: true,
+      isPublishCurrent: true,
+      repositoryInspectionFailed: true,
+      isRepairPending: true,
+    } as unknown as Partial<AgentWorkspaceMaintenancePublishGateInput>;
+
+    expect(
+      getAgentWorkspaceMaintenancePublishGate(gateInput(exemptions)),
+    ).toEqual({ disabled: false, label: null, blockedReason: null });
   });
 });

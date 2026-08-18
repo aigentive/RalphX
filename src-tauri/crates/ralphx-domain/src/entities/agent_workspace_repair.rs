@@ -82,6 +82,15 @@ repair_string_enum!(AgentWorkspaceRepairSource {
     Legacy => "legacy",
 });
 
+// Category of the PR blocker a `pr_autofix` dispatch was aimed at. Backend-observed at dispatch,
+// never model supplied; the persisted health fingerprint hashes this away, so it needs its own
+// durable column to stay recoverable at completion time.
+repair_string_enum!(AgentWorkspacePrAutofixIssueKind {
+    Review => "review",
+    Checks => "checks",
+    Mergeability => "mergeability",
+});
+
 repair_string_enum!(AgentWorkspaceRepairPhase {
     Requested => "requested",
     Dispatching => "dispatching",
@@ -175,10 +184,13 @@ repair_string_enum!(AgentWorkspaceRepairOperationHoldReason {
     HealthEvidence => "health_evidence",
     PublishRedrive => "publish_redrive",
     PublicationEffectAttention => "publication_effect_attention",
+    BaseParityTransient => "pr_autofix_base_parity_transient",
 });
 
 pub const PR_AUTOFIX_PRE_EXISTING_ON_BASE_PENDING_REASON: &str = "pr_autofix_pre_existing_on_base";
 pub const PR_AUTOFIX_UNCHANGED_HEALTH_PENDING_REASON: &str = "pr_autofix_unchanged_health";
+pub const PR_AUTOFIX_BASE_PARITY_TRANSIENT_PENDING_REASON: &str =
+    "pr_autofix_base_parity_transient";
 pub const PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON: &str =
     "pr_autofix_base_stale_after_update";
 pub const PR_AUTOFIX_HEAD_REDRIVE_PENDING_REASON_PREFIX: &str = "pr_autofix_head_redrive:";
@@ -219,10 +231,24 @@ pub struct AgentWorkspaceRepairAttempt {
     pub pr_autofix_dispatch_head_commit: Option<String>,
     /// Stable failing PR-health identity observed by the poller before dispatching a PR autofix.
     pub pr_autofix_health_fingerprint: Option<String>,
+    /// Blocker category this PR autofix was dispatched for; backend-observed, never model supplied.
+    #[serde(default)]
+    pub pr_autofix_issue_kind: Option<AgentWorkspacePrAutofixIssueKind>,
+    /// Local branch head produced by a backend-run base update inside this active pr_autofix
+    /// attempt. Unpublished-head evidence only — NOT completion acceptance (see
+    /// `repair_head_commit`, whose presence means a completion was already validated).
+    #[serde(default)]
+    pub base_update_head_commit: Option<String>,
     pub next_dispatch_at: Option<DateTime<Utc>>,
     pub repair_head_commit: Option<String>,
     pub summary: Option<String>,
     pub blocker: Option<String>,
+    /// Plain-language narrative: what the agent observed. Older rows have none.
+    #[serde(default)]
+    pub what_happened: Option<String>,
+    /// Plain-language narrative: what the agent did about it. Older rows have none.
+    #[serde(default)]
+    pub what_i_did: Option<String>,
     pub git_common_dir: Option<String>,
     pub target_ref: Option<String>,
     pub target_identity_version: Option<u64>,
@@ -268,10 +294,14 @@ impl AgentWorkspaceRepairAttempt {
             ci_rerun_fingerprint: None,
             pr_autofix_dispatch_head_commit: None,
             pr_autofix_health_fingerprint: None,
+            pr_autofix_issue_kind: None,
+            base_update_head_commit: None,
             next_dispatch_at: None,
             repair_head_commit: None,
             summary: None,
             blocker: None,
+            what_happened: None,
+            what_i_did: None,
             git_common_dir: None,
             target_ref: None,
             target_identity_version: None,
@@ -285,6 +315,29 @@ impl AgentWorkspaceRepairAttempt {
 
     pub fn is_unsettled(&self) -> bool {
         self.settled_at.is_none()
+    }
+
+    /// Local head that is not yet proven published, exactly as stored: the validated completion
+    /// head first, else the backend-recorded base-update head. Blank values yield `None`.
+    ///
+    /// Callers that compare against an equally verbatim remote head use this so the comparison
+    /// stays byte-exact; callers that build durable markers use [`Self::unpublished_local_head`],
+    /// which trims.
+    pub fn unpublished_local_head_raw(&self) -> Option<&str> {
+        self.repair_head_commit
+            .as_deref()
+            .filter(|head| !head.trim().is_empty())
+            .or_else(|| {
+                self.base_update_head_commit
+                    .as_deref()
+                    .filter(|head| !head.trim().is_empty())
+            })
+    }
+
+    /// Trimmed form of [`Self::unpublished_local_head_raw`], for durable markers and retry keys
+    /// where incidental padding must not fork the identity.
+    pub fn unpublished_local_head(&self) -> Option<&str> {
+        self.unpublished_local_head_raw().map(str::trim)
     }
 
     pub fn operation_snapshot(&self) -> AgentWorkspaceRepairOperationSnapshot {
@@ -390,6 +443,8 @@ impl AgentWorkspaceRepairAttempt {
             hold_reason,
             summary: self.summary.clone(),
             blocker: self.blocker.clone(),
+            what_happened: self.what_happened.clone(),
+            what_i_did: self.what_i_did.clone(),
             automatic_continuation: self.continuation.is_automatic()
                 && matches!(status, AgentWorkspaceRepairOperationStatus::Active),
             started_at: self.created_at,
@@ -499,6 +554,12 @@ pub struct AgentWorkspaceRepairOperationSnapshot {
     pub hold_reason: Option<AgentWorkspaceRepairOperationHoldReason>,
     pub summary: Option<String>,
     pub blocker: Option<String>,
+    /// Plain-language narrative: what the agent observed. Older/absent attempts have none.
+    #[serde(default)]
+    pub what_happened: Option<String>,
+    /// Plain-language narrative: what the agent did about it. Older/absent attempts have none.
+    #[serde(default)]
+    pub what_i_did: Option<String>,
     pub automatic_continuation: bool,
     pub started_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

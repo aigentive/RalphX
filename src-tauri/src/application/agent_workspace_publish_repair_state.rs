@@ -15,20 +15,21 @@ use crate::application::agent_workspace_review_auto_merge::{
 };
 use crate::application::chat_service::{ChatServiceError, SendResult};
 use crate::application::publish_resilience::{
-    inspect_publish_branch_freshness_for_source, verify_agent_workspace_repair_completion,
-    AgentWorkspaceRepairCompletionCheck,
+    classify_agent_workspace_repair_completion, inspect_publish_branch_freshness_for_source,
+    verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
+    AgentWorkspaceRepairCompletionClassification, PublishBranchFreshnessStatus,
 };
 use crate::application::{AppState, GitService};
 #[cfg(any(test, feature = "test-utils"))]
 use crate::domain::entities::AgentRun;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentRunId, AgentWorkspaceRepairAttempt,
-    AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairOperationHoldReason,
-    AgentWorkspaceRepairOperationRecoveryAction, AgentWorkspaceRepairOutcome,
-    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
-    ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
+    AgentConversationWorkspacePublicationEvent, AgentRunId, AgentWorkspacePrAutofixIssueKind,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairCompletionAuthority,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffectKind,
+    AgentWorkspaceRepairOperationHoldReason, AgentWorkspaceRepairOperationRecoveryAction,
+    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    AgentWorkspaceReviewGateStatus, ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -78,6 +79,9 @@ pub(crate) const PRE_EXISTING_ON_BASE_REPAIR_REASON: &str = "pr_autofix_pre_exis
 /// Distinct from `PRE_EXISTING_ON_BASE_REPAIR_REASON`: RalphX has not proven anything about the
 /// base branch, only that spending another agent generation on identical evidence is waste.
 pub(crate) const UNCHANGED_HEALTH_REPAIR_REASON: &str = "pr_autofix_unchanged_health";
+/// Held because the PR's failing checks share a transient/timeout shape with the identical
+/// checks on the base branch — a rerun might clear this, unlike `PRE_EXISTING_ON_BASE_REPAIR_REASON`.
+pub(crate) use crate::domain::entities::PR_AUTOFIX_BASE_PARITY_TRANSIENT_PENDING_REASON as BASE_PARITY_TRANSIENT_REPAIR_REASON;
 pub(crate) use crate::domain::entities::PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON as BASE_STALE_AFTER_UPDATE_REPAIR_REASON;
 /// Held because the workflow run RalphX intends to rerun has not finished yet.
 pub(crate) const AWAITING_CI_REPAIR_REASON: &str = "pr_autofix_awaiting_ci";
@@ -98,6 +102,7 @@ pub(crate) fn is_machine_repair_reason_marker(reason: &str) -> bool {
             | PRE_EXISTING_ON_BASE_REPAIR_REASON
             | UNCHANGED_HEALTH_REPAIR_REASON
             | BASE_STALE_AFTER_UPDATE_REPAIR_REASON
+            | BASE_PARITY_TRANSIENT_REPAIR_REASON
             | AWAITING_CI_REPAIR_REASON
             | crate::application::agent_workspace_publish_recovery::CONTINUATION_OPEN_EFFECT_ATTENTION_REASON
     ) || trimmed.starts_with(
@@ -168,6 +173,9 @@ pub(crate) enum PublishAuthority {
 pub(crate) struct PrAutofixCarryover {
     pub dispatch_head_commit: Option<String>,
     pub health_fingerprint: Option<String>,
+    /// Blocker category the successor is being dispatched for. Carried because the fingerprint
+    /// hashes it away, so a successor would otherwise lose the completion guard's typed input.
+    pub issue_kind: Option<AgentWorkspacePrAutofixIssueKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -310,6 +318,19 @@ pub(crate) fn repair_attempt_projection(
     summary: &str,
     auto_merge_current: Option<bool>,
 ) -> AgentWorkspaceRepairCompatibilityProjection {
+    repair_attempt_projection_with_base_commit(attempt, summary, auto_merge_current, None)
+}
+
+/// Same projection, plus an explicit integrated-base advance. `base_commit: None` means "leave
+/// the workspace's integrated base as it is" — the attempt records the base tip it *targets*,
+/// the workspace row records the base tip it has *integrated*, and only a verified
+/// update/publish (the only legitimate callers of this seam) may advance the latter.
+pub(crate) fn repair_attempt_projection_with_base_commit(
+    attempt: &AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+    base_commit: Option<String>,
+) -> AgentWorkspaceRepairCompatibilityProjection {
     let (publication_push_status, pr_supervision_status) = match attempt.phase {
         AgentWorkspaceRepairPhase::Requested
         | AgentWorkspaceRepairPhase::Dispatching
@@ -345,10 +366,7 @@ pub(crate) fn repair_attempt_projection(
         pr_auto_merge_current: auto_merge_current,
         pr_autofix_enabled: None,
         pr_auto_merge_desired: None,
-        // Compatibility projection must retain the Git-verified repair base. Clearing it while
-        // a continuation is still active makes the shared PR publisher fail closed before its
-        // create/update handoff can run.
-        base_commit: attempt.target_base_commit.clone(),
+        base_commit,
     }
 }
 
@@ -440,7 +458,10 @@ fn start_attempt_from_workspace(
     if let Some(carryover) = request.carryover_pr_autofix_evidence.as_ref() {
         attempt.pr_autofix_dispatch_head_commit = carryover.dispatch_head_commit.clone();
         attempt.pr_autofix_health_fingerprint = carryover.health_fingerprint.clone();
+        attempt.pr_autofix_issue_kind = carryover.issue_kind;
     }
+    // `base_update_head_commit` is deliberately never carried: each generation must earn its own
+    // unpublished-head evidence, or a settled generation's stale head would authorize a redrive.
     attempt
 }
 
@@ -639,6 +660,7 @@ pub(crate) async fn transition_agent_workspace_repair_attempt(
 /// Atomically records an actionable blocker for the exact trusted repair generation. Callers must
 /// classify completion authority first; a stale result writes neither compatibility state nor an
 /// audit event.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn block_agent_workspace_repair_completion(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     branch_update_repo: Arc<dyn BranchUpdateRepository>,
@@ -646,6 +668,8 @@ pub(crate) async fn block_agent_workspace_repair_completion(
     summary: &str,
     blocker: &str,
     auto_merge_current: Option<bool>,
+    what_happened: Option<&str>,
+    what_i_did: Option<&str>,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
     block_agent_workspace_repair_completion_with_projection(
         repair_repo,
@@ -654,6 +678,8 @@ pub(crate) async fn block_agent_workspace_repair_completion(
         summary,
         blocker,
         auto_merge_current,
+        what_happened,
+        what_i_did,
         None,
     )
     .await
@@ -661,6 +687,7 @@ pub(crate) async fn block_agent_workspace_repair_completion(
 
 /// Blocks the current generation while preserving independently proven compatibility authority.
 /// Only receipt-aware callers may override the default failed/blocked projection.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn block_agent_workspace_repair_completion_with_projection(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     branch_update_repo: Arc<dyn BranchUpdateRepository>,
@@ -668,6 +695,8 @@ pub(crate) async fn block_agent_workspace_repair_completion_with_projection(
     summary: &str,
     blocker: &str,
     auto_merge_current: Option<bool>,
+    what_happened: Option<&str>,
+    what_i_did: Option<&str>,
     projection_status: Option<(&str, &str)>,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
     let expected_phase = attempt.phase;
@@ -675,6 +704,8 @@ pub(crate) async fn block_agent_workspace_repair_completion_with_projection(
     attempt.phase = AgentWorkspaceRepairPhase::Blocked;
     attempt.summary = Some(summary.to_string());
     attempt.blocker = Some(blocker.to_string());
+    attempt.what_happened = what_happened.map(str::to_string);
+    attempt.what_i_did = what_i_did.map(str::to_string);
     attempt.updated_at = next_transition_at(Some(attempt.updated_at));
     let mut projection = repair_attempt_projection(&attempt, blocker, auto_merge_current);
     if let Some((publication_push_status, pr_supervision_status)) = projection_status {
@@ -707,12 +738,15 @@ pub(crate) async fn block_agent_workspace_repair_completion_with_projection(
 
 /// A typed PR-fixer escalation is terminal for automatic recovery. The marker is persisted on
 /// the current generation rather than inferred from agent-authored summary text.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn block_agent_workspace_repair_needs_human(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     branch_update_repo: Arc<dyn BranchUpdateRepository>,
     mut attempt: AgentWorkspaceRepairAttempt,
     summary: &str,
     auto_merge_current: Option<bool>,
+    what_happened: Option<&str>,
+    what_i_did: Option<&str>,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
     if !attempt
         .pending_reasons
@@ -730,6 +764,8 @@ pub(crate) async fn block_agent_workspace_repair_needs_human(
         summary,
         summary,
         auto_merge_current,
+        what_happened,
+        what_i_did,
     )
     .await
 }
@@ -740,7 +776,9 @@ pub(crate) async fn block_agent_workspace_repair_needs_human(
 /// head is still unpublished; neither path may buy another fixer generation or settle on a timer.
 pub(crate) fn agent_workspace_repair_is_health_held(attempt: &AgentWorkspaceRepairAttempt) -> bool {
     attempt.pending_reasons.iter().any(|reason| {
-        reason == PRE_EXISTING_ON_BASE_REPAIR_REASON || reason == UNCHANGED_HEALTH_REPAIR_REASON
+        reason == PRE_EXISTING_ON_BASE_REPAIR_REASON
+            || reason == UNCHANGED_HEALTH_REPAIR_REASON
+            || reason == BASE_PARITY_TRANSIENT_REPAIR_REASON
     })
 }
 
@@ -779,23 +817,51 @@ pub(crate) fn agent_workspace_repair_hold_reason(
 ///
 /// Whitespace-only values never grant a re-drive; nonempty head values are compared exactly. A
 /// missing remote head also withholds the effect, because it is not proof that the local repair is
-/// unpublished.
+/// unpublished. The head may come from a validated completion or from a base update this attempt
+/// ran itself — both are local work GitHub has not seen.
 pub(crate) fn held_repair_has_unpublished_head(
     attempt: &AgentWorkspaceRepairAttempt,
     remote_head: Option<&str>,
 ) -> bool {
-    let Some(local_head) = attempt.repair_head_commit.as_deref() else {
+    // Raw on both sides: the comparison stays byte-exact, exactly as before this predicate learned
+    // about base-update evidence.
+    let Some(local_head) = attempt.unpublished_local_head_raw() else {
         return false;
     };
     let Some(remote_head) = remote_head else {
         return false;
     };
-    !local_head.trim().is_empty() && !remote_head.trim().is_empty() && local_head != remote_head
+    !remote_head.trim().is_empty() && local_head != remote_head
 }
 
 /// Holds a PR autofix generation at a backend-derived health fingerprint without pretending the
 /// failing state was repaired. The poller settles it only after health changes.
 pub(crate) async fn reserve_agent_workspace_pre_existing_on_base(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+    what_happened: Option<&str>,
+    what_i_did: Option<&str>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    attempt.what_happened = what_happened.map(str::to_string);
+    attempt.what_i_did = what_i_did.map(str::to_string);
+    reserve_agent_workspace_repair_health_hold(
+        repair_repo,
+        attempt,
+        PRE_EXISTING_ON_BASE_REPAIR_REASON,
+        summary,
+        auto_merge_current,
+        Vec::new(),
+    )
+    .await
+}
+
+/// Holds a PR autofix generation because its failing checks share a transient/timeout shape with
+/// the identical checks on the base branch. Distinct from `reserve_agent_workspace_pre_existing_on_base`:
+/// this never marks `last_blocked_pr_health_fingerprint`, so a rerun that clears the transient
+/// shape lets the workspace re-enter normal supervision instead of staying handed off forever.
+pub(crate) async fn reserve_agent_workspace_base_parity_transient(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     attempt: AgentWorkspaceRepairAttempt,
     summary: &str,
@@ -804,7 +870,7 @@ pub(crate) async fn reserve_agent_workspace_pre_existing_on_base(
     reserve_agent_workspace_repair_health_hold(
         repair_repo,
         attempt,
-        PRE_EXISTING_ON_BASE_REPAIR_REASON,
+        BASE_PARITY_TRANSIENT_REPAIR_REASON,
         summary,
         auto_merge_current,
         Vec::new(),
@@ -897,6 +963,43 @@ pub(crate) async fn mark_agent_workspace_base_update_target(
             expected_updated_at,
             next_phase: AgentWorkspaceRepairPhase::Ready,
             compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// Record the local branch head produced by a base update the agent ran inside an active
+/// `pr_autofix` attempt.
+///
+/// This is unpublished-head evidence only, so it deliberately preserves the current phase: the
+/// fixer run is normally still mid-flight and must not be moved. It also stays out of
+/// `target_base_commit` / `base_update_target_commit`, which
+/// `classify_health_hold_disposition` reads to route base-staleness dispositions — writing either
+/// here would re-route the hold instead of letting the existing redrive publish it.
+///
+/// # Errors
+///
+/// Returns the repository error when the durable transition cannot be attempted.
+pub(crate) async fn record_agent_workspace_pr_autofix_base_update_head(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    observed_head_commit: &str,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if observed_head_commit.trim().is_empty() {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.base_update_head_commit = Some(observed_head_commit.trim().to_string());
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: None,
             events: Vec::new(),
         })
         .await
@@ -1016,16 +1119,26 @@ async fn transition_agent_workspace_repair_ready_pending_reasons(
 
 /// CAS-reserve a GitHub Actions rerun after the completion boundary has authenticated the
 /// current repair attempt. The caller invokes `gh` only after this write succeeds.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn reserve_agent_workspace_ci_rerun(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     mut attempt: AgentWorkspaceRepairAttempt,
     fingerprint: &str,
     summary: &str,
     auto_merge_current: Option<bool>,
+    what_happened: Option<&str>,
+    what_i_did: Option<&str>,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
     if attempt.ci_rerun_count >= MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES {
         return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
     }
+    // `operation_snapshot()` finds this marker before it ever reaches the CiRerunPending
+    // fallback below, so without clearing it here in the same CAS write the hold card keeps
+    // rendering the stale base-parity classification after a rerun and a user retry would
+    // burn a generation per click against evidence that no longer matches the reservation.
+    attempt
+        .pending_reasons
+        .retain(|reason| reason != BASE_PARITY_TRANSIENT_REPAIR_REASON);
     let expected_phase = attempt.phase;
     let expected_updated_at = attempt.updated_at;
     attempt.ci_rerun_count += 1;
@@ -1035,6 +1148,8 @@ pub(crate) async fn reserve_agent_workspace_ci_rerun(
     attempt.phase = AgentWorkspaceRepairPhase::Ready;
     attempt.summary = Some(summary.to_string());
     attempt.blocker = None;
+    attempt.what_happened = what_happened.map(str::to_string);
+    attempt.what_i_did = what_i_did.map(str::to_string);
     attempt.updated_at = next_transition_at(Some(expected_updated_at));
     let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
     repair_repo
@@ -1099,6 +1214,7 @@ pub(crate) async fn retry_agent_workspace_pr_autofix_hold_override(
         carryover_pr_autofix_evidence: Some(PrAutofixCarryover {
             dispatch_head_commit: current.pr_autofix_dispatch_head_commit.clone(),
             health_fingerprint: current.pr_autofix_health_fingerprint.clone(),
+            issue_kind: current.pr_autofix_issue_kind,
         }),
     };
     let successor = start_attempt_from_workspace(&workspace, &request);
@@ -1136,6 +1252,85 @@ pub(crate) async fn retry_agent_workspace_pr_autofix_hold_override(
     }
 }
 
+/// Outcome of superseding a reserved repair with a generation aimed at a newer base.
+pub(crate) enum AgentWorkspaceRepairRetargetOutcome {
+    Started(Box<AgentWorkspaceRepairAttempt>),
+    /// Another pass already moved this lineage; the caller must not write anything further.
+    Stale,
+}
+
+/// Settles the reserved generation as `Superseded` and atomically starts a successor aimed at
+/// `new_target_base_commit`, carrying the observed PR autofix evidence forward.
+///
+/// Attempt construction stays in this module so every repair generation in the system is built by
+/// one function. The CAS fences the exact attempt id, generation, phase, and observed timestamp, so
+/// a concurrent recovery pass cannot spend a second generation on the same lineage.
+///
+/// `verified_newer_base` is set because the caller derived `new_target_base_commit` from a real Git
+/// read of the current target, which is the only evidence that authorizes moving the target
+/// forward.
+///
+/// # Errors
+///
+/// Returns an error when the repository write fails.
+pub(crate) async fn settle_repair_and_start_retargeted_successor(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    reserved: &AgentWorkspaceRepairAttempt,
+    workspace: &AgentConversationWorkspace,
+    new_target_base_commit: &str,
+    summary: &str,
+) -> AppResult<AgentWorkspaceRepairRetargetOutcome> {
+    let request = AgentWorkspaceRepairStartRequest {
+        conversation_id: reserved.conversation_id.clone(),
+        source: reserved.source,
+        continuation: reserved.continuation,
+        target_base_ref: reserved.target_base_ref.clone(),
+        target_base_commit: Some(new_target_base_commit.to_string()),
+        verified_newer_base: true,
+        reason: summary.to_string(),
+        summary: summary.to_string(),
+        auto_merge_current: workspace.pr_auto_merge_current,
+        explicit_publish_requested: reserved.explicit_publish_requested,
+        retry_blocked: false,
+        carryover_pr_autofix_evidence: Some(PrAutofixCarryover {
+            dispatch_head_commit: reserved.pr_autofix_dispatch_head_commit.clone(),
+            health_fingerprint: reserved.pr_autofix_health_fingerprint.clone(),
+            issue_kind: reserved.pr_autofix_issue_kind,
+        }),
+    };
+    let successor = start_attempt_from_workspace(workspace, &request);
+    let projection =
+        repair_attempt_projection(&successor, summary, workspace.pr_auto_merge_current);
+    match repair_repo
+        .settle_and_start_repair_successor(SettleAndStartAgentWorkspaceRepairSuccessor {
+            attempt_id: reserved.id.clone(),
+            generation: reserved.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Validating,
+            expected_updated_at: reserved.updated_at,
+            outcome: AgentWorkspaceRepairOutcome::Superseded,
+            settled_at: next_transition_at(Some(reserved.updated_at)),
+            successor: StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: successor,
+                reason: request.reason.clone(),
+                verified_newer_base: request.verified_newer_base,
+                compatibility_projection: Some(projection),
+                events: Vec::new(),
+            },
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await?
+    {
+        SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Started(attempt) => {
+            Ok(AgentWorkspaceRepairRetargetOutcome::Started(Box::new(attempt)))
+        }
+        SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Stale(_)
+        | SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Missing => {
+            Ok(AgentWorkspaceRepairRetargetOutcome::Stale)
+        }
+    }
+}
+
 /// Settles exactly the held generation while atomically disabling PR automation. A stale Stop
 /// action therefore cannot turn automation off for a newer attempt.
 pub(crate) async fn stop_agent_workspace_pr_autofix_for_hold(
@@ -1169,7 +1364,9 @@ pub(crate) async fn stop_agent_workspace_pr_autofix_for_hold(
         pr_auto_merge_current: Some(false),
         pr_autofix_enabled: Some(false),
         pr_auto_merge_desired: Some(false),
-        base_commit: current.target_base_commit.clone(),
+        // This settles without a verified base update: preserve the workspace's own integrated
+        // base rather than republishing the attempt's targeted (possibly unmerged) base tip.
+        base_commit: None,
     };
     match repair_repo
         .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
@@ -1312,17 +1509,126 @@ pub(crate) async fn retry_agent_workspace_publication_effect(
     Ok(AgentWorkspacePrAutofixHoldActionOutcome::Applied(applied))
 }
 
+/// Outcome of a user-initiated CI rerun request against a held generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentWorkspaceCiRerunActionOutcome {
+    Applied(AgentWorkspaceRepairAttempt),
+    Stale(AgentWorkspaceRepairAttempt),
+    Missing,
+    /// The exact durable generation matched, but it is not held for a base-parity-transient
+    /// classification. Fail-closed: this command only ever acts on that one hold reason.
+    NotHeld(AgentWorkspaceRepairAttempt),
+    /// The transient CI rerun budget was already exhausted before any GitHub call was made, so
+    /// the attempt is returned unchanged rather than settled to `Blocked`.
+    BudgetExhausted(AgentWorkspaceRepairAttempt),
+}
+
+/// Reruns the failed GitHub Actions checks for a generation held at exactly
+/// `pr_autofix_base_parity_transient`. The CAS fences the exact attempt id, generation, and
+/// observed timestamp, then fails closed unless the current projected hold reason is still the
+/// base-parity-transient classification, so a stale or already-superseded UI action cannot spend
+/// another rerun. Budget exhaustion is checked before invoking
+/// [`crate::application::agent_workspace_ci_rerun::execute_transient_ci_rerun`] so this command
+/// never mutates the attempt just to report "no reruns left".
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn rerun_agent_workspace_ci_for_hold(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    branch_update_repo: Arc<dyn BranchUpdateRepository>,
+    github: Arc<dyn crate::domain::services::github_service::GithubServiceTrait>,
+    conversation_id: &ChatConversationId,
+    attempt_id: &crate::domain::entities::AgentWorkspaceRepairAttemptId,
+    generation: u64,
+    updated_at: DateTime<Utc>,
+    working_dir: &std::path::Path,
+    pr_number: i64,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceCiRerunActionOutcome> {
+    let Some(current) = repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await?
+    else {
+        return Ok(AgentWorkspaceCiRerunActionOutcome::Missing);
+    };
+    if current.id != *attempt_id
+        || current.generation != generation
+        || current.updated_at != updated_at
+    {
+        return Ok(AgentWorkspaceCiRerunActionOutcome::Stale(current));
+    }
+    if current.operation_snapshot().hold_reason
+        != Some(
+            crate::domain::entities::AgentWorkspaceRepairOperationHoldReason::BaseParityTransient,
+        )
+    {
+        return Ok(AgentWorkspaceCiRerunActionOutcome::NotHeld(current));
+    }
+    if current.ci_rerun_count >= MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES {
+        return Ok(AgentWorkspaceCiRerunActionOutcome::BudgetExhausted(current));
+    }
+
+    // A base-parity hold can join an attempt a prior fixer completion already left a narrative
+    // on. Carry it through this reservation so a user-initiated rerun does not blank the card's
+    // paragraph back to the generic template.
+    let carried_what_happened = current.what_happened.clone();
+    let carried_what_i_did = current.what_i_did.clone();
+    let outcome = crate::application::agent_workspace_ci_rerun::execute_transient_ci_rerun(
+        Arc::clone(&repair_repo),
+        branch_update_repo,
+        github,
+        current,
+        working_dir,
+        pr_number,
+        summary,
+        auto_merge_current,
+        carried_what_happened.as_deref(),
+        carried_what_i_did.as_deref(),
+    )
+    .await?;
+
+    match outcome {
+        crate::application::agent_workspace_ci_rerun::TransientCiRerunOutcome::HealthFetchFailed(
+            error,
+        ) => Err(error),
+        crate::application::agent_workspace_ci_rerun::TransientCiRerunOutcome::Rejected(message)
+        | crate::application::agent_workspace_ci_rerun::TransientCiRerunOutcome::Blocked(
+            message,
+        ) => Err(AppError::Conflict(message)),
+        crate::application::agent_workspace_ci_rerun::TransientCiRerunOutcome::RerunPending(_) => {
+            match repair_repo.get_current_repair_attempt(conversation_id).await? {
+                Some(applied) => Ok(AgentWorkspaceCiRerunActionOutcome::Applied(applied)),
+                None => Ok(AgentWorkspaceCiRerunActionOutcome::Missing),
+            }
+        }
+        crate::application::agent_workspace_ci_rerun::TransientCiRerunOutcome::ReservationStale => {
+            match repair_repo.get_current_repair_attempt(conversation_id).await? {
+                Some(latest) => Ok(AgentWorkspaceCiRerunActionOutcome::Stale(latest)),
+                None => Ok(AgentWorkspaceCiRerunActionOutcome::Missing),
+            }
+        }
+    }
+}
+
 /// CAS-reserve a wait for the workflow run RalphX intends to rerun. Unlike a rerun reservation,
 /// this preserves the retry budget because no GitHub rerun request has been made.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn reserve_agent_workspace_ci_await(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     mut attempt: AgentWorkspaceRepairAttempt,
     fingerprint: &str,
     summary: &str,
     auto_merge_current: Option<bool>,
+    what_happened: Option<&str>,
+    what_i_did: Option<&str>,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
     let expected_phase = attempt.phase;
     let expected_updated_at = attempt.updated_at;
+    // `operation_snapshot()` finds the first parsing pending reason before it ever reaches the
+    // CiRerunPending fallback below, so leaving the base-parity marker in place here would pin
+    // the card to a classification this reservation has already moved past.
+    attempt
+        .pending_reasons
+        .retain(|reason| reason != BASE_PARITY_TRANSIENT_REPAIR_REASON);
     if !attempt
         .pending_reasons
         .iter()
@@ -1338,6 +1644,8 @@ pub(crate) async fn reserve_agent_workspace_ci_await(
     attempt.phase = AgentWorkspaceRepairPhase::Ready;
     attempt.summary = Some(summary.to_string());
     attempt.blocker = None;
+    attempt.what_happened = what_happened.map(str::to_string);
+    attempt.what_i_did = what_i_did.map(str::to_string);
     attempt.updated_at = next_transition_at(Some(expected_updated_at));
     let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
     repair_repo
@@ -1356,6 +1664,7 @@ pub(crate) async fn reserve_agent_workspace_ci_await(
 /// Persists Git facts derived by the backend after the trusted run has passed authority checks.
 /// The completion handler reserves the exact attempt into `Validating` before any Git inspection;
 /// this transition only records facts against that reservation.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn record_agent_workspace_repair_validation(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     mut attempt: AgentWorkspaceRepairAttempt,
@@ -1364,6 +1673,8 @@ pub(crate) async fn record_agent_workspace_repair_validation(
     repair_head_commit: &str,
     summary: &str,
     auto_merge_current: Option<bool>,
+    what_happened: Option<&str>,
+    what_i_did: Option<&str>,
 ) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
     let expected_phase = attempt.phase;
     let expected_updated_at = attempt.updated_at;
@@ -1372,11 +1683,20 @@ pub(crate) async fn record_agent_workspace_repair_validation(
     attempt.target_base_commit = Some(base_commit.to_string());
     attempt.repair_head_commit = Some(repair_head_commit.to_string());
     attempt.summary = Some(summary.to_string());
+    attempt.what_happened = what_happened.map(str::to_string);
+    attempt.what_i_did = what_i_did.map(str::to_string);
     // A successfully validated completion supersedes any stale blocker left by an earlier
     // blocked generation state (for example a resurrected exact-run completion).
     attempt.blocker = None;
     attempt.updated_at = next_transition_at(Some(attempt.updated_at));
-    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    // The Git-verified completion base is trusted evidence of an integrated base: this is one of
+    // the two seams allowed to advance the workspace's compatibility base_commit.
+    let projection = repair_attempt_projection_with_base_commit(
+        &attempt,
+        summary,
+        auto_merge_current,
+        Some(base_commit.to_string()),
+    );
     repair_repo
         .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
             attempt,
@@ -1400,12 +1720,127 @@ pub(crate) struct AgentWorkspaceRepairValidationFacts {
     pub(crate) auto_merge_current: Option<bool>,
 }
 
+/// Raw backend-derived Git facts for one repair-completion inspection, gathered once and then
+/// interpreted either as pass/fail (trusted completion) or as a classification (recovery).
+struct AgentWorkspaceRepairCompletionObservation {
+    freshness: PublishBranchFreshnessStatus,
+    workspace_head_sha: String,
+    has_uncommitted_changes: bool,
+    has_conflict_files: bool,
+    has_conflict_markers: bool,
+    auto_merge_current: Option<bool>,
+}
+
+impl AgentWorkspaceRepairCompletionObservation {
+    fn check<'a>(&'a self, target_base_ref: &'a str) -> AgentWorkspaceRepairCompletionCheck<'a> {
+        AgentWorkspaceRepairCompletionCheck {
+            freshness_status: &self.freshness,
+            workspace_base_ref: target_base_ref,
+            resolved_base_ref: target_base_ref,
+            resolved_base_commit: &self.freshness.target_base_commit,
+            repair_commit_sha: &self.workspace_head_sha,
+            workspace_head_sha: &self.workspace_head_sha,
+            has_uncommitted_changes: self.has_uncommitted_changes,
+            is_merge_in_progress: false,
+            is_rebase_in_progress: false,
+            has_conflict_files: self.has_conflict_files,
+            has_conflict_markers: self.has_conflict_markers,
+        }
+    }
+
+    fn into_validation_facts(self, target_base_ref: &str) -> AgentWorkspaceRepairValidationFacts {
+        AgentWorkspaceRepairValidationFacts {
+            base_ref: target_base_ref.to_string(),
+            base_commit: self.freshness.target_base_commit,
+            repair_head_commit: self.workspace_head_sha,
+            auto_merge_current: self.auto_merge_current,
+        }
+    }
+}
+
+/// Classified result of the canonical repair-completion inspection.
+///
+/// `Err` from the producing function stays reserved for infrastructure failures — a missing
+/// project, an unusable workspace mode, a checked-out branch mismatch, an empty base ref, or an
+/// unfinished Git operation. Those are not classifications and must never be retargeted.
+pub(crate) enum AgentWorkspaceRepairCompletionInspection {
+    Proven(AgentWorkspaceRepairValidationFacts),
+    BehindNewBase {
+        target_ref: String,
+        target_base_commit: String,
+        repair_head_commit: String,
+    },
+    /// A human sentence describing the exact integrity failure, safe to show a user verbatim.
+    Unprovable(String),
+}
+
+/// Inspects a repair completion and reports whether the base merely moved on.
+///
+/// # Errors
+///
+/// Returns an error for infrastructure failures only; verification failures come back as
+/// `BehindNewBase` or `Unprovable`.
+pub(crate) async fn inspect_agent_workspace_repair_completion_classified(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    target_base_ref: &str,
+    target_base_commit: Option<&str>,
+) -> AppResult<AgentWorkspaceRepairCompletionInspection> {
+    let observation = observe_agent_workspace_repair_completion(
+        state,
+        workspace,
+        target_base_ref,
+        target_base_commit,
+    )
+    .await?;
+    Ok(
+        match classify_agent_workspace_repair_completion(observation.check(target_base_ref)) {
+            AgentWorkspaceRepairCompletionClassification::Proven => {
+                AgentWorkspaceRepairCompletionInspection::Proven(
+                    observation.into_validation_facts(target_base_ref),
+                )
+            }
+            AgentWorkspaceRepairCompletionClassification::BehindNewBase {
+                target_ref,
+                target_base_commit,
+            } => AgentWorkspaceRepairCompletionInspection::BehindNewBase {
+                target_ref,
+                target_base_commit,
+                repair_head_commit: observation.workspace_head_sha,
+            },
+            AgentWorkspaceRepairCompletionClassification::Unprovable(detail) => {
+                AgentWorkspaceRepairCompletionInspection::Unprovable(detail)
+            }
+        },
+    )
+}
+
+/// Pass/fail inspection used by the trusted-completion path, where any failure is a hard
+/// `Conflict` and the reported message follows the adapter's check precedence.
 pub(crate) async fn inspect_agent_workspace_repair_completion(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     target_base_ref: &str,
     target_base_commit: Option<&str>,
 ) -> AppResult<AgentWorkspaceRepairValidationFacts> {
+    let observation = observe_agent_workspace_repair_completion(
+        state,
+        workspace,
+        target_base_ref,
+        target_base_commit,
+    )
+    .await?;
+    verify_agent_workspace_repair_completion(observation.check(target_base_ref))
+        .map_err(AppError::Conflict)?;
+    Ok(observation.into_validation_facts(target_base_ref))
+}
+
+async fn observe_agent_workspace_repair_completion(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    target_base_ref: &str,
+    target_base_commit: Option<&str>,
+) -> AppResult<AgentWorkspaceRepairCompletionObservation> {
     let project = state
         .project_repo
         .get_by_id(&workspace.project_id)
@@ -1466,25 +1901,13 @@ pub(crate) async fn inspect_agent_workspace_repair_completion(
             "workspace repair has an unfinished merge, rebase, cherry-pick, or revert".to_string(),
         ));
     }
-    verify_agent_workspace_repair_completion(AgentWorkspaceRepairCompletionCheck {
-        freshness_status: &freshness,
-        workspace_base_ref: target_base_ref,
-        resolved_base_ref: target_base_ref,
-        resolved_base_commit: &freshness.target_base_commit,
-        repair_commit_sha: &workspace_head_sha,
-        workspace_head_sha: &workspace_head_sha,
+
+    Ok(AgentWorkspaceRepairCompletionObservation {
+        freshness,
+        workspace_head_sha,
         has_uncommitted_changes,
-        is_merge_in_progress: false,
-        is_rebase_in_progress: false,
         has_conflict_files,
         has_conflict_markers,
-    })
-    .map_err(AppError::Conflict)?;
-
-    Ok(AgentWorkspaceRepairValidationFacts {
-        base_ref: target_base_ref.to_string(),
-        base_commit: freshness.target_base_commit,
-        repair_head_commit: workspace_head_sha,
         auto_merge_current: workspace.pr_auto_merge_current,
     })
 }
@@ -1742,6 +2165,8 @@ pub(crate) async fn reserve_agent_workspace_repair_dispatch(
                 "Workspace repair dispatch was blocked before delivery.",
                 &blocker,
                 auto_merge_current,
+                None,
+                None,
             )
             .await;
             if !matches!(
@@ -2546,6 +2971,8 @@ where
             let blocker = review_gate_publish_blocker(&review_context).unwrap_or_else(|| {
                 "Workspace Review blocks the durable repair continuation".to_string()
             });
+            let what_happened = current.what_happened.clone();
+            let what_i_did = current.what_i_did.clone();
             block_agent_workspace_repair_completion(
                 Arc::clone(&state.agent_workspace_repair_repo),
                 Arc::clone(&state.branch_update_repo),
@@ -2553,6 +2980,8 @@ where
                 "Workspace Review blocked the durable repair continuation.",
                 &blocker,
                 workspace.pr_auto_merge_current,
+                what_happened.as_deref(),
+                what_i_did.as_deref(),
             )
             .await
         }
@@ -2566,6 +2995,8 @@ where
                     let blocker = format!(
                         "Workspace Review could not start for the durable repair continuation: {error}"
                     );
+                    let what_happened = current.what_happened.clone();
+                    let what_i_did = current.what_i_did.clone();
                     return block_agent_workspace_repair_completion(
                         Arc::clone(&state.agent_workspace_repair_repo),
                         Arc::clone(&state.branch_update_repo),
@@ -2573,6 +3004,8 @@ where
                         "Workspace Review could not start the durable repair continuation.",
                         &blocker,
                         workspace.pr_auto_merge_current,
+                        what_happened.as_deref(),
+                        what_i_did.as_deref(),
                     )
                     .await;
                 }
@@ -2616,6 +3049,8 @@ where
                         review_gate_publish_blocker(&started.context).unwrap_or_else(|| {
                             "Workspace Review blocks the durable repair continuation".to_string()
                         });
+                    let what_happened = current.what_happened.clone();
+                    let what_i_did = current.what_i_did.clone();
                     block_agent_workspace_repair_completion(
                         Arc::clone(&state.agent_workspace_repair_repo),
                         Arc::clone(&state.branch_update_repo),
@@ -2623,11 +3058,15 @@ where
                         "Workspace Review blocked the durable repair continuation.",
                         &blocker,
                         workspace.pr_auto_merge_current,
+                        what_happened.as_deref(),
+                        what_i_did.as_deref(),
                     )
                     .await
                 }
                 AgentWorkspaceReviewGateStatus::Required => {
                     let blocker = "Workspace Review did not reserve a current reviewer for the durable repair continuation.";
+                    let what_happened = current.what_happened.clone();
+                    let what_i_did = current.what_i_did.clone();
                     block_agent_workspace_repair_completion(
                         Arc::clone(&state.agent_workspace_repair_repo),
                         Arc::clone(&state.branch_update_repo),
@@ -2635,6 +3074,8 @@ where
                         "Workspace Review could not start the durable repair continuation.",
                         blocker,
                         workspace.pr_auto_merge_current,
+                        what_happened.as_deref(),
+                        what_i_did.as_deref(),
                     )
                     .await
                 }

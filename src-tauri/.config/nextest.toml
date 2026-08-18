@@ -6,11 +6,21 @@ leak-timeout = "500ms"
 [profile.ci]
 inherits = "default"
 fail-fast = false
-global-timeout = "30m"
+# Backstop only: hung tests are caught by the inherited 60s slow-timeout
+# (terminate-after 2). The instrumented lib coverage shards already burn ~28m of
+# the budget, so a slower-than-usual runner tripped this before any test failed.
+global-timeout = "40m"
 retries = 1
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# Coverage-instrumented lib shards run ~60% slower than plain test shards and
+# sit near the 30m ci budget on nominal runners; 40m absorbs runner-speed
+# variance while still bounding runaway runs under the 60m job timeout.
+[profile.ci-coverage]
+inherits = "ci"
+global-timeout = "40m"
 
 [test-groups.git-heavy]
 max-threads = 2

@@ -47,11 +47,14 @@ pub use crate::application::agent_conversation_start_service::{
     AgentWorkspaceSourcePullRequestInput, StartAgentConversationInput,
 };
 use crate::application::agent_conversation_workspace::{
+    classify_agent_conversation_workspace_path,
+    classify_effective_agent_conversation_workspace_path,
     ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
     prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
     reject_persona_builder_workspace_mode, resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspacePrAutomationDefaults, AgentConversationWorkspaceSetupMode,
+    WorkspacePathResolution,
 };
 use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base,
@@ -64,6 +67,9 @@ use crate::application::agent_plan_context::{
 use crate::application::agent_planning_session_titles::{
     hydrate_agent_conversation_planning_session_title,
     sync_linked_planning_session_title_from_conversation,
+};
+use crate::application::agent_workspace_base_staleness::{
+    classify_health_hold_disposition, BaseStalenessObservation, HealthHoldDisposition,
 };
 use crate::application::agent_workspace_bridge::{
     wake_agent_workspace_for_bridge_events,
@@ -91,6 +97,7 @@ use crate::application::agent_workspace_pr_reopen::{
 use crate::application::agent_workspace_pr_reopen_restore::ReopenLocalWorkspaceState;
 use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
+    pr_supervision_recovery_schedule_skip_reason,
     schedule_agent_workspace_durable_repair_reconciliation,
     schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps,
     AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryTrigger,
@@ -106,16 +113,17 @@ use crate::application::agent_workspace_publish_recovery::{
 };
 use crate::application::agent_workspace_publish_repair_state::{
     classify_agent_workspace_repair_delivery, last_human_repair_reason,
-    reserve_agent_workspace_repair_dispatch, resume_current_agent_workspace_repair_publish,
-    resume_ready_agent_workspace_repair_for_publish,
+    record_agent_workspace_pr_autofix_base_update_head, rerun_agent_workspace_ci_for_hold,
+    reserve_agent_workspace_repair_dispatch,
+    resume_current_agent_workspace_repair_publish, resume_ready_agent_workspace_repair_for_publish,
     retry_agent_workspace_pr_autofix_hold_override,
     retry_agent_workspace_publication_effect as retry_agent_workspace_publication_effect_service,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
-    stop_agent_workspace_pr_autofix_for_hold, AgentWorkspacePrAutofixHoldActionOutcome,
-    AgentWorkspaceRepairDispatchOutcome, AgentWorkspaceRepairDispatchSettlement,
-    AgentWorkspaceRepairPublishResumeOutcome, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PublishAuthority,
-    DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
+    stop_agent_workspace_pr_autofix_for_hold, AgentWorkspaceCiRerunActionOutcome,
+    AgentWorkspacePrAutofixHoldActionOutcome, AgentWorkspaceRepairDispatchOutcome,
+    AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairPublishResumeOutcome,
+    AgentWorkspaceRepairStartOutcome, AgentWorkspaceRepairStartRequest,
+    AgentWorkspaceRepairTransitionOutcome, PublishAuthority, DEFERRED_REPAIR_WAIT_TIMEOUT_SECS,
 };
 use crate::application::agent_workspace_review::{
     load_workspace_review_publish_blocker, lock_workspace_review_lifecycle,
@@ -141,6 +149,7 @@ use crate::application::publish_resilience::{
     count_publish_reviewable_commits, count_publishable_commits_with_base_fallback,
     count_unpublished_publish_commits, ensure_plan_publish_branch_fresh,
     ensure_publish_base_pushed, ensure_publish_branch_fresh,
+    has_authoritative_observed_agent_workspace_repair_push,
     inspect_publish_branch_freshness_for_source,
     inspect_publish_branch_freshness_for_source_after_fetch, push_publish_branch,
     remote_tracking_ref_for_publish, review_base_for_publish,
@@ -1176,10 +1185,7 @@ pub async fn agent_workspace_response_with_pr_supervision_for_state(
     // supervision scheduler rather than by the response request.
     schedule_pr_supervision_recovery_for_workspace(
         state,
-        crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
-            state,
-            Arc::clone(execution_state),
-        ),
+        execution_state,
         &workspace,
         AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
         false,
@@ -1309,14 +1315,49 @@ fn schedule_external_pr_reconciliation_for_workspace(
     );
 }
 
+/// Scheduling-time routing for a workspace recovery. Both arms still reach the durable repair
+/// coordinator — the first recovery authority — so this only decides whether the far more
+/// expensive PR-supervision runtime is worth constructing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrSupervisionScheduleRoute {
+    /// Full PR supervision, which lazily builds a `TaskTransitionService` + `ChatService`.
+    PrSupervision,
+    /// Durable repair reconciliation only. Constructs neither runtime service.
+    DurableOnly(&'static str),
+}
+
+/// Decides the route from the caller-held workspace record alone, so an ineligible workspace never
+/// pays for runtime construction. The record can be marginally stale; the authoritative in-run
+/// checks still re-read it on the PR-supervision arm.
+pub(crate) fn pr_supervision_schedule_route(
+    github_available: bool,
+    workspace: &AgentConversationWorkspace,
+) -> PrSupervisionScheduleRoute {
+    if !github_available {
+        return PrSupervisionScheduleRoute::DurableOnly("github_service_unavailable");
+    }
+    match pr_supervision_recovery_schedule_skip_reason(workspace) {
+        Some(reason) => PrSupervisionScheduleRoute::DurableOnly(reason),
+        None => PrSupervisionScheduleRoute::PrSupervision,
+    }
+}
+
 pub(crate) fn schedule_pr_supervision_recovery_for_workspace(
     state: &AppState,
-    runtime: crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime,
+    execution_state: &Arc<ExecutionState>,
     workspace: &AgentConversationWorkspace,
     trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
     force: bool,
 ) {
-    if state.github_service.is_none() {
+    if let PrSupervisionScheduleRoute::DurableOnly(reason) =
+        pr_supervision_schedule_route(state.github_service.is_some(), workspace)
+    {
+        tracing::debug!(
+            conversation_id = workspace.conversation_id.as_str(),
+            trigger = trigger.as_str(),
+            reason,
+            "PR supervision ineligible at scheduling; durable-only reconciliation"
+        );
         schedule_agent_workspace_durable_repair_reconciliation(
             state.clone(),
             workspace.conversation_id.clone(),
@@ -1327,13 +1368,20 @@ pub(crate) fn schedule_pr_supervision_recovery_for_workspace(
     }
     let resumer = state.agent_workspace_pr_fix_review_publish_resumer().ok();
     let recovery_state = state.clone();
+    let recovery_execution_state = Arc::clone(execution_state);
     schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps(
         move || {
+            // Built inside the closure: `claim_recovery` throttles the vast majority of sidebar-
+            // driven schedules away, and an eagerly constructed runtime would be pure waste.
+            let runtime = crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
+                &recovery_state,
+                recovery_execution_state,
+            );
             build_agent_workspace_pr_supervision_recovery_deps(
                 &recovery_state,
-                Some(Arc::clone(&runtime.transition_service)),
-                Some(Arc::clone(&runtime.chat_service)),
-                resumer.clone(),
+                Some(runtime.transition_service),
+                Some(runtime.chat_service),
+                resumer,
             )
             .expect("github service was checked before scheduling PR supervision recovery")
         },
@@ -1387,10 +1435,7 @@ async fn schedule_pr_supervision_recovery_for_conversation_id(
 
     schedule_pr_supervision_recovery_for_workspace(
         state,
-        crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
-            state,
-            Arc::clone(execution_state),
-        ),
+        execution_state,
         &workspace,
         trigger,
         force,
@@ -1764,8 +1809,20 @@ pub(crate) fn try_acquire_agent_workspace_publish_guard(
     })
 }
 
-fn agent_workspace_freshness_cache_ttl() -> Duration {
-    Duration::from_millis(git_runtime_config().workspace_freshness_cache_ttl_ms)
+/// Cache lifetime for one freshness scope.
+///
+/// The two scopes have very different costs. Quick/local scope is a cheap local read, so it keeps
+/// the short TTL that makes the UI feel live. Full scope runs `GitService::fetch_origin` plus a
+/// `check_pr_status` per PR-as-base workspace (`agent_conversation_workspace_base.rs`), and the UI
+/// polls it roughly once a minute — against the shared 2s TTL that produced a near-total miss rate
+/// in the 2026-08-11 rate-limit incident, so every poll paid full GitHub cost.
+fn agent_workspace_freshness_cache_ttl(freshness_scope: AgentWorkspaceFreshnessScope) -> Duration {
+    let config = git_runtime_config();
+    let millis = match freshness_scope {
+        AgentWorkspaceFreshnessScope::Full => config.workspace_freshness_full_scope_cache_ttl_ms,
+        AgentWorkspaceFreshnessScope::Local => config.workspace_freshness_cache_ttl_ms,
+    };
+    Duration::from_millis(millis)
 }
 
 fn agent_workspace_freshness_cache_key(
@@ -1786,7 +1843,7 @@ fn cached_agent_workspace_freshness(
     conversation_id: &ChatConversationId,
     freshness_scope: AgentWorkspaceFreshnessScope,
 ) -> Option<AgentConversationWorkspaceFreshnessResponse> {
-    let ttl = agent_workspace_freshness_cache_ttl();
+    let ttl = agent_workspace_freshness_cache_ttl(freshness_scope);
     if ttl.is_zero() {
         return None;
     }
@@ -1805,7 +1862,7 @@ fn store_agent_workspace_freshness(
     freshness_scope: AgentWorkspaceFreshnessScope,
     response: &AgentConversationWorkspaceFreshnessResponse,
 ) {
-    if agent_workspace_freshness_cache_ttl().is_zero() {
+    if agent_workspace_freshness_cache_ttl(freshness_scope).is_zero() {
         return;
     }
     let Some(key) = agent_workspace_freshness_cache_key(conversation_id, freshness_scope) else {
@@ -4995,6 +5052,83 @@ pub async fn stop_pr_autofix_for_failure(
     apply_pr_autofix_hold_action(input, state.inner(), execution_state.inner(), false).await
 }
 
+/// Reruns the failed GitHub Actions checks for a generation held at exactly
+/// `pr_autofix_base_parity_transient`, only when the UI's exact durable attempt version still
+/// owns it.
+#[tauri::command]
+pub async fn rerun_agent_workspace_failed_checks(
+    input: AgentWorkspaceRepairHoldActionInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let updated_at = DateTime::parse_from_rfc3339(&input.updated_at)
+        .map_err(|error| format!("invalid repair updated_at: {error}"))?
+        .with_timezone(&Utc);
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+    let pr_number = workspace
+        .publication_pr_number
+        .ok_or_else(|| "CI rerun requires a linked pull request".to_string())?;
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
+    let working_dir = resolve_valid_agent_conversation_workspace_path(&project, &workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    let github: Arc<dyn GithubServiceTrait> = state
+        .github_service
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| "GitHub service is unavailable for CI rerun.".to_string())?;
+
+    let outcome = rerun_agent_workspace_ci_for_hold(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        Arc::clone(&state.branch_update_repo),
+        github,
+        &conversation_id,
+        &AgentWorkspaceRepairAttemptId::from_string(input.attempt_id),
+        input.generation,
+        updated_at,
+        &working_dir,
+        pr_number,
+        "Rerunning failed GitHub Actions checks by explicit user request.",
+        workspace.pr_auto_merge_current,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    if !matches!(outcome, AgentWorkspaceCiRerunActionOutcome::Applied(_)) {
+        return Err(match outcome {
+            AgentWorkspaceCiRerunActionOutcome::BudgetExhausted(_) => {
+                "The transient CI rerun budget is exhausted.".to_string()
+            }
+            AgentWorkspaceCiRerunActionOutcome::NotHeld(_) => {
+                "This workspace is no longer held for a transient CI classification.".to_string()
+            }
+            AgentWorkspaceCiRerunActionOutcome::Stale(_)
+            | AgentWorkspaceCiRerunActionOutcome::Missing
+            | AgentWorkspaceCiRerunActionOutcome::Applied(_) => {
+                "The workspace repair hold changed before this action could be applied.".to_string()
+            }
+        });
+    }
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+    agent_workspace_response_for_state(state.inner(), workspace).await
+}
+
 /// Clears a continuation's publication-effect attention hold only when the UI's exact durable
 /// attempt version still owns it, then re-runs the ordinary reconciler.
 #[tauri::command]
@@ -6662,6 +6796,72 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
     .await
 }
 
+/// Records the local head a base update just produced on the active `pr_autofix` attempt, so the
+/// existing held-head publish redrive can push it regardless of how the fixer later classifies its
+/// own completion.
+///
+/// Deliberately best effort: the git update already succeeded, so a failure here must degrade to a
+/// warning rather than fail the update or trip repair churn.
+async fn record_pr_autofix_base_update_head_evidence(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    worktree_path: &Path,
+    branch_name: &str,
+) {
+    let head_commit = match GitService::get_branch_sha(worktree_path, branch_name).await {
+        Ok(head_commit) => head_commit,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                %error,
+                "Could not read the branch head produced by a PR-autofix base update"
+            );
+            return;
+        }
+    };
+    let attempt = match state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+    {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                %error,
+                "Could not load the repair attempt for PR-autofix base-update evidence"
+            );
+            return;
+        }
+    };
+    if attempt.source != AgentWorkspaceRepairSource::PrAutofix || !attempt.is_unsettled() {
+        return;
+    }
+    match record_agent_workspace_pr_autofix_base_update_head(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        attempt,
+        &head_commit,
+    )
+    .await
+    {
+        Ok(AgentWorkspaceRepairTransitionOutcome::Applied(_)) => {}
+        Ok(_) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                "PR-autofix base-update head evidence lost its CAS race; the hold may need a manual re-drive"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                %error,
+                "Could not record PR-autofix base-update head evidence"
+            );
+        }
+    }
+}
+
 #[doc(hidden)]
 pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_caller(
     state: &AppState,
@@ -6756,7 +6956,18 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         match resolve_agent_workspace_publish_target(state, &project, &workspace).await {
             Ok(target) => target,
             Err(error) => {
-                if error.contains("Agent conversation workspace is missing") {
+                // Classify through the same effective resolver the publish target used: a
+                // linked-plan-branch workspace never evaluates its record path, so its record
+                // path must not decide whether the workspace is missing.
+                if matches!(
+                    classify_effective_agent_conversation_workspace_path(
+                        &project,
+                        &workspace,
+                        state.plan_branch_repo.as_ref(),
+                    )
+                    .await,
+                    Ok(WorkspacePathResolution::Missing { .. })
+                ) {
                     let _ = state
                         .agent_conversation_workspace_repo
                         .update_status(
@@ -6995,8 +7206,26 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             base_commit,
             target_ref,
         } => (true, target_ref, base_commit),
-        PublishBranchFreshnessOutcome::NeedsAgent { message, .. }
-        | PublishBranchFreshnessOutcome::OperationalError { message } => {
+        PublishBranchFreshnessOutcome::NeedsAgent {
+            message,
+            base_commit: observed_base_commit,
+            ..
+        } => {
+            mark_agent_workspace_base_conflict_failure_with_routing(
+                state,
+                &workspace,
+                &message,
+                &repair_service,
+                true,
+                &publish_target.repair_target(),
+                AgentWorkspacePostRepairAction::UpdateOnly,
+                false,
+                &observed_base_commit,
+            )
+            .await;
+            return Err(message);
+        }
+        PublishBranchFreshnessOutcome::OperationalError { message } => {
             mark_agent_workspace_update_failure_with_target(
                 state,
                 &workspace,
@@ -7009,6 +7238,18 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             return Err(message);
         }
     };
+
+    // A base update the fixer ran itself produced a real new HEAD that nothing has pushed. Record
+    // it now so the hold cannot depend on how the agent later classifies its own completion.
+    if preserve_pr_autofix_claim && updated {
+        record_pr_autofix_base_update_head_evidence(
+            state,
+            &workspace.conversation_id,
+            &publish_target.worktree_path,
+            &publish_target.branch_name,
+        )
+        .await;
+    }
 
     let mut push_status = "refreshed";
     if let Some(plan_branch) = publish_target.plan_branch.as_ref() {
@@ -7548,7 +7789,7 @@ async fn recover_duplicate_agent_workspace_pr_publish(
         &duplicate_target,
     )
     .ok_or_else(|| AppError::Validation("unable to bind duplicate PR target".to_string()))?;
-    let decision = get_or_draft_agent_workspace_pr_metadata_decision(
+    let decision = match get_or_draft_agent_workspace_pr_metadata_decision(
         state,
         conversation,
         project,
@@ -7558,8 +7799,22 @@ async fn recover_duplicate_agent_workspace_pr_publish(
         &duplicate_target,
         cache_key,
     )
-    .await?
-    .decision;
+    .await
+    {
+        Ok(outcome) => outcome.decision,
+        Err(error) => {
+            tracing::warn!(
+                target: "ralphx_lib::commands::agent_workspace_publish",
+                operation = "pr_description_fallback",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                error = %error,
+                "PR description failed during duplicate recovery; preserving existing PR metadata"
+            );
+            AgentWorkspacePrMetadataDecision::Preserve
+        }
+    };
     let decision = normalize_drafted_agent_workspace_pr_metadata_decision(
         state,
         conversation,
@@ -8695,6 +8950,29 @@ async fn publish_agent_conversation_workspace_for_app_state_inner(
     .await
 }
 
+/// Resolves the description used to create a new PR.
+///
+/// A drafted decision always carries a body, so the normal path reuses it. When the describe step
+/// degraded there is no LLM metadata at all: publishing an empty description makes
+/// `pr_publish_service` derive the conversation title and the managed-only body, which is the
+/// deliberate no-template fallback. `None` keeps a genuine contract violation failing closed.
+fn new_pr_description_for_publish(
+    decision: &AgentWorkspacePrMetadataDecision,
+    describer_degraded: bool,
+) -> Option<AgentWorkspacePrDescription> {
+    match decision {
+        AgentWorkspacePrMetadataDecision::Patch {
+            title,
+            body_markdown: Some(body_markdown),
+        } => Some(AgentWorkspacePrDescription::new(
+            title.clone(),
+            body_markdown.clone(),
+        )),
+        _ if describer_degraded => Some(AgentWorkspacePrDescription::new(None, String::new())),
+        _ => None,
+    }
+}
+
 async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
@@ -8784,10 +9062,12 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         match resolve_valid_agent_conversation_workspace_path(&project, &workspace).await {
             Ok(path) => path,
             Err(error) => {
-                if error
-                    .to_string()
-                    .contains("Agent conversation workspace is missing")
-                {
+                // `resolve_valid_…` resolves the record path, so the record classifier is the
+                // matching companion here.
+                if matches!(
+                    classify_agent_conversation_workspace_path(&project, &workspace),
+                    Ok(WorkspacePathResolution::Missing { .. })
+                ) {
                     let _ = state
                         .agent_conversation_workspace_repo
                         .update_status(
@@ -9036,16 +9316,21 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     let refreshed_base_commit = match freshness_outcome {
         PublishBranchFreshnessOutcome::AlreadyFresh { base_commit, .. }
         | PublishBranchFreshnessOutcome::Updated { base_commit, .. } => base_commit,
-        PublishBranchFreshnessOutcome::NeedsAgent { message, .. } => {
-            mark_agent_workspace_publish_failure_with_routing(
+        PublishBranchFreshnessOutcome::NeedsAgent {
+            message,
+            base_commit: observed_base_commit,
+            ..
+        } => {
+            mark_agent_workspace_base_conflict_failure_with_routing(
                 state,
                 &workspace,
                 &message,
-                None,
                 &repair_service,
                 route_fixable_failures_to_agent,
                 &repair_target,
+                AgentWorkspacePostRepairAction::Publish,
                 explicit_user_publish,
+                &observed_base_commit,
             )
             .await;
             return Err(message);
@@ -9195,6 +9480,10 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         .await
         .map_err(|e| e.to_string())?;
     let describe_started = Instant::now();
+    // A describe-only failure must never fail the publish (and therefore never block a repair
+    // continuation). When set, the decision is `Preserve` and a new PR publishes with the
+    // programmatic metadata `pr_publish_service` already derives.
+    let mut describer_degraded = false;
     let mut pr_metadata_decision = match if let Some(cache_key) = pr_description_cache_key {
         get_or_draft_agent_workspace_pr_metadata_decision(
             state,
@@ -9250,15 +9539,18 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
     } {
         Ok(decision) => decision,
         Err(error) => {
-            let error = error.to_string();
-            mark_agent_workspace_publish_description_failure(
-                state,
-                &workspace,
-                &error,
-                operation_scope,
-            )
-            .await;
-            return Err(error);
+            tracing::warn!(
+                target: "ralphx_lib::commands::agent_workspace_publish",
+                operation = "pr_description_fallback",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                elapsed_ms = describe_started.elapsed().as_millis(),
+                error = %error,
+                "PR description failed; publishing without drafted metadata"
+            );
+            describer_degraded = true;
+            AgentWorkspacePrMetadataDecision::Preserve
         }
     };
     pr_metadata_decision = normalize_drafted_agent_workspace_pr_metadata_decision(
@@ -9421,15 +9713,17 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                     .await
                 }
                 Err(error) => {
-                    let error = error.to_string();
-                    mark_agent_workspace_publish_description_failure(
-                        state,
-                        &workspace,
-                        &error,
-                        operation_scope,
-                    )
-                    .await;
-                    return Err(error);
+                    tracing::warn!(
+                        target: "ralphx_lib::commands::agent_workspace_publish",
+                        operation = "pr_description_fallback",
+                        conversation_id = %workspace.conversation_id,
+                        project_id = %workspace.project_id,
+                        branch = %workspace.branch_name,
+                        error = %error,
+                        "PR description re-draft failed; preserving existing PR metadata"
+                    );
+                    describer_degraded = true;
+                    AgentWorkspacePrMetadataDecision::Preserve
                 }
             };
             if matches!(
@@ -9500,16 +9794,11 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         publisher = publisher.with_plan_markdown(markdown);
     }
     let publish_pr_started = Instant::now();
-    let pr_result = match (&pr_target, &pr_metadata_decision) {
-        (
-            ResolvedAgentWorkspacePrTarget::NewPr,
-            AgentWorkspacePrMetadataDecision::Patch {
-                title,
-                body_markdown: Some(body_markdown),
-            },
-        ) => {
-            let description =
-                AgentWorkspacePrDescription::new(title.clone(), body_markdown.clone());
+    let pr_result = match (
+        &pr_target,
+        new_pr_description_for_publish(&pr_metadata_decision, describer_degraded),
+    ) {
+        (ResolvedAgentWorkspacePrTarget::NewPr, Some(description)) => {
             let publish_result = match publisher
                 .publish_draft_pr_without_duplicate_recovery(
                     &worktree_path,
@@ -9556,17 +9845,17 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
                 result => result,
             }
         }
-        (ResolvedAgentWorkspacePrTarget::NewPr, _) => Err(AppError::Validation(
+        (ResolvedAgentWorkspacePrTarget::NewPr, None) => Err(AppError::Validation(
             "new pull requests require a complete metadata body patch".to_string(),
         )),
-        (ResolvedAgentWorkspacePrTarget::Existing(snapshot), decision) => publisher
+        (ResolvedAgentWorkspacePrTarget::Existing(snapshot), _) => publisher
             .publish_existing_pr_metadata_decision(
                 &worktree_path,
                 &conversation,
                 snapshot.number,
                 snapshot.url.as_deref(),
                 snapshot.body.as_deref(),
-                decision,
+                &pr_metadata_decision,
             )
             .await
             .map(AgentWorkspacePrPublishResult::Published),
@@ -10283,6 +10572,40 @@ async fn mark_agent_workspace_update_failure_with_target<S>(
         target,
         AgentWorkspacePostRepairAction::UpdateOnly,
         false,
+        None,
+    )
+    .await;
+}
+
+/// Routing for a base-freshness conflict, which is the only failure that carries proof of a base
+/// tip the workspace has not integrated yet. That observed tip is what authorizes a background
+/// supersede of a continuation-stage blocked repair, so it must not be discarded like it is on
+/// every other failure route.
+#[allow(clippy::too_many_arguments)]
+async fn mark_agent_workspace_base_conflict_failure_with_routing<S>(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    error: &str,
+    repair_service: &S,
+    route_fixable_failures_to_agent: bool,
+    target: &AgentConversationWorkspaceRepairTarget,
+    post_repair_action: AgentWorkspacePostRepairAction,
+    explicit_user_publish: bool,
+    observed_base_commit: &str,
+) where
+    S: ChatService + ?Sized,
+{
+    mark_agent_workspace_failure_with_routing_and_action(
+        state,
+        workspace,
+        error,
+        None,
+        repair_service,
+        route_fixable_failures_to_agent,
+        target,
+        post_repair_action,
+        explicit_user_publish,
+        Some(observed_base_commit),
     )
     .await;
 }
@@ -10309,10 +10632,12 @@ async fn mark_agent_workspace_publish_failure_with_routing<S>(
         target,
         AgentWorkspacePostRepairAction::Publish,
         explicit_user_publish,
+        None,
     )
     .await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn mark_agent_workspace_failure_with_routing_and_action<S>(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -10323,6 +10648,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
     target: &AgentConversationWorkspaceRepairTarget,
     post_repair_action: AgentWorkspacePostRepairAction,
     explicit_user_publish: bool,
+    observed_base_commit: Option<&str>,
 ) where
     S: ChatService + ?Sized,
 {
@@ -10363,6 +10689,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
         return;
     }
     let failure_class = classify_publish_failure(error);
+    let retry_blocked = background_supersede_allowed(state, workspace, observed_base_commit).await;
     mark_agent_workspace_failure_with_routing_and_action_classified(
         state,
         workspace,
@@ -10373,10 +10700,81 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
         target,
         post_repair_action,
         failure_class,
-        false,
+        retry_blocked,
         explicit_user_publish,
+        observed_base_commit,
     )
     .await;
+}
+
+/// Background failure routing may supersede a blocked repair generation only when a base-freshness
+/// conflict observed a base tip that the blocked attempt never targeted, and only when that block
+/// happened after its repair already reached the remote. This requires positive proof, not just
+/// the absence of a fence: no `NEEDS_HUMAN_REPAIR_REASON` hold, and an authoritative observed push
+/// receipt for the attempt's own repair head — a Blocked attempt that is merely still
+/// auto-retryable (unspent dispatch budget, queued `next_dispatch_at`) with no push receipt is
+/// refused, so repair-stage (pre-push) blocks never regain a reset retry budget through this path.
+/// Every other failure carries no observed tip and therefore can never supersede; the successor
+/// records the tip it was authorized by (see the start request below), so one base tip authorizes
+/// at most one supersede even though the successor resets the automatic retry budget.
+async fn background_supersede_allowed(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    observed_base_commit: Option<&str>,
+) -> bool {
+    let Some(observed_base_commit) = observed_base_commit
+        .map(str::trim)
+        .filter(|commit| !commit.is_empty())
+    else {
+        return false;
+    };
+    let attempt = match state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+    {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Could not read the current repair attempt before background supersede; keeping the blocked generation"
+            );
+            return false;
+        }
+    };
+    if attempt.phase != AgentWorkspaceRepairPhase::Blocked {
+        return false;
+    }
+    if attempt
+        .pending_reasons
+        .iter()
+        .any(|reason| reason == crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON)
+    {
+        return false;
+    }
+    match has_authoritative_observed_agent_workspace_repair_push(state, &attempt).await {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Could not confirm an authoritative observed repair push before background supersede; keeping the blocked generation"
+            );
+            return false;
+        }
+    }
+    matches!(
+        classify_health_hold_disposition(BaseStalenessObservation {
+            merge_state_status: None,
+            observed_base_oid: Some(observed_base_commit),
+            attempt_target_base_commit: attempt.target_base_commit.as_deref(),
+            last_base_update_oid: attempt.base_update_target_commit.as_deref(),
+        }),
+        HealthHoldDisposition::SupersedeForNewEvidence { .. }
+    )
 }
 
 async fn releasable_orphaned_publish_operation_lease_token(
@@ -10428,9 +10826,12 @@ async fn durable_repair_owns_publish_continuation(
     }
 }
 
-/// Only direct user actions may supersede a blocked repair generation. Background failure
-/// routing reaches the same dispatcher through the default `false` above. The dispatch target
-/// must carry the resolved canonical worktree, or the superseding successor can never be sent.
+/// Direct user actions may supersede any blocked repair generation. Background failure routing
+/// reaches the same dispatcher, but only through `background_supersede_allowed` above: exactly the
+/// continuation-stage blocked generation (observed push, no human hold) and only when a
+/// base-freshness conflict observed a base tip that attempt had not targeted. Everything else still
+/// requires explicit user action. The dispatch target must carry the resolved canonical worktree,
+/// or the superseding successor can never be sent.
 async fn retry_blocked_agent_workspace_repair_for_explicit_user_action<S>(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -10532,6 +10933,7 @@ where
         PublishFailureClass::AgentFixable,
         true,
         matches!(post_repair_action, AgentWorkspacePostRepairAction::Publish),
+        None,
     )
     .await;
     true
@@ -10600,6 +11002,7 @@ fn compose_blocked_repair_retry_context(
     context
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -10612,6 +11015,7 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
     failure_class: PublishFailureClass,
     retry_blocked: bool,
     explicit_user_publish: bool,
+    observed_base_commit: Option<&str>,
 ) where
     S: ChatService + ?Sized,
 {
@@ -10670,7 +11074,12 @@ async fn mark_agent_workspace_failure_with_routing_and_action_classified<S>(
                 }
             },
             target_base_ref: target.base_ref.clone(),
-            target_base_commit: workspace.base_commit.clone(),
+            // Record the base tip this attempt actually targets. For a conflict route that is the
+            // freshly observed tip, not the last integrated one, so the same tip cannot read as new
+            // evidence again and re-authorize another supersede.
+            target_base_commit: observed_base_commit
+                .map(str::to_string)
+                .or_else(|| workspace.base_commit.clone()),
             verified_newer_base: false,
             reason: error.to_string(),
             summary: post_repair_action.repair_requested_summary().to_string(),

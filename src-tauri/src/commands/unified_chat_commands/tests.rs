@@ -21,15 +21,18 @@ use super::{
     get_agent_run_attribution, get_agent_run_attributions,
     get_agent_timeline_item_tool_call_detail_for_app_state, hidden_user_message_metadata,
     invalidate_agent_workspace_freshness_cache, list_agent_conversations_page,
-    load_delegated_tool_runtime_snapshot, mark_agent_workspace_failure_with_routing_and_action,
+    load_delegated_tool_runtime_snapshot, mark_agent_workspace_base_conflict_failure_with_routing,
+    mark_agent_workspace_failure_with_routing_and_action,
     mark_agent_workspace_publish_failure_with_target, mark_agent_workspace_publish_status,
     mark_agent_workspace_update_failure_with_target, merge_delegated_snapshot_into_result,
     normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
     normalize_explicit_publish_base_selection, normalized_effort_for_supported,
     parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
+    pr_supervision_schedule_route,
     precompute_agent_conversation_workspace_pr_description_for_app_state,
     preview_tool_payloads_for_message, project_plan_branch_publication_into_workspace_response,
     publication_event_status_for_push_status, publication_event_summary_for_push_status,
+    publish_agent_conversation_workspace_after_repair_push,
     publish_agent_conversation_workspace_for_app_state, recheck_pr_health_for_state,
     resolve_agent_workspace_pr_metadata_target, restore_agent_conversation,
     retarget_existing_workspace_pr_base_if_needed,
@@ -49,6 +52,7 @@ use super::{
     switch_agent_conversation_mode_for_state_stopping_running_agent,
     try_acquire_agent_workspace_publish_guard, update_agent_conversation_coordination_mode,
     update_agent_conversation_workspace_from_base_for_app_state,
+    update_agent_conversation_workspace_from_base_for_app_state_with_caller,
     validate_explicit_publish_base_ref, AgentConversationResponse,
     AgentConversationRuntimeIndexGroup, AgentConversationRuntimeIndexKind,
     AgentConversationRuntimeLifecycle, AgentConversationRuntimeSource,
@@ -62,9 +66,10 @@ use super::{
     AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
     AgentWorkspaceSourcePullRequestInput, CommitAgentConversationWorkspaceLocallyResponse,
     CreateAgentConversationInput, DelegatedToolRuntimeSnapshot, ForkAgentConversationInput,
-    ForkAgentConversationResponse, ModeSwitchInitiator, SwitchAgentConversationModeInput,
-    UpdateAgentConversationCoordinationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
-    MAX_ATTRIBUTION_BATCH, STANDALONE_TEAM_INTENT_REJECTED_ERROR,
+    ForkAgentConversationResponse, ModeSwitchInitiator, PrSupervisionScheduleRoute,
+    SwitchAgentConversationModeInput, UpdateAgentConversationCoordinationModeInput,
+    AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE, MAX_ATTRIBUTION_BATCH,
+    STANDALONE_TEAM_INTENT_REJECTED_ERROR,
 };
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, prepare_agent_conversation_workspace,
@@ -79,7 +84,9 @@ use crate::application::managed_team::{
     ManagedTeamAssignmentRequest, ManagedTeamMemberSpec, ManagedTeamService,
     ManagedTeamWorkspaceRequest,
 };
-use crate::application::publish_resilience::PublishBranchFreshnessStatus;
+use crate::application::publish_resilience::{
+    AgentWorkspaceRepairPrHandoff, PublishBranchFreshnessStatus,
+};
 use crate::application::{
     chat_service::{AgentRuntimeStatus, ChatService, MockChatService},
     AgentTaskService, AppState,
@@ -94,10 +101,10 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
-    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus,
+    AgentConversationWorkspaceStatus, AgentRun, AgentRunActionKind, AgentRunId, AgentRunStatus,
     AgentTaskAssignmentState, AgentTaskCreate, AgentTaskScope, AgentWorkspacePrMetadataDecision,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
-    AgentWorkspaceRepairSource, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairOutcome,
+    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewAutoMergeGuard,
     AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId, AutomationId,
@@ -2307,6 +2314,7 @@ async fn fixable_publish_failure_routes_repair_and_records_events() {
         &target,
         AgentWorkspacePostRepairAction::Publish,
         false,
+        None,
     )
     .await;
 
@@ -2416,6 +2424,7 @@ async fn publish_failure_does_not_instruct_agent_when_current_repair_owns_head_r
         &target,
         AgentWorkspacePostRepairAction::Publish,
         false,
+        None,
     )
     .await;
 
@@ -2442,6 +2451,7 @@ async fn publish_failure_does_not_instruct_agent_when_current_repair_owns_head_r
         &target,
         AgentWorkspacePostRepairAction::Publish,
         false,
+        None,
     )
     .await;
 
@@ -2512,6 +2522,7 @@ async fn fixable_update_failure_records_repair_send_failure() {
         &target,
         AgentWorkspacePostRepairAction::UpdateOnly,
         false,
+        None,
     )
     .await;
 
@@ -2599,6 +2610,7 @@ async fn fixable_update_failure_retries_an_uncertain_immediate_repair_delivery_o
         &target,
         AgentWorkspacePostRepairAction::UpdateOnly,
         false,
+        None,
     )
     .await;
 
@@ -2648,6 +2660,7 @@ async fn fixable_update_failure_retries_an_uncertain_immediate_repair_delivery_o
         &target,
         AgentWorkspacePostRepairAction::UpdateOnly,
         false,
+        None,
     )
     .await;
     assert_eq!(service.get_sent_messages().await.len(), 1);
@@ -2826,6 +2839,7 @@ async fn repair_request_event_failure_settles_without_dispatch() {
         &target,
         AgentWorkspacePostRepairAction::Publish,
         false,
+        None,
     )
     .await;
 
@@ -2888,6 +2902,7 @@ async fn successful_dispatch_remains_completable_when_success_event_write_fails(
         &target,
         AgentWorkspacePostRepairAction::Publish,
         false,
+        None,
     )
     .await;
 
@@ -4300,6 +4315,79 @@ async fn validate_explicit_publish_base_ref_accepts_remote_tracking_ref() {
     assert!(error.contains("Selected base branch 'release/missing' does not exist"));
 }
 
+/// Proof obligation 1: an ineligible workspace is decided from the record alone, so the caller
+/// never reaches the arm that constructs a `TaskTransitionService` + `ChatService`. Each of the
+/// five reasons below dominated the 2026-08-13 production log.
+#[test]
+fn ineligible_workspaces_route_to_durable_only_without_pr_supervision() {
+    let base = command_test_workspace();
+
+    let mut terminal = base.clone();
+    terminal.auto_publish_enabled = true;
+    terminal.pr_autofix_enabled = true;
+    terminal.publication_pr_number = Some(11);
+    terminal.publication_pr_status = Some("merged".to_string());
+    assert_eq!(
+        pr_supervision_schedule_route(true, &terminal),
+        PrSupervisionScheduleRoute::DurableOnly("workspace_terminal")
+    );
+
+    let mut not_active = base.clone();
+    not_active.status = AgentConversationWorkspaceStatus::Missing;
+    assert_eq!(
+        pr_supervision_schedule_route(true, &not_active),
+        PrSupervisionScheduleRoute::DurableOnly("workspace_not_active")
+    );
+
+    let mut wrong_mode = base.clone();
+    wrong_mode.auto_publish_enabled = true;
+    wrong_mode.pr_autofix_enabled = true;
+    wrong_mode.mode = AgentConversationWorkspaceMode::Chat;
+    assert_eq!(
+        pr_supervision_schedule_route(true, &wrong_mode),
+        PrSupervisionScheduleRoute::DurableOnly("workspace_not_edit_or_ideation_mode")
+    );
+
+    let mut supervision_disabled = base.clone();
+    supervision_disabled.auto_publish_enabled = true;
+    supervision_disabled.pr_autofix_enabled = false;
+    supervision_disabled.pr_auto_merge_desired = false;
+    assert_eq!(
+        pr_supervision_schedule_route(true, &supervision_disabled),
+        PrSupervisionScheduleRoute::DurableOnly("pr_supervision_disabled")
+    );
+
+    let mut missing_pr = base.clone();
+    missing_pr.auto_publish_enabled = true;
+    missing_pr.pr_autofix_enabled = true;
+    missing_pr.publication_pr_number = None;
+    assert_eq!(
+        pr_supervision_schedule_route(true, &missing_pr),
+        PrSupervisionScheduleRoute::DurableOnly("missing_pr_number")
+    );
+}
+
+/// A project without GitHub keeps its existing durable-only routing, and an eligible workspace
+/// still reaches the PR-supervision arm so the fix cannot silently disable supervision.
+#[test]
+fn eligible_workspace_routes_to_pr_supervision_and_no_github_routes_durable_only() {
+    let mut eligible = command_test_workspace();
+    eligible.auto_publish_enabled = true;
+    eligible.pr_autofix_enabled = true;
+    eligible.publication_pr_number = Some(41);
+    eligible.publication_push_status = Some("failed".to_string());
+    eligible.pr_supervision_status = Some("blocked".to_string());
+
+    assert_eq!(
+        pr_supervision_schedule_route(true, &eligible),
+        PrSupervisionScheduleRoute::PrSupervision
+    );
+    assert_eq!(
+        pr_supervision_schedule_route(false, &eligible),
+        PrSupervisionScheduleRoute::DurableOnly("github_service_unavailable")
+    );
+}
+
 fn command_test_workspace() -> AgentConversationWorkspace {
     AgentConversationWorkspace::new(
         ChatConversationId::from_string("conversation-command-base"),
@@ -4511,6 +4599,406 @@ async fn seed_blocked_command_repair_attempt(
     {
         AgentWorkspaceRepairAttemptTransitionOutcome::Applied(blocked) => blocked,
         outcome => panic!("expected blocked repair attempt, got {outcome:?}"),
+    }
+}
+
+const SUPERSEDE_REPAIR_HEAD: &str = "3333333333333333333333333333333333333333";
+const SUPERSEDE_TARGETED_BASE: &str = "4444444444444444444444444444444444444444";
+const SUPERSEDE_OBSERVED_BASE: &str = "5555555555555555555555555555555555555555";
+
+/// Seeds an exhausted blocked repair. With `observed_push`, the attempt carries the authoritative
+/// `PushBranch` receipt for its own repair head, which is what makes the block continuation-stage
+/// and therefore supersedable by a genuinely new base conflict.
+async fn seed_exhausted_blocked_repair_for_supersede(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    continuation: AgentWorkspaceRepairContinuation,
+    observed_push: bool,
+) -> AgentWorkspaceRepairAttempt {
+    let ready = seed_ready_command_repair_attempt(state, workspace, continuation).await;
+    if observed_push {
+        crate::testing::record_observed_agent_workspace_repair_push_receipt(
+            state.agent_workspace_repair_repo.as_ref(),
+            &ready,
+            SUPERSEDE_REPAIR_HEAD,
+        )
+        .await;
+    }
+
+    let mut blocked = ready.clone();
+    blocked.phase = AgentWorkspaceRepairPhase::Blocked;
+    blocked.repair_head_commit = Some(SUPERSEDE_REPAIR_HEAD.to_string());
+    blocked.target_base_commit = Some(SUPERSEDE_TARGETED_BASE.to_string());
+    blocked.blocker = Some("PR description failed".to_string());
+    blocked
+        .pending_reasons
+        .push("auto_retry_blocked_repair:3".to_string());
+    blocked.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: blocked,
+            expected_phase: ready.phase,
+            expected_updated_at: ready.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("block the supersede fixture attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(blocked) => blocked,
+        outcome => panic!("expected a blocked repair attempt, got {outcome:?}"),
+    }
+}
+
+async fn live_repair_attempts(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> Vec<AgentWorkspaceRepairAttempt> {
+    state
+        .agent_workspace_repair_repo
+        .list_repair_attempts_for_conversation(&workspace.conversation_id)
+        .await
+        .expect("repair attempts should list")
+        .into_iter()
+        .filter(|attempt| attempt.settled_at.is_none())
+        .collect()
+}
+
+/// A base conflict observed against a tip the blocked attempt never targeted is the only
+/// background evidence allowed to supersede it — proven on both conflict routes.
+#[tokio::test]
+async fn new_base_conflict_supersedes_a_continuation_stage_blocked_repair_on_both_routes() {
+    for (continuation, post_repair_action) in [
+        (
+            AgentWorkspaceRepairContinuation::Publish,
+            AgentWorkspacePostRepairAction::Publish,
+        ),
+        (
+            AgentWorkspaceRepairContinuation::UpdateOnly,
+            AgentWorkspacePostRepairAction::UpdateOnly,
+        ),
+    ] {
+        let state = AppState::new_test();
+        let (_temp, workspace, target) = command_test_workspace_with_git_target();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+        let blocked =
+            seed_exhausted_blocked_repair_for_supersede(&state, &workspace, continuation, true)
+                .await;
+        let service = MockChatService::new();
+
+        mark_agent_workspace_base_conflict_failure_with_routing(
+            &state,
+            &workspace,
+            "merge conflict while updating from base",
+            &service,
+            true,
+            &target,
+            post_repair_action,
+            false,
+            SUPERSEDE_OBSERVED_BASE,
+        )
+        .await;
+
+        let current = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&workspace.conversation_id)
+            .await
+            .expect("current attempt should load")
+            .expect("a successor generation should exist");
+        assert_ne!(
+            current.id, blocked.id,
+            "{post_repair_action:?}: new base evidence must start a successor generation"
+        );
+        assert!(current.generation > blocked.generation);
+        assert_eq!(
+            current.target_base_commit.as_deref(),
+            Some(SUPERSEDE_OBSERVED_BASE),
+            "{post_repair_action:?}: the successor must record the tip that authorized it"
+        );
+        let predecessor = state
+            .agent_workspace_repair_repo
+            .get_repair_attempt(&blocked.id)
+            .await
+            .expect("predecessor should load")
+            .expect("predecessor should still exist");
+        assert!(predecessor.settled_at.is_some());
+        assert_eq!(
+            predecessor.outcome,
+            Some(AgentWorkspaceRepairOutcome::Superseded)
+        );
+        assert_eq!(
+            live_repair_attempts(&state, &workspace).await.len(),
+            1,
+            "{post_repair_action:?}: exactly one live generation may exist"
+        );
+        let reloaded_workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .expect("workspace should reload")
+            .expect("workspace should still exist");
+        assert_eq!(
+            reloaded_workspace.base_commit, workspace.base_commit,
+            "{post_repair_action:?}: conflict routing must never advance the workspace's \
+             integrated base_commit from an unmerged observed tip"
+        );
+        assert_ne!(
+            reloaded_workspace.base_commit.as_deref(),
+            Some(SUPERSEDE_OBSERVED_BASE),
+            "{post_repair_action:?}: the observed conflict tip must never leak into the \
+             workspace's integrated base_commit"
+        );
+    }
+}
+
+/// Everything that is not a base conflict carries no observed tip, so it can never supersede —
+/// this is what keeps the #1002 agent-burn protection intact for describer, push, and lease
+/// failures.
+#[tokio::test]
+async fn background_failures_without_an_observed_base_tip_never_supersede() {
+    let state = AppState::new_test();
+    let (_temp, workspace, target) = command_test_workspace_with_git_target();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let blocked = seed_exhausted_blocked_repair_for_supersede(
+        &state,
+        &workspace,
+        AgentWorkspaceRepairContinuation::Publish,
+        true,
+    )
+    .await;
+    let service = MockChatService::new();
+
+    mark_agent_workspace_failure_with_routing_and_action(
+        &state,
+        &workspace,
+        "push transport reported an interrupted publish",
+        None,
+        &service,
+        true,
+        &target,
+        AgentWorkspacePostRepairAction::Publish,
+        false,
+        None,
+    )
+    .await;
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("current attempt should load")
+        .expect("the blocked attempt should remain current");
+    assert_eq!(current.id, blocked.id);
+    assert_eq!(current.generation, blocked.generation);
+    assert_eq!(live_repair_attempts(&state, &workspace).await.len(), 1);
+}
+
+/// Re-observing the same base tip is not new evidence. Because the successor records the tip it
+/// was authorized by, each distinct tip can dispatch repair agents at most once.
+#[tokio::test]
+async fn re_observed_base_tip_never_supersedes_twice() {
+    let state = AppState::new_test();
+    let (_temp, workspace, target) = command_test_workspace_with_git_target();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let blocked = seed_exhausted_blocked_repair_for_supersede(
+        &state,
+        &workspace,
+        AgentWorkspaceRepairContinuation::Publish,
+        true,
+    )
+    .await;
+    let service = MockChatService::new();
+
+    for _ in 0..2 {
+        mark_agent_workspace_base_conflict_failure_with_routing(
+            &state,
+            &workspace,
+            "merge conflict while updating from base",
+            &service,
+            true,
+            &target,
+            AgentWorkspacePostRepairAction::Publish,
+            false,
+            SUPERSEDE_TARGETED_BASE,
+        )
+        .await;
+    }
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+        .expect("current attempt should load")
+        .expect("the blocked attempt should remain current");
+    assert_eq!(
+        current.id, blocked.id,
+        "the already-targeted base tip is not new evidence"
+    );
+    assert_eq!(live_repair_attempts(&state, &workspace).await.len(), 1);
+}
+
+#[tokio::test]
+async fn repair_stage_and_human_held_blocks_are_never_superseded_by_a_new_base_conflict() {
+    for (observed_push, needs_human) in [(false, false), (true, true)] {
+        let state = AppState::new_test();
+        let (_temp, workspace, target) = command_test_workspace_with_git_target();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+        let blocked = seed_exhausted_blocked_repair_for_supersede(
+            &state,
+            &workspace,
+            AgentWorkspaceRepairContinuation::Publish,
+            observed_push,
+        )
+        .await;
+        if needs_human {
+            let mut held = blocked.clone();
+            held.pending_reasons.push(
+                crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+                    .to_string(),
+            );
+            held.updated_at += chrono::Duration::microseconds(1);
+            match state
+                .agent_workspace_repair_repo
+                .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                    attempt: held,
+                    expected_phase: AgentWorkspaceRepairPhase::Blocked,
+                    expected_updated_at: blocked.updated_at,
+                    next_phase: AgentWorkspaceRepairPhase::Blocked,
+                    compatibility_projection: None,
+                    events: Vec::new(),
+                })
+                .await
+                .expect("human hold should persist")
+            {
+                AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+                outcome => panic!("human hold must apply, got {outcome:?}"),
+            }
+        }
+        let service = MockChatService::new();
+
+        mark_agent_workspace_base_conflict_failure_with_routing(
+            &state,
+            &workspace,
+            "merge conflict while updating from base",
+            &service,
+            true,
+            &target,
+            AgentWorkspacePostRepairAction::Publish,
+            false,
+            SUPERSEDE_OBSERVED_BASE,
+        )
+        .await;
+
+        let current = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&workspace.conversation_id)
+            .await
+            .expect("current attempt should load")
+            .expect("the blocked attempt should remain current");
+        assert_eq!(
+            current.id, blocked.id,
+            "observed_push={observed_push} needs_human={needs_human} must keep the block"
+        );
+        assert_eq!(live_repair_attempts(&state, &workspace).await.len(), 1);
+    }
+}
+
+/// A Blocked attempt that is merely still auto-retryable (unspent dispatch budget, queued
+/// `next_dispatch_at`) is not continuation-stage proof by itself: `background_supersede_allowed`
+/// must require an authoritative observed push receipt, not just the absence of the
+/// `blocked_repair_fences_new_base_work` fence. Otherwise a repair-stage (pre-push) block would be
+/// superseded and its reset successor would re-arm the automatic blocked-repair budget.
+#[tokio::test]
+async fn not_yet_exhausted_blocked_repairs_are_never_superseded_by_a_new_base_conflict() {
+    for needs_human in [false, true] {
+        let state = AppState::new_test();
+        let (_temp, workspace, target) = command_test_workspace_with_git_target();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+        let ready = seed_ready_command_repair_attempt(
+            &state,
+            &workspace,
+            AgentWorkspaceRepairContinuation::Publish,
+        )
+        .await;
+
+        let mut blocked = ready.clone();
+        blocked.phase = AgentWorkspaceRepairPhase::Blocked;
+        blocked.repair_head_commit = Some(SUPERSEDE_REPAIR_HEAD.to_string());
+        blocked.target_base_commit = Some(SUPERSEDE_TARGETED_BASE.to_string());
+        blocked.blocker = Some("PR description failed".to_string());
+        blocked.dispatch_count = 0;
+        blocked.next_dispatch_at = Some(chrono::Utc::now() + chrono::Duration::seconds(60));
+        if needs_human {
+            blocked.pending_reasons.push(
+                crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+                    .to_string(),
+            );
+        }
+        blocked.updated_at += chrono::Duration::microseconds(1);
+        let blocked = match state
+            .agent_workspace_repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: blocked,
+                expected_phase: ready.phase,
+                expected_updated_at: ready.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Blocked,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("block the not-yet-exhausted supersede fixture attempt")
+        {
+            AgentWorkspaceRepairAttemptTransitionOutcome::Applied(blocked) => blocked,
+            outcome => panic!("expected a blocked repair attempt, got {outcome:?}"),
+        };
+        let service = MockChatService::new();
+
+        mark_agent_workspace_base_conflict_failure_with_routing(
+            &state,
+            &workspace,
+            "merge conflict while updating from base",
+            &service,
+            true,
+            &target,
+            AgentWorkspacePostRepairAction::Publish,
+            false,
+            SUPERSEDE_OBSERVED_BASE,
+        )
+        .await;
+
+        let current = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempt(&workspace.conversation_id)
+            .await
+            .expect("current attempt should load")
+            .expect("the blocked attempt should remain current");
+        assert_eq!(
+            current.id, blocked.id,
+            "needs_human={needs_human}: an unexhausted blocked attempt with no push receipt must never be superseded"
+        );
+        assert_eq!(live_repair_attempts(&state, &workspace).await.len(), 1);
     }
 }
 
@@ -5480,6 +5968,9 @@ struct SubmittingPrDescriptionClient {
     spawned: tokio::sync::Mutex<usize>,
     spawned_configs: tokio::sync::Mutex<Vec<AgentConfig>>,
     decisions: tokio::sync::Mutex<VecDeque<AgentWorkspacePrMetadataDecision>>,
+    /// 1-based describe call that completes without submitting a decision, which is exactly how a
+    /// real describer failure looks to the publisher.
+    fail_submission_at: tokio::sync::Mutex<Option<usize>>,
 }
 
 impl SubmittingPrDescriptionClient {
@@ -5493,11 +5984,16 @@ impl SubmittingPrDescriptionClient {
             spawned: tokio::sync::Mutex::new(0),
             spawned_configs: tokio::sync::Mutex::new(Vec::new()),
             decisions: tokio::sync::Mutex::new(VecDeque::new()),
+            fail_submission_at: tokio::sync::Mutex::new(None),
         }
     }
 
     async fn queue_decision(&self, decision: AgentWorkspacePrMetadataDecision) {
         self.decisions.lock().await.push_back(decision);
+    }
+
+    async fn fail_submission_on(&self, nth_describe_call: usize) {
+        *self.fail_submission_at.lock().await = Some(nth_describe_call);
     }
 
     async fn spawned_count(&self) -> usize {
@@ -5522,6 +6018,9 @@ impl AgenticClient for SubmittingPrDescriptionClient {
     }
 
     async fn wait_for_completion(&self, _handle: &AgentHandle) -> AgentResult<AgentOutput> {
+        if *self.fail_submission_at.lock().await == Some(*self.spawned.lock().await) {
+            return Ok(AgentOutput::success("finished without submitting"));
+        }
         let decision = self.decisions.lock().await.pop_front().unwrap_or(
             AgentWorkspacePrMetadataDecision::Patch {
                 title: Some("Cached publication title".to_string()),
@@ -5570,6 +6069,148 @@ fn setup_publish_repo(repo_path: &Path) -> String {
     git(repo_path, &["add", "README.md"]);
     git(repo_path, &["commit", "-m", "base"]);
     git(repo_path, &["rev-parse", "HEAD"])
+}
+
+/// Seeds one unsettled repair attempt of the requested source and returns the branch head the
+/// base-update evidence recorder should observe.
+async fn seed_base_update_evidence_attempt(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    source: AgentWorkspaceRepairSource,
+) {
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            ProjectId::from_string("project-base-update-evidence".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-before-update".to_string()),
+            "ralphx/test/base-update-evidence".to_string(),
+            "/tmp/base-update-evidence-workspace".to_string(),
+        ))
+        .await
+        .expect("seed workspace for the repair attempt");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(
+            crate::domain::repositories::StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: crate::domain::entities::AgentWorkspaceRepairAttempt::new(
+                    conversation_id.clone(),
+                    source,
+                    AgentWorkspaceRepairContinuation::ResumePrSupervision,
+                    "main",
+                    false,
+                    true,
+                    false,
+                    None,
+                    chrono::Utc::now(),
+                ),
+                reason: "base update evidence fixture".to_string(),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("seed repair attempt");
+    assert!(matches!(
+        started,
+        crate::domain::repositories::StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+}
+
+async fn recorded_base_update_head(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Option<String> {
+    state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load attempt")
+        .and_then(|attempt| attempt.base_update_head_commit)
+}
+
+/// The base update already succeeded by the time this runs, so every failure mode must degrade to
+/// a warning rather than failing the update or writing evidence it cannot prove.
+#[tokio::test]
+async fn base_update_head_evidence_is_recorded_only_for_an_active_pr_autofix_attempt() {
+    let repository = tempfile::tempdir().expect("base update evidence repository");
+    let repo_path = repository.path().join("base-update-evidence");
+    let head = setup_publish_repo(&repo_path);
+
+    // No attempt at all: the recorder must be a silent no-op, not a panic or an error.
+    let empty_state = AppState::new_test();
+    let empty_conversation = ChatConversationId::from_string("base-update-evidence-none");
+    super::record_pr_autofix_base_update_head_evidence(
+        &empty_state,
+        &empty_conversation,
+        &repo_path,
+        "main",
+    )
+    .await;
+    assert_eq!(
+        recorded_base_update_head(&empty_state, &empty_conversation).await,
+        None
+    );
+
+    // A non-PrAutofix repair owns its own evidence contract; this route must not touch it.
+    let publish_state = AppState::new_test();
+    let publish_conversation = ChatConversationId::from_string("base-update-evidence-publish");
+    seed_base_update_evidence_attempt(
+        &publish_state,
+        &publish_conversation,
+        AgentWorkspaceRepairSource::Publish,
+    )
+    .await;
+    super::record_pr_autofix_base_update_head_evidence(
+        &publish_state,
+        &publish_conversation,
+        &repo_path,
+        "main",
+    )
+    .await;
+    assert_eq!(
+        recorded_base_update_head(&publish_state, &publish_conversation).await,
+        None
+    );
+
+    // An unreadable branch cannot produce evidence, but must still not fail.
+    let autofix_state = AppState::new_test();
+    let autofix_conversation = ChatConversationId::from_string("base-update-evidence-autofix");
+    seed_base_update_evidence_attempt(
+        &autofix_state,
+        &autofix_conversation,
+        AgentWorkspaceRepairSource::PrAutofix,
+    )
+    .await;
+    super::record_pr_autofix_base_update_head_evidence(
+        &autofix_state,
+        &autofix_conversation,
+        &repo_path,
+        "branch-that-does-not-exist",
+    )
+    .await;
+    assert_eq!(
+        recorded_base_update_head(&autofix_state, &autofix_conversation).await,
+        None
+    );
+
+    super::record_pr_autofix_base_update_head_evidence(
+        &autofix_state,
+        &autofix_conversation,
+        &repo_path,
+        "main",
+    )
+    .await;
+    assert_eq!(
+        recorded_base_update_head(&autofix_state, &autofix_conversation).await,
+        Some(head),
+        "the active PR autofix attempt records the exact branch head the update produced"
+    );
 }
 
 async fn setup_publish_command_state(
@@ -6351,6 +6992,7 @@ fn freshness_response_includes_effective_and_blocked_base_state() {
         captured_base_commit: Some("old-base-sha".to_string()),
         target_base_commit: "main-sha".to_string(),
         is_base_ahead: true,
+        source_contains_target_base: false,
     };
     let retargeted = retargeted_base_resolution();
     let response = AgentConversationWorkspaceFreshnessResponse::from_target_status(
@@ -6475,6 +7117,7 @@ fn workspace_freshness_cache_hits_and_invalidates_recent_response() {
             captured_base_commit: Some("old-base-sha".to_string()),
             target_base_commit: "main-sha".to_string(),
             is_base_ahead: true,
+            source_contains_target_base: false,
         },
         false,
         Some(1),
@@ -6524,6 +7167,7 @@ fn workspace_freshness_cache_keeps_local_and_full_scopes_separate() {
             captured_base_commit: Some("base-sha".to_string()),
             target_base_commit: "new-main-sha".to_string(),
             is_base_ahead: true,
+            source_contains_target_base: false,
         },
         false,
         Some(3),
@@ -6566,6 +7210,7 @@ fn workspace_freshness_cache_expires_stale_entries() {
             captured_base_commit: Some("old-base-sha".to_string()),
             target_base_commit: "main-sha".to_string(),
             is_base_ahead: false,
+            source_contains_target_base: true,
         },
         false,
         Some(0),
@@ -6606,6 +7251,7 @@ fn workspace_freshness_invalidation_guard_clears_cache_on_create_and_drop() {
             captured_base_commit: Some("old-base-sha".to_string()),
             target_base_commit: "main-sha".to_string(),
             is_base_ahead: false,
+            source_contains_target_base: true,
         },
         false,
         Some(0),
@@ -6668,6 +7314,7 @@ fn workspace_freshness_cache_skips_nil_conversation_ids() {
             captured_base_commit: None,
             target_base_commit: "main-sha".to_string(),
             is_base_ahead: false,
+            source_contains_target_base: true,
         },
         false,
         Some(0),
@@ -7321,6 +7968,238 @@ async fn update_workspace_from_base_pr_selection_fetches_remote_head_before_vali
         GitService::ref_exists(&repo_path, "origin/feature/pr-remote-only")
             .await
             .expect("remote tracking check should succeed after update")
+    );
+}
+
+/// Seeds one active, unsettled `PrAutofix` repair attempt for a workspace that already exists,
+/// without touching the workspace's own persisted fields.
+async fn seed_active_pr_autofix_repair_attempt(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) {
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(
+            crate::domain::repositories::StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: crate::domain::entities::AgentWorkspaceRepairAttempt::new(
+                    conversation_id.clone(),
+                    AgentWorkspaceRepairSource::PrAutofix,
+                    AgentWorkspaceRepairContinuation::ResumePrSupervision,
+                    "main",
+                    false,
+                    true,
+                    false,
+                    None,
+                    chrono::Utc::now(),
+                ),
+                reason: "pr autofix base-update gate fixture".to_string(),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("seed active pr autofix repair attempt");
+    assert!(matches!(
+        started,
+        crate::domain::repositories::StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+}
+
+/// Seeds a `Running` PR-autofix `AgentRun` whose action metadata makes it the exact, current
+/// completion authority for `pr_number`, and returns its id as the `created_by_run_id` caller.
+async fn seed_current_pr_autofix_completion_authority_run(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+) -> String {
+    let mut run = AgentRun::new(conversation_id.clone());
+    run.action_kind = Some(AgentRunActionKind::PrAutofix);
+    run.action_context_id = Some(pr_number.to_string());
+    run.action_target_id = Some(format!("github_pr_autofix:{pr_number}:gate-fixture"));
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("active pr autofix completion-authority run should persist")
+        .id
+        .to_string()
+}
+
+/// Marks a workspace as an active PR-autofix fixer claim: `needs_agent` push status, `fixing`
+/// supervision. Callers seed the matching completion-authority run and PR number separately.
+async fn claim_workspace_for_pr_autofix(state: &AppState, conversation_id: &ChatConversationId) {
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("claimed workspace should persist");
+}
+
+/// The `if preserve_pr_autofix_claim && updated` gate at the base-update command call site is the
+/// sole trigger for the whole PR-autofix base-update-evidence layer: the completion guard, the
+/// accessor sweep, and the publish redrive all depend on evidence this gate decides whether to
+/// record. Pin its three outcomes directly against the command, not just the evidence recorder it
+/// calls, so a regression in the gate itself cannot hide behind a green suite.
+#[tokio::test]
+async fn base_update_records_pr_autofix_evidence_only_when_claimed_and_updated() {
+    // Claimed + updated: the branch actually moves, and the base-update command must record the
+    // resulting head as unpublished evidence on the active attempt.
+    let (temp, state, conversation_id, _github) = setup_publish_command_state(
+        "gate-claimed-updated",
+        true,
+        Some(701),
+        Arc::new(MockGithubService::new()),
+    )
+    .await;
+    claim_workspace_for_pr_autofix(&state, &conversation_id).await;
+    seed_active_pr_autofix_repair_attempt(&state, &conversation_id).await;
+    let caller_run_id =
+        seed_current_pr_autofix_completion_authority_run(&state, &conversation_id, 701).await;
+    let repo_path = temp.path().join("repo");
+    git(
+        &repo_path,
+        &["checkout", "-b", "release/gate-claimed-updated"],
+    );
+    std::fs::write(repo_path.join("release.txt"), "release\n")
+        .expect("release fixture should be written");
+    git(&repo_path, &["add", "release.txt"]);
+    git(&repo_path, &["commit", "-m", "release base"]);
+    git(&repo_path, &["checkout", "main"]);
+    let execution_state = Arc::new(ExecutionState::new());
+
+    let response = update_agent_conversation_workspace_from_base_for_app_state_with_caller(
+        &state,
+        &execution_state,
+        conversation_id.clone(),
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+            branch_mode: None,
+            base_ref: Some("release/gate-claimed-updated".to_string()),
+            display_name: Some("release/gate-claimed-updated".to_string()),
+            source_pull_request: None,
+        },
+        Some(caller_run_id.as_str()),
+    )
+    .await
+    .expect("claimed base update should succeed");
+
+    assert!(
+        response.updated,
+        "explicit new base branch must produce an update"
+    );
+    assert_eq!(
+        recorded_base_update_head(&state, &conversation_id).await,
+        Some(response.base_commit.clone()),
+        "a claimed, updated base-update must record the resulting branch head as evidence"
+    );
+
+    // Claimed + already fresh: same claim, but nothing moves, so `updated` owns the other half of
+    // the gate and no evidence should be written.
+    let (_temp_fresh, fresh_state, fresh_conversation_id, _github_fresh) =
+        setup_publish_command_state(
+            "gate-claimed-fresh",
+            true,
+            Some(702),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+    claim_workspace_for_pr_autofix(&fresh_state, &fresh_conversation_id).await;
+    seed_active_pr_autofix_repair_attempt(&fresh_state, &fresh_conversation_id).await;
+    let fresh_caller_run_id =
+        seed_current_pr_autofix_completion_authority_run(&fresh_state, &fresh_conversation_id, 702)
+            .await;
+    let fresh_execution_state = Arc::new(ExecutionState::new());
+
+    let fresh_response = update_agent_conversation_workspace_from_base_for_app_state_with_caller(
+        &fresh_state,
+        &fresh_execution_state,
+        fresh_conversation_id.clone(),
+        AgentConversationWorkspaceBaseSelection {
+            kind: None,
+            branch_mode: None,
+            base_ref: None,
+            display_name: None,
+            source_pull_request: None,
+        },
+        Some(fresh_caller_run_id.as_str()),
+    )
+    .await
+    .expect("claimed base update against an unmoved base should still succeed");
+
+    assert!(
+        !fresh_response.updated,
+        "the base has not moved, so the command must report no update"
+    );
+    assert_eq!(
+        recorded_base_update_head(&fresh_state, &fresh_conversation_id).await,
+        None,
+        "an already-fresh base must not record evidence even for a claimed attempt"
+    );
+
+    // Not claimed + updated: an active PR-autofix attempt exists and the base genuinely moves,
+    // but the workspace was never claimed (no `fixing` supervision status), so the gate must not
+    // fire even though `updated` alone would be true.
+    let (temp_unclaimed, unclaimed_state, unclaimed_conversation_id, _github_unclaimed) =
+        setup_publish_command_state(
+            "gate-unclaimed-updated",
+            true,
+            Some(703),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+    seed_active_pr_autofix_repair_attempt(&unclaimed_state, &unclaimed_conversation_id).await;
+    let unclaimed_caller_run_id = seed_current_pr_autofix_completion_authority_run(
+        &unclaimed_state,
+        &unclaimed_conversation_id,
+        703,
+    )
+    .await;
+    let unclaimed_repo_path = temp_unclaimed.path().join("repo");
+    git(
+        &unclaimed_repo_path,
+        &["checkout", "-b", "release/gate-unclaimed-updated"],
+    );
+    std::fs::write(unclaimed_repo_path.join("release.txt"), "release\n")
+        .expect("release fixture should be written");
+    git(&unclaimed_repo_path, &["add", "release.txt"]);
+    git(&unclaimed_repo_path, &["commit", "-m", "release base"]);
+    git(&unclaimed_repo_path, &["checkout", "main"]);
+    let unclaimed_execution_state = Arc::new(ExecutionState::new());
+
+    let unclaimed_response =
+        update_agent_conversation_workspace_from_base_for_app_state_with_caller(
+            &unclaimed_state,
+            &unclaimed_execution_state,
+            unclaimed_conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
+                base_ref: Some("release/gate-unclaimed-updated".to_string()),
+                display_name: Some("release/gate-unclaimed-updated".to_string()),
+                source_pull_request: None,
+            },
+            Some(unclaimed_caller_run_id.as_str()),
+        )
+        .await
+        .expect("unclaimed base update should still succeed");
+
+    assert!(
+        unclaimed_response.updated,
+        "the base genuinely moved even though the workspace was never claimed"
+    );
+    assert_eq!(
+        recorded_base_update_head(&unclaimed_state, &unclaimed_conversation_id).await,
+        None,
+        "an unclaimed attempt must not record evidence even when the base update succeeds"
     );
 }
 
@@ -8476,12 +9355,21 @@ async fn publish_workspace_records_waiting_when_auto_merge_sync_fails() {
     assert_eq!(github_state.enable_pr_auto_merge_calls, 0);
 }
 
+/// A describe-only failure is cosmetic: it must never stop the publish, because failing here is
+/// what used to park a whole workspace (including its conflict repair) on describer flakiness.
+/// The new PR is created with the programmatic metadata `pr_publish_service` already derives —
+/// no template, no synthetic prose.
 #[tokio::test]
-async fn publish_workspace_stops_before_push_when_pr_description_fails() {
+async fn publish_workspace_creates_pr_with_programmatic_metadata_when_pr_description_fails() {
     let github = Arc::new(MockGithubService::new());
     let (_temp, state, conversation_id, github) =
         setup_publish_command_state("description-fails", true, None, github).await;
     enable_github_pr_publishing(&state, &conversation_id).await;
+    state
+        .chat_conversation_repo
+        .update_title(&conversation_id, "Decouple repair from describer")
+        .await
+        .expect("conversation title should persist");
     let workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -8496,42 +9384,189 @@ async fn publish_workspace_stops_before_push_when_pr_description_fails() {
     seed_current_passing_workspace_review(&state, &conversation_id).await;
     let execution_state = Arc::new(ExecutionState::new());
 
-    let error = publish_agent_conversation_workspace_for_app_state(
+    let response = publish_agent_conversation_workspace_for_app_state(
         &state,
         &execution_state,
         conversation_id.clone(),
         false,
     )
     .await
-    .expect_err("missing generated PR description should block publish");
+    .expect("a describe-only failure must not fail the publish");
+    state
+        .pr_poller_registry
+        .stop_agent_workspace_polling(&conversation_id);
 
-    assert!(error.contains("completed without submitting a PR description"));
-    assert_eq!(github.state().push_branch_calls, 0);
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.push_branch_calls, 1);
+        assert_eq!(github_state.create_draft_pr_calls, 1);
+        let (_, _, created_title, _) = github_state
+            .last_create_draft_pr_args
+            .clone()
+            .expect("draft PR should have been created");
+        assert_eq!(created_title, "Decouple repair from describer");
+        let created_body = github_state
+            .last_create_draft_pr_body
+            .clone()
+            .expect("draft PR body should have been written");
+        assert!(!created_body.trim().is_empty());
+        assert!(created_body.contains(RALPHX_GENERATED_FOOTER));
+        assert!(!created_body.contains("Cached publication title"));
+    }
+
+    assert_eq!(
+        response.workspace.publication_push_status.as_deref(),
+        Some("pushed")
+    );
     let stored = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
         .await
         .expect("workspace lookup should succeed")
         .expect("workspace should exist");
-    assert_eq!(
+    assert_ne!(
         stored.publication_push_status.as_deref(),
         Some("description_failed")
     );
-    let events = state
-        .agent_conversation_workspace_repo
-        .list_publication_events(&conversation_id)
-        .await
-        .expect("publication events should load");
+    let events = publication_events_for(&state, &conversation_id).await;
     assert!(events.iter().any(|event| {
         event.step == "describing"
             && event.status == "started"
             && event.summary == "Drafting pull request description"
     }));
-    assert!(events.iter().any(|event| {
-        event.step == "description_failed"
-            && event.status == "failed"
-            && event.classification.as_deref() == Some("operational")
-    }));
+    assert!(!events
+        .iter()
+        .any(|event| event.step == "description_failed"));
+}
+
+/// The same degrade on an existing PR must leave its title and body exactly as they are: the
+/// `Preserve` decision performs no metadata mutation at all.
+#[tokio::test]
+async fn publish_workspace_preserves_existing_pr_metadata_when_pr_description_fails() {
+    let github = Arc::new(MockGithubService::new());
+    let (_temp, state, conversation_id, github) =
+        setup_publish_command_state("description-fails-existing", true, Some(771), github).await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    for _ in 0..2 {
+        github.queue_pr_detail(Ok(authoritative_pr_detail(
+            771,
+            workspace.branch_name.clone(),
+            "Existing title",
+            "Existing body",
+        )));
+    }
+    write_publishable_workspace_change(&state, &conversation_id).await;
+
+    publish_agent_conversation_workspace_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        conversation_id.clone(),
+        false,
+    )
+    .await
+    .expect("a describe-only failure must not fail an existing-PR publish");
+    state
+        .pr_poller_registry
+        .stop_agent_workspace_polling(&conversation_id);
+
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.push_branch_calls, 1);
+        assert_eq!(github_state.patch_pr_metadata_calls, 0);
+        assert_eq!(github_state.update_pr_details_calls, 0);
+    }
+    assert!(!publication_events_for(&state, &conversation_id)
+        .await
+        .iter()
+        .any(|event| event.step == "description_failed"));
+}
+
+/// The repair continuation republishes an already-pushed branch. A describe failure here is what
+/// used to become `PublishAfterRepairPushError::Failed` and block the whole repair, so the
+/// continuation must now complete instead of returning an error.
+#[tokio::test]
+async fn repair_continuation_publish_completes_when_pr_description_fails() {
+    let github = Arc::new(MockGithubService::new());
+    let (_temp, state, conversation_id, github) =
+        setup_publish_command_state("description-fails-continuation", true, None, github).await;
+    enable_github_pr_publishing(&state, &conversation_id).await;
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    workspace.base_ref = "main".to_string();
+    workspace.base_display_name = Some("main".to_string());
+    let worktree_path = PathBuf::from(&workspace.worktree_path);
+    let branch_name = workspace.branch_name.clone();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("retargeted workspace should persist");
+    std::fs::write(
+        worktree_path.join("repair-fix.txt"),
+        "repair agent commit\n",
+    )
+    .expect("repair commit content should be written");
+    git(&worktree_path, &["add", "repair-fix.txt"]);
+    git(&worktree_path, &["commit", "-m", "repair fix"]);
+    // `enable_github_pr_publishing` points the push URL at GitHub, so publish the repair head to
+    // the backing fixture repository directly and let the normal fetch build the tracking ref.
+    let (_, project) = published_workspace_and_project(&state, &conversation_id).await;
+    git(
+        &worktree_path,
+        &[
+            "push",
+            &project.working_directory,
+            &format!("HEAD:refs/heads/{branch_name}"),
+        ],
+    );
+    git(&worktree_path, &["fetch", "origin"]);
+    seed_current_passing_workspace_review(&state, &conversation_id).await;
+    let head_oid = git(&worktree_path, &["rev-parse", "HEAD"])
+        .trim()
+        .to_string();
+    let base_oid = git(&worktree_path, &["rev-parse", "origin/main"])
+        .trim()
+        .to_string();
+
+    let response = publish_agent_conversation_workspace_after_repair_push(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        conversation_id.clone(),
+        AgentWorkspaceRepairPrHandoff {
+            target_base_ref: "main".to_string(),
+            target_base_commit: base_oid,
+            expected_head_oid: head_oid,
+        },
+    )
+    .await
+    .expect("a describe-only failure must not fail the repair continuation");
+    state
+        .pr_poller_registry
+        .stop_agent_workspace_polling(&conversation_id);
+
+    assert_eq!(
+        response.workspace.publication_push_status.as_deref(),
+        Some("pushed")
+    );
+    {
+        let github_state = github.state();
+        // The branch was already pushed by the repair agent, so the continuation only creates the PR.
+        assert_eq!(github_state.push_branch_calls, 0);
+        assert_eq!(github_state.create_draft_pr_calls, 1);
+    }
+    assert!(!publication_events_for(&state, &conversation_id)
+        .await
+        .iter()
+        .any(|event| event.step == "description_failed"));
 }
 
 #[tokio::test]
@@ -9141,6 +10176,72 @@ async fn publish_workspace_redrafts_once_when_existing_pr_authority_drifts() {
         .any(|event| { event.step == "published" && event.status == "succeeded" }));
 }
 
+/// The post-push re-draft is a second describe site. Degrading only the first one would leave the
+/// same blocked-attempt bug reachable, so a failure here must preserve the existing PR metadata
+/// instead of failing the publish.
+#[tokio::test]
+async fn publish_workspace_preserves_existing_metadata_when_the_redraft_describe_fails() {
+    let github = Arc::new(MockGithubService::new());
+    let (_temp, state, conversation_id, github) =
+        setup_publish_command_state("redraft-describe-fails", true, Some(459), github).await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    for (title, body) in [
+        ("Initial title", "Initial body"),
+        ("Changed title", "Changed body"),
+    ] {
+        github.queue_pr_detail(Ok(authoritative_pr_detail(
+            459,
+            workspace.branch_name.clone(),
+            title,
+            body,
+        )));
+    }
+    write_publishable_workspace_change(&state, &conversation_id).await;
+    let client = Arc::new(SubmittingPrDescriptionClient::new(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        conversation_id.clone(),
+    ));
+    client
+        .queue_decision(AgentWorkspacePrMetadataDecision::Patch {
+            title: Some("initial draft must not be applied".to_string()),
+            body_markdown: None,
+        })
+        .await;
+    client.fail_submission_on(2).await;
+    let state = state.with_agent_client(client.clone());
+
+    publish_agent_conversation_workspace_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        conversation_id.clone(),
+        false,
+    )
+    .await
+    .expect("a failed re-draft must not fail the publish");
+    state
+        .pr_poller_registry
+        .stop_agent_workspace_polling(&conversation_id);
+
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.push_branch_calls, 1);
+        // The drifted authority is never confirmed, because `Preserve` mutates no metadata.
+        assert_eq!(github_state.fetch_pr_detail_calls, 2);
+        assert_eq!(github_state.patch_pr_metadata_calls, 0);
+        assert_eq!(github_state.update_pr_details_calls, 0);
+    }
+    assert_eq!(client.spawned_count().await, 2);
+    assert!(!publication_events_for(&state, &conversation_id)
+        .await
+        .iter()
+        .any(|event| event.step == "description_failed"));
+}
+
 #[tokio::test]
 async fn publish_workspace_fails_after_push_when_existing_pr_drifts_twice_or_final_read_fails() {
     for (suffix, confirmation) in [
@@ -9324,6 +10425,64 @@ async fn publish_workspace_recovers_duplicate_pr_with_a_redrafted_existing_patch
     assert_eq!(client.spawned_count().await, 2);
     assert_eq!(response.pr_number, Some(458));
     assert!(!response.created_pr);
+}
+
+/// Duplicate-PR recovery drafts a third time. A describe failure there must fall back to
+/// `Preserve` and still recover the duplicate instead of failing the publish.
+#[tokio::test]
+async fn publish_workspace_recovers_duplicate_pr_with_preserve_when_pr_description_fails() {
+    let github = Arc::new(MockGithubService::new());
+    let (_temp, state, conversation_id, github) =
+        setup_publish_command_state("duplicate-pr-describe-fails", true, None, github).await;
+    enable_github_pr_publishing(&state, &conversation_id).await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    github.queue_find_pr_by_head_branch(Ok(None));
+    github.state().create_draft_pr_result = Some(Err(AppError::DuplicatePr));
+    for _ in 0..2 {
+        github.queue_find_pr_by_head_branch(Ok(Some((
+            460,
+            "https://github.com/owner/repo/pull/460".to_string(),
+        ))));
+    }
+    for _ in 0..2 {
+        github.queue_pr_detail(Ok(authoritative_pr_detail(
+            460,
+            workspace.branch_name.clone(),
+            "Existing title",
+            "Existing body",
+        )));
+    }
+    write_publishable_workspace_change(&state, &conversation_id).await;
+
+    let response = publish_agent_conversation_workspace_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        conversation_id.clone(),
+        false,
+    )
+    .await
+    .expect("duplicate recovery must survive a describe-only failure");
+    state
+        .pr_poller_registry
+        .stop_agent_workspace_polling(&conversation_id);
+
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.create_draft_pr_calls, 1);
+        assert_eq!(github_state.patch_pr_metadata_calls, 0);
+        assert_eq!(github_state.update_pr_details_calls, 0);
+    }
+    assert_eq!(response.pr_number, Some(460));
+    assert!(!response.created_pr);
+    assert!(!publication_events_for(&state, &conversation_id)
+        .await
+        .iter()
+        .any(|event| event.step == "description_failed"));
 }
 
 #[test]

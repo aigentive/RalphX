@@ -807,3 +807,170 @@ async fn repair_attempt_cas_effect_and_successor_share_one_sqlite_transaction_bo
         Some("{\"remote_oid\":\"abc\"}")
     );
 }
+
+#[tokio::test]
+async fn terminated_repair_effect_is_closed_forever_and_releases_the_attempt_slot() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(workspace(conversation_id.clone()))
+        .await
+        .expect("persist workspace");
+    let started = match repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: repair_attempt(conversation_id.clone()),
+            reason: "pr handoff replay".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start repair attempt")
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected started repair attempt, got {outcome:?}"),
+    };
+    let base_key = format!(
+        "agent_workspace_repair:{}:{}:{}",
+        started.id,
+        started.generation,
+        AgentWorkspaceRepairEffectKind::UpdatePr
+    );
+
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        started.id.clone(),
+        AgentWorkspaceRepairEffectKind::UpdatePr,
+        base_key.clone(),
+        started.updated_at,
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    let open = match repo
+        .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+            attempt_id: started.id.clone(),
+            generation: started.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_attempt_updated_at: started.updated_at,
+            effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("create the first handoff identity")
+    {
+        CreateAgentWorkspaceRepairEffectOutcome::Created(effect) => effect,
+        outcome => panic!("first handoff identity should be created, got {outcome:?}"),
+    };
+
+    let mut terminated = open.clone();
+    terminated.status = AgentWorkspaceRepairEffectStatus::Failed;
+    terminated.last_error = Some("terminated an orphaned in-flight PR-update handoff".to_string());
+    terminated.updated_at = open.updated_at + Duration::milliseconds(1);
+    terminated.completed_at = Some(terminated.updated_at);
+    let terminated = match repo
+        .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
+            attempt_id: started.id.clone(),
+            generation: started.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_attempt_updated_at: started.updated_at,
+            expected_effect_updated_at: open.updated_at,
+            expected_effect_status: AgentWorkspaceRepairEffectStatus::InFlight,
+            effect: terminated,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("terminate the first handoff identity")
+    {
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => *effect,
+        outcome => panic!("termination should apply, got {outcome:?}"),
+    };
+    assert_eq!(terminated.status, AgentWorkspaceRepairEffectStatus::Failed);
+    assert!(terminated.completed_at.is_some());
+    assert!(repo
+        .get_open_repair_effect(&started.id)
+        .await
+        .expect("read open effect after termination")
+        .is_none());
+
+    // A closed row can never be completed again, which is why a replay needs a fresh identity.
+    let mut resurrected = terminated.clone();
+    resurrected.status = AgentWorkspaceRepairEffectStatus::Observed;
+    resurrected.receipt_json = Some("{\"pr_number\":77}".to_string());
+    resurrected.updated_at = terminated.updated_at + Duration::milliseconds(1);
+    resurrected.completed_at = Some(resurrected.updated_at);
+    assert!(matches!(
+        repo.complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
+            attempt_id: started.id.clone(),
+            generation: started.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_attempt_updated_at: started.updated_at,
+            expected_effect_updated_at: terminated.updated_at,
+            expected_effect_status: AgentWorkspaceRepairEffectStatus::Failed,
+            effect: resurrected,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("evaluate the terminated identity"),
+        CompleteAgentWorkspaceRepairEffectOutcome::Stale(_)
+    ));
+
+    let mut replacement = AgentWorkspaceRepairEffect::new(
+        started.id.clone(),
+        AgentWorkspaceRepairEffectKind::UpdatePr,
+        format!("{base_key}#2"),
+        terminated.updated_at,
+    );
+    replacement.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    let replacement = match repo
+        .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+            attempt_id: started.id.clone(),
+            generation: started.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_attempt_updated_at: started.updated_at,
+            effect: replacement,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("create the replacement handoff identity")
+    {
+        CreateAgentWorkspaceRepairEffectOutcome::Created(effect) => effect,
+        outcome => {
+            panic!("a closed row must release the attempt's open slot, got {outcome:?}")
+        }
+    };
+    assert_eq!(replacement.idempotency_key, format!("{base_key}#2"));
+
+    let mut observed = replacement.clone();
+    observed.status = AgentWorkspaceRepairEffectStatus::Observed;
+    observed.receipt_json = Some("{\"pr_number\":77,\"monitoring_handoff\":true}".to_string());
+    observed.updated_at = replacement.updated_at + Duration::milliseconds(1);
+    observed.completed_at = Some(observed.updated_at);
+    let observed = match repo
+        .complete_repair_effect(CompleteAgentWorkspaceRepairEffect {
+            attempt_id: started.id.clone(),
+            generation: started.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_attempt_updated_at: started.updated_at,
+            expected_effect_updated_at: replacement.updated_at,
+            expected_effect_status: AgentWorkspaceRepairEffectStatus::InFlight,
+            effect: observed,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("observe the replacement handoff identity")
+    {
+        CompleteAgentWorkspaceRepairEffectOutcome::Applied(effect) => *effect,
+        outcome => panic!("replacement receipt should apply, got {outcome:?}"),
+    };
+    assert_eq!(observed.status, AgentWorkspaceRepairEffectStatus::Observed);
+    assert_eq!(
+        repo.get_repair_effect_by_idempotency_key(&base_key)
+            .await
+            .expect("re-read the terminated identity")
+            .expect("terminated identity is retained")
+            .status,
+        AgentWorkspaceRepairEffectStatus::Failed,
+        "the replay must not mutate the terminated row"
+    );
+}

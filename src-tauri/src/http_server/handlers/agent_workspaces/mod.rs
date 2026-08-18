@@ -131,7 +131,7 @@ use crate::domain::services::github_service::{
 };
 use crate::error::AppError;
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompleteAgentWorkspaceRepairRequest {
     pub summary: String,
@@ -140,6 +140,11 @@ pub struct CompleteAgentWorkspaceRepairRequest {
     /// Present only on the PR-fixer compatibility route. The backend compares this with the
     /// actual workspace head; it is never accepted as proof on its own.
     pub reported_fix_commit_sha: Option<String>,
+    /// Plain-language narrative: what was observed. Validated by
+    /// `repair_completion::validate_repair_narrative_field`.
+    pub what_happened: Option<String>,
+    /// Plain-language narrative: what the agent did about it.
+    pub what_i_did: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,7 +363,7 @@ pub struct ReadAgentWorkspacePrCommentResponse {
     pub is_untrusted: bool,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize)]
 pub struct CompleteAgentWorkspacePrFixRequest {
     pub summary: String,
     pub blocker: Option<String>,
@@ -367,6 +372,11 @@ pub struct CompleteAgentWorkspacePrFixRequest {
     pub resolution: Option<AgentWorkspacePrFixResolution>,
     /// Transport-owned runtime identity; intentionally absent from the model-facing tool schema.
     pub created_by_run_id: Option<String>,
+    /// Plain-language narrative: what was observed. Forwarded into
+    /// `CompleteAgentWorkspaceRepairRequest` so the compatibility route does not drop it.
+    pub what_happened: Option<String>,
+    /// Plain-language narrative: what the agent did about it.
+    pub what_i_did: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -2527,6 +2537,8 @@ pub async fn complete_agent_workspace_pr_fix(
                 blocker: req.blocker,
                 resolution: req.resolution,
                 reported_fix_commit_sha: req.fix_commit_sha,
+                what_happened: req.what_happened,
+                what_i_did: req.what_i_did,
             },
         ),
     )

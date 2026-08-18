@@ -29,6 +29,7 @@ fn base_codex_settings() -> ResolvedAgentSpawnSettings {
         configured_subagent_model_cap: None,
         subagent_model_cap: None,
         runtime_source: RuntimeSource::HarnessFallback,
+        extra_allowed_mcp_tools: Vec::new(),
     }
 }
 

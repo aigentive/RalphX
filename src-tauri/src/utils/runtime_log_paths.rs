@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[cfg(test)]
@@ -34,9 +35,11 @@ pub fn app_log_dir() -> PathBuf {
     app_runtime_dir().join("logs")
 }
 
-/// Removes old per-launch RalphX logs, retaining the current file and the
-/// newest `keep_previous` matching files. The directory is caller-supplied
-/// only from the fixed RalphX runtime-root helper.
+/// Removes old per-launch RalphX logs, retaining the current launch and the
+/// newest `keep_previous` previous launches. Retention counts launches, not
+/// files: a launch that rotated owns both its active log and its `_rolled`
+/// chunk, and those are kept or deleted together. The directory is
+/// caller-supplied only from the fixed RalphX runtime-root helper.
 pub fn cleanup_previous_launch_logs(
     log_dir: &std::path::Path,
     current_filename: &str,
@@ -47,7 +50,8 @@ pub fn cleanup_previous_launch_logs(
         Err(error) => return vec![error],
     };
     let mut errors = Vec::new();
-    let mut previous_logs = Vec::new();
+    let mut previous_launches: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    let current_group_key = launch_log_group_key(current_filename);
 
     for entry in entries {
         let entry = match entry {
@@ -64,20 +68,34 @@ pub fn cleanup_previous_launch_logs(
         if filename == current_filename {
             continue;
         }
+        let Some(group_key) = launch_log_group_key(&filename) else {
+            continue;
+        };
+        // The current launch keeps every chunk it owns, including a `_rolled`
+        // file that a file-level comparison would have treated as "previous".
+        if current_group_key.as_deref() == Some(group_key.as_str()) {
+            continue;
+        }
         match entry.file_type() {
-            Ok(file_type) if file_type.is_file() => previous_logs.push((filename, entry.path())),
+            Ok(file_type) if file_type.is_file() => previous_launches
+                .entry(group_key)
+                .or_default()
+                .push(entry.path()),
             Ok(_) => {}
             Err(error) => errors.push(error),
         }
     }
 
-    previous_logs.sort_unstable_by(|left, right| right.0.cmp(&left.0));
-    for (_, path) in previous_logs.into_iter().skip(keep_previous) {
-        // `path` is a regular file enumerated from the fixed RalphX-owned log directory,
-        // and its filename passed the exact ralphx_*.log allowlist above.
-        // codeql[rust/path-injection]
-        if let Err(error) = std::fs::remove_file(path) {
-            errors.push(error);
+    let mut group_keys: Vec<String> = previous_launches.keys().cloned().collect();
+    group_keys.sort_unstable_by(|left, right| right.cmp(left));
+    for group_key in group_keys.into_iter().skip(keep_previous) {
+        for path in previous_launches.remove(&group_key).unwrap_or_default() {
+            // `path` is a regular file enumerated from the fixed RalphX-owned log directory,
+            // and its filename passed the exact ralphx_*.log allowlist above.
+            // codeql[rust/path-injection]
+            if let Err(error) = std::fs::remove_file(path) {
+                errors.push(error);
+            }
         }
     }
 
@@ -89,6 +107,23 @@ fn is_launch_log_filename(filename: &str) -> bool {
         .strip_prefix("ralphx_")
         .and_then(|suffix| suffix.strip_suffix(".log"))
         .is_some_and(|middle| !middle.is_empty())
+}
+
+/// Maps a launch log filename to the launch it belongs to, so an active log and
+/// its rotated `_rolled` chunk share one retention group. Returns `None` for
+/// names outside the `ralphx_*.log` allowlist.
+fn launch_log_group_key(filename: &str) -> Option<String> {
+    let middle = filename
+        .strip_prefix("ralphx_")
+        .and_then(|suffix| suffix.strip_suffix(".log"))
+        .filter(|middle| !middle.is_empty())?;
+    // A name that is *only* the rolled suffix has no base launch to join, so it
+    // stays its own group rather than collapsing into an empty key.
+    let base = middle
+        .strip_suffix("_rolled")
+        .filter(|base| !base.is_empty())
+        .unwrap_or(middle);
+    Some(format!("ralphx_{base}.log"))
 }
 
 /// RalphX-owned directory for generated non-log artifacts.

@@ -3,6 +3,9 @@ import type {
   AgentConversationWorkspaceFreshness,
   AgentConversationWorkspacePublicationEvent,
   AgentWorkspaceMaintenanceOperation,
+  AgentWorkspaceMaintenanceOperationHoldReason,
+  AgentWorkspacePrAutofixFingerprintSpend,
+  AgentWorkspaceReviewGateStatus,
 } from "@/api/chat";
 
 const PUBLISH_EVENT_START_SKEW_MS = 5_000;
@@ -156,29 +159,201 @@ export type AgentWorkspacePrAutofixFingerprintSpendPresentation = {
   exhausted: boolean;
 };
 
+export type AgentWorkspaceHoldPrimaryActionKind =
+  | "recheck"
+  | "rerunChecks"
+  | "retryRepair"
+  | "retryPublication";
+
+export type AgentWorkspaceHoldActionKind = AgentWorkspaceHoldPrimaryActionKind | "stop";
+
 export type AgentWorkspaceHoldPresentation = {
-  agentStatus: string;
-  generationVerdict: string;
-  title: string;
-  waitingOnLabel: string;
-  waitingOn: string;
+  pill: string;
+  courtChip: { label: string; autoResumes: boolean };
+  headline: string;
+  paragraph: string;
+  primary: { kind: AgentWorkspaceHoldPrimaryActionKind; label: string; caption: string };
+  secondary: { kind: AgentWorkspaceHoldActionKind; label: string; tooltip: string } | null;
+  more: Array<{ kind: AgentWorkspaceHoldActionKind; label: string; caption: string }>;
+  releaseConditions: string[];
 };
 
-const HOLD_SUMMARIES = {
-  pr_autofix_unchanged_health:
-    "The fixer ran but changed nothing, and GitHub still reports the same failing check. RalphX won't spend another generation until this PR's health changes.",
-  pr_autofix_pre_existing_on_base:
-    "This failure already exists on the base branch, so fixing it on this PR branch would not help.",
-  pr_autofix_ci_rerun_pending:
-    "RalphX asked GitHub to re-run the failed jobs and is waiting for the result.",
-  base_stale:
-    "The branch is still behind its targeted base commit after RalphX attempted the update.",
-  health_evidence:
-    "RalphX is waiting for GitHub to report new PR health evidence before retrying.",
-  publish_redrive:
-    "RalphX is resuming publication for the rebased branch.",
-  publication_effect_attention:
-    "RalphX pushed a repair but could not confirm it reached GitHub. Retry publication to make RalphX try again.",
+const AGENT_WORKSPACE_HOLD_PILL = "Auto-repair paused";
+
+type HoldCopyPrimaryCaption = (
+  spend: AgentWorkspacePrAutofixFingerprintSpendPresentation | null,
+) => string;
+
+type HoldCopy = {
+  courtChip: { label: string; autoResumes: boolean };
+  headline: string;
+  paragraph: string;
+  primary: {
+    kind: AgentWorkspaceHoldPrimaryActionKind;
+    label: string;
+    caption: HoldCopyPrimaryCaption;
+  };
+  secondary: { kind: AgentWorkspaceHoldActionKind; label: string; tooltip: string } | null;
+  more: Array<{ kind: AgentWorkspaceHoldActionKind; label: string; caption: string }>;
+  releaseConditions: string[];
+};
+
+const STOP_AUTO_REPAIR_MORE_ITEM = {
+  kind: "stop" as const,
+  label: "Stop auto-repair",
+  caption: "Stops RalphX from retrying this failure automatically.",
+};
+
+const HOLD_COPY: Record<AgentWorkspaceMaintenanceOperationHoldReason, HoldCopy> = {
+  pr_autofix_unchanged_health: {
+    courtChip: { label: "Waiting on you", autoResumes: false },
+    headline: "Repair paused — waiting for new CI evidence",
+    paragraph:
+      "The fixer ran but changed nothing, and GitHub still reports the same failing check. RalphX won't spend another generation until this PR's health changes.",
+    primary: {
+      kind: "retryRepair",
+      label: "Retry repair anyway",
+      caption: (spend) =>
+        spend
+          ? `Spends another generation despite the repeat failure. ${spend.summary}${spend.exhausted ? " — budget exhausted" : ""}.`
+          : "Spends another generation despite the repeat failure.",
+    },
+    secondary: {
+      kind: "recheck",
+      label: "Re-check PR health",
+      tooltip: "Checks GitHub for a new result before spending another generation.",
+    },
+    more: [STOP_AUTO_REPAIR_MORE_ITEM],
+    releaseConditions: [
+      "GitHub reports a different failing check or a passing result for this PR.",
+    ],
+  },
+  pr_autofix_pre_existing_on_base: {
+    courtChip: { label: "Waiting on main", autoResumes: true },
+    headline: "Repair paused — failure exists on the base branch",
+    paragraph:
+      "This failure already exists on the base branch, so fixing it on this PR branch would not help.",
+    primary: {
+      kind: "recheck",
+      label: "Re-check PR health",
+      caption: () => "Checks whether the base branch's failure has changed.",
+    },
+    secondary: null,
+    more: [
+      {
+        kind: "stop",
+        label: "Stop auto-repair",
+        caption: "Stops RalphX from retrying a failure the base branch also has.",
+      },
+    ],
+    releaseConditions: [
+      "The base branch's health changes to something other than this same failure.",
+    ],
+  },
+  pr_autofix_ci_rerun_pending: {
+    courtChip: { label: "Waiting on a re-run", autoResumes: true },
+    headline: "Repair paused — waiting for CI rerun",
+    paragraph:
+      "RalphX asked GitHub to re-run the failed jobs and is waiting for the result.",
+    primary: {
+      kind: "recheck",
+      label: "Re-check PR health",
+      caption: () => "Checks GitHub for the rerun's result.",
+    },
+    secondary: null,
+    more: [
+      {
+        kind: "stop",
+        label: "Stop auto-repair",
+        caption: "Stops RalphX from waiting on this rerun.",
+      },
+    ],
+    releaseConditions: ["GitHub reports a result for the re-run jobs."],
+  },
+  base_stale: {
+    courtChip: { label: "Waiting on you", autoResumes: false },
+    headline: "Behind base — update did not take",
+    paragraph:
+      "The branch is still behind its targeted base commit after RalphX attempted the update.",
+    primary: {
+      kind: "recheck",
+      label: "Re-check PR health",
+      caption: () => "Checks whether the base branch update has landed.",
+    },
+    secondary: null,
+    more: [],
+    releaseConditions: ["The workspace successfully updates to its targeted base commit."],
+  },
+  health_evidence: {
+    courtChip: { label: "Waiting on GitHub — resumes on its own", autoResumes: true },
+    headline: "Holding — waiting for new CI evidence",
+    paragraph:
+      "RalphX is waiting for GitHub to report new PR health evidence before retrying.",
+    primary: {
+      kind: "recheck",
+      label: "Re-check PR health",
+      caption: () => "Checks GitHub for a newer health signal.",
+    },
+    secondary: null,
+    more: [],
+    releaseConditions: ["GitHub reports new PR health evidence."],
+  },
+  publish_redrive: {
+    courtChip: { label: "Waiting on GitHub — resumes on its own", autoResumes: true },
+    headline: "Pushing rebased branch…",
+    paragraph: "RalphX is resuming publication for the rebased branch.",
+    primary: {
+      kind: "retryPublication",
+      label: "Retry publication",
+      caption: () => "RalphX is already pushing the rebased branch — no action needed.",
+    },
+    secondary: null,
+    more: [],
+    releaseConditions: ["The rebased branch finishes pushing to GitHub."],
+  },
+  publication_effect_attention: {
+    courtChip: { label: "Waiting on you", autoResumes: false },
+    headline: "Repair paused — publish not confirmed",
+    paragraph:
+      "RalphX pushed a repair but could not confirm it reached GitHub. Retry publication to make RalphX try again.",
+    primary: {
+      kind: "retryPublication",
+      label: "Retry publication",
+      caption: () => "Pushes the repair again and confirms it reaches GitHub.",
+    },
+    secondary: null,
+    more: [],
+    releaseConditions: ["RalphX confirms the push reached GitHub."],
+  },
+  pr_autofix_base_parity_transient: {
+    courtChip: { label: "Waiting on a re-run", autoResumes: true },
+    headline: "Repair paused — checks were cancelled or timed out",
+    paragraph:
+      "GitHub cancelled or timed out the checks, and the same failure is present on the base branch. Re-running the checks can clear this.",
+    primary: {
+      kind: "rerunChecks",
+      label: "Re-run failed checks",
+      caption: (spend) =>
+        spend
+          ? `Asks GitHub to run the cancelled or timed-out jobs again — no agent runs, no commit is made. ${spend.summary}.`
+          : "Asks GitHub to run the cancelled or timed-out jobs again — no agent runs, no commit is made.",
+    },
+    secondary: {
+      kind: "retryRepair",
+      label: "Retry repair anyway",
+      tooltip: "Spends a generation on the base-branch failure instead of re-running checks.",
+    },
+    more: [
+      {
+        kind: "stop",
+        label: "Stop auto-repair",
+        caption: "Stops RalphX from waiting on this checks state.",
+      },
+    ],
+    releaseConditions: [
+      "The re-run checks report a different result, or GitHub reports different PR health.",
+    ],
+  },
 };
 
 export function getAgentWorkspacePrAutofixFingerprintSpendPresentation(
@@ -194,6 +369,19 @@ export function getAgentWorkspacePrAutofixFingerprintSpendPresentation(
   };
 }
 
+/**
+ * Gates the Automation tab's budget card on a reportable spend value rather than on
+ * presence: the backend returns a zeroed spend for any workspace that merely has a
+ * fingerprint, so a null check would leave a permanent "0 min · 0 generations" card.
+ */
+export function hasReportableAutofixSpend(
+  spend: AgentWorkspacePrAutofixFingerprintSpend | null | undefined,
+): boolean {
+  return Boolean(
+    spend && (spend.generations > 0 || spend.minutes > 0 || spend.isExhausted),
+  );
+}
+
 export function getAgentWorkspaceMaintenanceOperation(
   workspace: AgentConversationWorkspace | null | undefined,
 ): AgentWorkspaceMaintenanceOperation | null {
@@ -207,39 +395,42 @@ export function getAgentWorkspaceHoldPresentation(
   if (operation?.stage !== "held") {
     return null;
   }
-  if (operation.holdReason === "publication_effect_attention") {
-    return {
-      agentStatus: "Nothing is running",
-      generationVerdict:
-        operation.summary ??
-        HOLD_SUMMARIES.publication_effect_attention,
-      title: "Repair paused — publish not confirmed",
-      waitingOnLabel: "Confirmation the push reached GitHub",
-      waitingOn: HOLD_SUMMARIES.publication_effect_attention,
-    };
-  }
-  const holdSummary = operation.holdReason
-    ? HOLD_SUMMARIES[operation.holdReason]
-    : null;
-  const waitingOn =
-    holdSummary ?? "RalphX paused this repair until new PR health evidence is available.";
-  const preExisting = operation.holdReason === "pr_autofix_pre_existing_on_base";
-  const ciRerun = operation.holdReason === "pr_autofix_ci_rerun_pending";
+  const copy: HoldCopy = operation.holdReason
+    ? HOLD_COPY[operation.holdReason]
+    : {
+        courtChip: { label: "Waiting on GitHub — resumes on its own", autoResumes: true },
+        headline: "Repair paused",
+        paragraph: "RalphX paused this repair until new PR health evidence is available.",
+        primary: {
+          kind: "recheck",
+          label: "Re-check PR health",
+          caption: () => "Checks GitHub for new results on this PR.",
+        },
+        secondary: null,
+        more: [],
+        releaseConditions: ["New PR health evidence from GitHub."],
+      };
+  const spend = getAgentWorkspacePrAutofixFingerprintSpendPresentation(workspace);
   return {
-    agentStatus: "Nothing is running",
-    generationVerdict:
-      operation.summary ?? "The last repair generation did not clear this failure.",
-    title: preExisting
-      ? "Repair paused — failure exists on the base branch"
-      : ciRerun
-        ? "Repair paused — waiting for CI rerun"
-        : "Repair paused — waiting for new CI evidence",
-    waitingOnLabel: preExisting
-      ? "Base branch repair"
-      : ciRerun
-        ? "GitHub CI rerun"
-        : "New PR health evidence",
-    waitingOn,
+    pill: AGENT_WORKSPACE_HOLD_PILL,
+    courtChip: copy.courtChip,
+    headline: copy.headline,
+    // Fix D: the agent's own structured account wins; a fixer completion that only filled the
+    // legacy free-text `summary` still shows its own account (the pre-redesign "repair verdict"
+    // fact) before falling back to the generic per-hold-reason template. Poller-created holds
+    // carry neither field and always take the template.
+    paragraph:
+      composeAgentWorkspaceOperationNarrative(operation) ??
+      nonBlank(operation.summary) ??
+      copy.paragraph,
+    primary: {
+      kind: copy.primary.kind,
+      label: copy.primary.label,
+      caption: copy.primary.caption(spend),
+    },
+    secondary: copy.secondary,
+    more: copy.more,
+    releaseConditions: copy.releaseConditions,
   };
 }
 
@@ -280,6 +471,124 @@ export function canResumeAgentWorkspacePublish(
   );
 }
 
+export type AgentWorkspaceMaintenancePublishGateInput = {
+  hasPublishHandler: boolean;
+  isManagedByTaskPipeline: boolean;
+  effectivePublishing: boolean;
+  isAutomationPreferenceSaving: boolean;
+  baseBlocked: boolean;
+  reviewBlocksPublish: boolean;
+  reviewIsRunning: boolean;
+  reviewGateStatus: AgentWorkspaceReviewGateStatus | null;
+  reviewGateSummary: string | null;
+  hasPrConflict: boolean;
+  hasTerminalPublication: boolean;
+  workspaceMissing: boolean;
+};
+
+export type AgentWorkspaceMaintenancePublishGate = {
+  disabled: boolean;
+  /** Review-state override label; null → caller uses its branch default label. */
+  label: string | null;
+  /** User-facing reason for the disabled state; null when enabled. */
+  blockedReason: string | null;
+};
+
+/**
+ * Single verdict for the maintenance banner's Resume publish / Retry repair action.
+ *
+ * The banner buttons must use this for BOTH their `disabled` prop and their click
+ * guard, so an enabled-looking button can never silently refuse the click.
+ *
+ * Deliberately NOT inputs, because the backend resume path is designed for them:
+ * - `hasNoDetectedChanges` — zero local delta is the expected post-repair state.
+ * - `isPublishCurrent` — the parked durable attempt must still settle, or the
+ *   banner strands with no way forward.
+ * - `repositoryInspectionFailed` — the backend resume re-validates and fails safely.
+ * - `isRepairPending` — structurally false whenever a maintenance operation exists.
+ */
+export function getAgentWorkspaceMaintenancePublishGate(
+  input: AgentWorkspaceMaintenancePublishGateInput,
+): AgentWorkspaceMaintenancePublishGate {
+  const label = input.reviewBlocksPublish
+    ? input.reviewIsRunning
+      ? "Reviewing"
+      : input.reviewGateStatus === "required"
+        ? "Review required"
+        : input.reviewGateStatus === "blocking"
+          ? "Review blocking"
+          : input.reviewGateStatus === "failed"
+            ? "Review failed"
+            : null
+    : null;
+
+  const blockedReason = (() => {
+    if (input.reviewBlocksPublish) {
+      return (
+        input.reviewGateSummary ??
+        "Workspace Review must settle before publishing."
+      );
+    }
+    if (!input.hasPublishHandler) {
+      return "Publishing is unavailable for this workspace.";
+    }
+    if (input.isManagedByTaskPipeline) {
+      return "Publishing is managed by this ideation plan's task pipeline.";
+    }
+    if (input.workspaceMissing) {
+      return "The workspace files are missing.";
+    }
+    if (input.hasTerminalPublication) {
+      return "The linked pull request is already merged or closed.";
+    }
+    if (input.baseBlocked) {
+      return "Publishing is blocked until the workspace base branch is resolved.";
+    }
+    if (input.hasPrConflict) {
+      return "Resolve the pull request conflicts before publishing.";
+    }
+    if (input.effectivePublishing) {
+      return "A workspace operation is already in progress.";
+    }
+    if (input.isAutomationPreferenceSaving) {
+      return "Saving automation preferences. Try again in a moment.";
+    }
+    return null;
+  })();
+
+  return {
+    disabled: blockedReason !== null,
+    label,
+    blockedReason,
+  };
+}
+
+/** A blank string carries no information; treat it the same as absent. */
+function nonBlank(value: string | null | undefined): string | null {
+  return value && value.trim().length > 0 ? value : null;
+}
+
+/**
+ * Composes the agent's own whatHappened/whatIDid narrative verbatim. Recovery/poller/review-gate
+ * sites preserve this narrative even when they separately author a machine blocker, so the
+ * blocker (when present) is appended as a clearly RalphX-attributed sentence rather than folded
+ * into the agent's account.
+ */
+function composeAgentWorkspaceOperationNarrative(
+  operation: AgentWorkspaceMaintenanceOperation,
+): string | null {
+  const parts = [operation.whatHappened, operation.whatIDid].filter(
+    (part): part is string => typeof part === "string" && part.length > 0,
+  );
+  if (parts.length === 0) {
+    return null;
+  }
+  const narrative = parts.join(" ");
+  return operation.blocker
+    ? `${narrative} Separately, RalphX reports: ${operation.blocker}`
+    : narrative;
+}
+
 export function getAgentWorkspaceMaintenancePresentation(
   workspace: AgentConversationWorkspace | null | undefined,
 ): AgentWorkspaceMaintenancePresentation | null {
@@ -295,7 +604,10 @@ export function getAgentWorkspaceMaintenancePresentation(
     operation.status === "active" && operation.automaticContinuation
       ? "Will continue automatically."
       : null;
-  const summary = operation.blocker ?? operation.summary ?? "RalphX is continuing this workspace operation.";
+  const narrative = composeAgentWorkspaceOperationNarrative(operation);
+  const legacySummary =
+    operation.blocker ?? operation.summary ?? "RalphX is continuing this workspace operation.";
+  const summary = narrative ?? legacySummary;
   switch (operation.stage) {
     case "updating_base":
       return {
@@ -345,8 +657,10 @@ export function getAgentWorkspaceMaintenancePresentation(
     case "held": {
       const hold = getAgentWorkspaceHoldPresentation(workspace);
       return {
-        title: hold?.title ?? "Repair paused",
-        summary: hold?.waitingOn ?? summary,
+        title: hold?.headline ?? "Repair paused",
+        // The hold presentation already resolves narrative-over-template; it is the
+        // single writer of the held paragraph, so do not re-decide it here.
+        summary: hold?.paragraph ?? summary,
         tone: "warning",
         busy: false,
         action: "hold",

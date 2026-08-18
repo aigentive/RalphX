@@ -141,7 +141,7 @@ pub use agent_conversation_workspace::{
     WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
 };
 pub use agent_workspace_repair::{
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
+    AgentWorkspacePrAutofixIssueKind, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
     AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectId, AgentWorkspaceRepairEffectKind,
     AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairOperationRecoveryAction,
@@ -150,6 +150,7 @@ pub use agent_workspace_repair::{
     AgentWorkspaceRepairOperationStatus,
     AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
     CONTINUATION_OPEN_EFFECT_ATTENTION_PENDING_REASON,
+    PR_AUTOFIX_BASE_PARITY_TRANSIENT_PENDING_REASON,
     PR_AUTOFIX_BASE_STALE_AFTER_UPDATE_PENDING_REASON,
 };
 pub use agent_workspace_pr_metadata::AgentWorkspacePrMetadataDecision;

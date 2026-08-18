@@ -20,7 +20,9 @@ use crate::application::agent_runtime_context::branch_status::BranchStatusCache;
 use crate::application::agent_workspace_base_staleness::{
     classify_health_hold_disposition, BaseStalenessObservation, HealthHoldDisposition,
 };
-use crate::application::agent_workspace_ci_rerun::ci_rerun_hold_still_pending;
+use crate::application::agent_workspace_ci_rerun::{
+    ci_rerun_hold_still_pending, classify_check_conclusion, CiFailureKind,
+};
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
 };
@@ -34,12 +36,13 @@ use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_is_health_held, classify_agent_workspace_repair_delivery,
     held_repair_has_unpublished_head, mark_agent_workspace_base_update_target,
     release_agent_workspace_base_stale_hold, release_and_clear_agent_workspace_repair_target_lease,
-    reserve_agent_workspace_base_stale_hold, reserve_agent_workspace_base_update,
-    reserve_agent_workspace_repair_dispatch, settle_agent_workspace_repair_dispatch_outcome,
-    start_or_join_agent_workspace_repair, start_or_join_agent_workspace_repair_without_projection,
+    reserve_agent_workspace_base_parity_transient, reserve_agent_workspace_base_stale_hold,
+    reserve_agent_workspace_base_update, reserve_agent_workspace_repair_dispatch,
+    settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
+    start_or_join_agent_workspace_repair_without_projection,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairStartOutcome,
-    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome,
+    AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PrAutofixCarryover,
 };
 #[cfg(test)]
 use crate::application::agent_workspace_publish_repair_state::{
@@ -60,14 +63,16 @@ use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
 };
+use crate::application::services::pr_snapshot_hub::PrSnapshotHub;
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::{AppState, GitService, NotificationService, TaskTransitionService};
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation,
+    AgentWorkspacePrAutofixIssueKind, AgentWorkspacePrCommentEvidenceUpsert,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation,
     AgentWorkspaceRepairOperationStatus, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
     ChatContextType, ChatConversationId, IdeationSessionId, ProjectId,
 };
@@ -91,6 +96,7 @@ use crate::error::AppError;
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_WORKSPACE_PR_FIXER, AGENT_WORKSPACE_REPAIR,
 };
+use crate::infrastructure::agents::claude::git_runtime_config;
 
 #[cfg(test)]
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
@@ -200,6 +206,135 @@ impl Default for RateLimitState {
     }
 }
 
+/// How far ahead to assume the window resets when GitHub rejected a call but no probe has yet
+/// supplied a real reset instant. Deliberately short: an over-long guess would stall every poller
+/// for longer than the outage, and the next probe replaces it with the truth anyway.
+const RATE_LIMITED_FALLBACK_RESET: Duration = Duration::from_secs(15 * 60);
+
+/// Refreshes the shared rate-limit state from GitHub's quota-free `rate_limit` endpoint.
+///
+/// Single-flight and interval-gated: whichever poll iteration arrives first past the interval
+/// performs the probe and every other poller reads the result. A failed or unsupported probe
+/// leaves the previous state alone — a read RalphX could not perform is not evidence about the
+/// budget. Runs inside an existing async poll iteration, so no thread is spawned.
+async fn maybe_refresh_rate_limit(
+    github: &Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    rate_limit: &Arc<std::sync::Mutex<RateLimitState>>,
+    last_probe: &Arc<std::sync::Mutex<Option<Instant>>>,
+) {
+    let interval = Duration::from_secs(git_runtime_config().github_rate_limit_probe_interval_secs);
+    {
+        // Claim the probe slot before awaiting so concurrent iterations cannot pile on.
+        let Ok(mut last) = last_probe.lock() else {
+            return;
+        };
+        if last.is_some_and(|at| at.elapsed() < interval) {
+            return;
+        }
+        *last = Some(Instant::now());
+    }
+
+    let snapshot = match github.fetch_rate_limit(working_dir).await {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::debug!(error = %error, "GitHub rate-limit probe failed; keeping prior state");
+            return;
+        }
+    };
+
+    let Some(reset_at) = instant_from_epoch_secs(snapshot.reset_epoch_secs) else {
+        return;
+    };
+    if let Ok(mut state) = rate_limit.lock() {
+        state.remaining = snapshot.remaining;
+        state.reset_at = reset_at;
+    }
+}
+
+/// Converts GitHub's absolute reset epoch into a monotonic `Instant`.
+///
+/// Returns `None` when the system clock cannot produce a Unix timestamp; a reset already in the
+/// past collapses to "now", which correctly reads as "no longer limited".
+fn instant_from_epoch_secs(epoch_secs: u64) -> Option<Instant> {
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some(Instant::now() + Duration::from_secs(epoch_secs.saturating_sub(now_epoch)))
+}
+
+/// Records an observed rate-limit rejection into the shared state.
+///
+/// Zeroes `remaining` so every poll loop and the durable recovery sweep back off together.
+/// `reset_at` is only pushed out when the currently known reset has already passed: a real reset
+/// instant from the `gh api rate_limit` probe must always win over this conservative fallback.
+fn note_rate_limited(rate_limit: &Arc<std::sync::Mutex<RateLimitState>>) {
+    if let Ok(mut state) = rate_limit.lock() {
+        state.remaining = 0;
+        let now = Instant::now();
+        if state.reset_at <= now {
+            state.reset_at = now + RATE_LIMITED_FALLBACK_RESET;
+        }
+    }
+}
+
+/// Keeps one PR registered with the snapshot hub for exactly as long as its poller runs.
+///
+/// The workspace poll loop returns from many places — terminalization, stop requests, routed
+/// repairs, semaphore shutdown — and an aborted `JoinHandle` drops mid-iteration with no return at
+/// all. A `Drop` guard is the only way to withdraw the PR on all of those paths; a manual
+/// `unregister` before each `return` would silently miss the abort case and leave a dead PR
+/// inflating every future batch for that repository.
+struct PrSnapshotRegistration {
+    hub: Arc<PrSnapshotHub>,
+    repo_key: String,
+    pr_number: i64,
+}
+
+impl PrSnapshotRegistration {
+    fn new(hub: Arc<PrSnapshotHub>, repo_key: String, pr_number: i64) -> Self {
+        hub.register(&repo_key, pr_number);
+        Self {
+            hub,
+            repo_key,
+            pr_number,
+        }
+    }
+}
+
+impl Drop for PrSnapshotRegistration {
+    fn drop(&mut self) {
+        self.hub.unregister(&self.repo_key, self.pr_number);
+    }
+}
+
+/// Applies shared rate-limit pressure to a poll interval.
+///
+/// Mirrors the task loop's ladder: below 500 remaining, back off; below 100, stop calling GitHub
+/// entirely until the window resets. Returns the adjusted interval plus how long the caller must
+/// sleep before its next GitHub read.
+fn apply_rate_limit_pressure(
+    rate_limit: &Arc<std::sync::Mutex<RateLimitState>>,
+    interval: Duration,
+    max_interval: Duration,
+) -> (Duration, Duration) {
+    let Ok(state) = rate_limit.lock() else {
+        return (interval, Duration::ZERO);
+    };
+    if state.remaining < 100 {
+        return (
+            max_interval,
+            state.reset_at.saturating_duration_since(Instant::now()),
+        );
+    }
+    if state.remaining < 500 {
+        return ((interval * 2).min(max_interval), Duration::ZERO);
+    }
+    (interval, Duration::ZERO)
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Registry
 // ────────────────────────────────────────────────────────────────────
@@ -235,6 +370,13 @@ pub struct PrPollerRegistry {
 
     /// Shared rate limit state parsed from gh API headers. (AD9)
     rate_limit: Arc<std::sync::Mutex<RateLimitState>>,
+
+    /// When any poller last probed `gh api rate_limit`. Gates the shared probe to one call per
+    /// configured interval across every poll loop in the registry.
+    rate_limit_last_probe: Arc<std::sync::Mutex<Option<Instant>>>,
+
+    /// Batched per-repository PR reads shared by every workspace poller on that repository.
+    pr_snapshot_hub: Arc<PrSnapshotHub>,
 
     /// GitHub service for PR status checks. None when GitHub integration is disabled.
     github_service: Option<Arc<dyn GithubServiceTrait>>,
@@ -328,6 +470,8 @@ impl PrPollerRegistry {
             pr_creation_guard: Arc::new(DashMap::new()),
             semaphore: Arc::new(tokio::sync::Semaphore::new(Self::MAX_CONCURRENT_POLLS)),
             rate_limit: Arc::new(std::sync::Mutex::new(RateLimitState::default())),
+            rate_limit_last_probe: Arc::new(std::sync::Mutex::new(None)),
+            pr_snapshot_hub: Arc::new(PrSnapshotHub::new()),
             github_service,
             plan_branch_repo,
             notification_service: Arc::new(std::sync::RwLock::new(None)),
@@ -338,6 +482,16 @@ impl PrPollerRegistry {
 
     pub(crate) fn branch_status_cache(&self) -> BranchStatusCache {
         self.branch_status_cache.clone()
+    }
+
+    /// Read-only view of the shared GitHub rate-limit state.
+    ///
+    /// Lets recovery paths outside the pollers defer work while GitHub's window is exhausted
+    /// without holding the poller's lock for longer than a read. Returns `None` when the lock is
+    /// poisoned, so a lock failure can never manufacture a "rate limited" verdict.
+    pub fn rate_limit_snapshot(&self) -> Option<(u32, Instant)> {
+        let state = self.rate_limit.lock().ok()?;
+        Some((state.remaining, state.reset_at))
     }
 
     pub fn set_branch_update_repo(&self, repo: Arc<dyn BranchUpdateRepository>) {
@@ -479,6 +633,9 @@ impl PrPollerRegistry {
             .ok()
             .and_then(|repo| repo.clone());
         let branch_status_cache = self.branch_status_cache.clone();
+        let rate_limit = Arc::clone(&self.rate_limit);
+        let rate_limit_last_probe = Arc::clone(&self.rate_limit_last_probe);
+        let pr_snapshot_hub = Arc::clone(&self.pr_snapshot_hub);
         let conversation_id_for_spawn = conversation_id.clone();
 
         let handle = tokio::spawn(async move {
@@ -491,6 +648,9 @@ impl PrPollerRegistry {
                 active,
                 stopping,
                 semaphore,
+                rate_limit,
+                rate_limit_last_probe,
+                pr_snapshot_hub,
                 workspace_repo,
                 agent_run_repo,
                 repair_repo,
@@ -580,6 +740,7 @@ impl PrPollerRegistry {
         let stopping = Arc::clone(&self.stopping);
         let semaphore = Arc::clone(&self.semaphore);
         let rate_limit = Arc::clone(&self.rate_limit);
+        let rate_limit_last_probe = Arc::clone(&self.rate_limit_last_probe);
         let plan_branch_repo = Arc::clone(&self.plan_branch_repo);
 
         // Staggered start jitter (AD9): rand(1..=30s)
@@ -606,6 +767,7 @@ impl PrPollerRegistry {
                 stopping,
                 semaphore,
                 rate_limit,
+                rate_limit_last_probe,
                 plan_branch_repo,
                 transition_service,
             )
@@ -746,6 +908,7 @@ impl PrPollerRegistry {
                 .ok()
                 .and_then(|repo| repo.clone()),
             chat_service,
+            None,
         )
         .await
     }
@@ -789,6 +952,7 @@ async fn poll_loop(
     stopping: Arc<DashMap<TaskId, ()>>,
     semaphore: Arc<tokio::sync::Semaphore>,
     rate_limit: Arc<std::sync::Mutex<RateLimitState>>,
+    rate_limit_last_probe: Arc<std::sync::Mutex<Option<Instant>>>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     transition_service: Arc<TaskTransitionService>,
 ) {
@@ -842,6 +1006,8 @@ async fn poll_loop(
             stopping.remove(&task_id);
             return;
         }
+
+        maybe_refresh_rate_limit(&github, &working_dir, &rate_limit, &rate_limit_last_probe).await;
 
         // Apply rate limit pressure — extract values before any await (no guard across await)
         let (should_sleep_until_reset, sleep_duration, is_low_remaining) = {
@@ -1154,6 +1320,10 @@ async fn poll_loop(
                 drop(_permit);
                 consecutive_errors += 1;
 
+                if matches!(e, AppError::GithubRateLimited { .. }) {
+                    note_rate_limited(&rate_limit);
+                }
+
                 // Exponential backoff: 60s → 120s → 240s → 480s → cap at 600s
                 // Floor: age-based interval (error backoff only increases above floor, AD9)
                 let backoff =
@@ -1192,6 +1362,7 @@ async fn poll_loop(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn agent_workspace_poll_loop(
     conversation_id: ChatConversationId,
     pr_number: i64,
@@ -1201,6 +1372,9 @@ async fn agent_workspace_poll_loop(
     active: Arc<DashMap<ChatConversationId, JoinHandle<()>>>,
     stopping: Arc<DashMap<ChatConversationId, ()>>,
     semaphore: Arc<tokio::sync::Semaphore>,
+    rate_limit: Arc<std::sync::Mutex<RateLimitState>>,
+    rate_limit_last_probe: Arc<std::sync::Mutex<Option<Instant>>>,
+    pr_snapshot_hub: Arc<PrSnapshotHub>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
@@ -1211,14 +1385,56 @@ async fn agent_workspace_poll_loop(
     recovery_state: Option<Arc<AppState>>,
     branch_status_cache: BranchStatusCache,
 ) {
-    let interval = Duration::from_secs(60);
+    let config = git_runtime_config();
+    let base_interval = Duration::from_secs(config.workspace_pr_poll_base_secs.max(1));
+    let max_interval = Duration::from_secs(
+        config
+            .workspace_pr_poll_max_secs
+            .max(config.workspace_pr_poll_base_secs.max(1)),
+    );
+    // Adaptive cadence: an idle PR doubles its interval up to the cap, and any observable change
+    // snaps it straight back to base. Terminalization is unaffected beyond detection latency,
+    // which is bounded by `max_interval`.
+    let mut interval = base_interval;
+    let mut previous_health: Option<PrHealth> = None;
     let mut first_poll = true;
+
+    // The hub batches every registered PR for this repository into one GitHub read per TTL
+    // window. `_hub_registration` withdraws this PR on every exit path — including the several
+    // early `return`s below and an aborted task — so a stopped poller never keeps inflating
+    // other pollers' batches.
+    let repo_key = project.working_directory.clone();
+    let _hub_registration =
+        PrSnapshotRegistration::new(Arc::clone(&pr_snapshot_hub), repo_key.clone(), pr_number);
 
     loop {
         if first_poll {
             first_poll = false;
         } else {
             tokio::time::sleep(interval).await;
+        }
+
+        if stopping.contains_key(&conversation_id) {
+            active.remove(&conversation_id);
+            stopping.remove(&conversation_id);
+            return;
+        }
+
+        maybe_refresh_rate_limit(&github, &working_dir, &rate_limit, &rate_limit_last_probe).await;
+
+        // Pressure is applied before the iteration's GitHub reads, mirroring the task loop: when
+        // fewer than 100 calls remain there is no point spending one to discover we are limited.
+        let (pressured_interval, sleep_until_reset) =
+            apply_rate_limit_pressure(&rate_limit, interval, max_interval);
+        interval = pressured_interval;
+        if !sleep_until_reset.is_zero() {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                sleep_secs = sleep_until_reset.as_secs(),
+                "Agent workspace PR poller: GitHub rate limit critically low — sleeping until reset"
+            );
+            tokio::time::sleep(sleep_until_reset).await;
         }
 
         if stopping.contains_key(&conversation_id) {
@@ -1266,7 +1482,16 @@ async fn agent_workspace_poll_loop(
             return;
         }
 
-        match github.check_pr_status(&working_dir, pr_number).await {
+        // One hub read serves the terminal-status check and the health branches below; every
+        // other workspace polling this repository in the same window is served from the same
+        // batched response.
+        let polled_snapshot = pr_snapshot_hub
+            .get_snapshot(&repo_key, pr_number, &github, &working_dir)
+            .await;
+        match polled_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.sync_state.status.clone())
+        {
             Ok(PrStatus::Merged { .. }) => {
                 drop(permit);
                 terminalize_polled_agent_workspace_with_notifications(
@@ -1281,7 +1506,9 @@ async fn agent_workspace_poll_loop(
                     TerminalAgentWorkspaceCause::MergedPr,
                     "merged",
                     "Pull request merged",
-                    interval,
+                    // Local retry backoff for cleanup/persistence failures — deliberately the
+                    // fixed base, not the adaptive GitHub cadence.
+                    base_interval,
                     notification_service.as_ref(),
                 )
                 .await;
@@ -1303,7 +1530,7 @@ async fn agent_workspace_poll_loop(
                     TerminalAgentWorkspaceCause::ClosedPr,
                     "closed",
                     "Pull request closed without merging",
-                    interval,
+                    base_interval,
                     notification_service.as_ref(),
                 )
                 .await;
@@ -1336,7 +1563,20 @@ async fn agent_workspace_poll_loop(
                     }
                 }
 
-                match github.fetch_pr_health(&working_dir, pr_number).await {
+                // One health value serves every branch below in this iteration. Its view half
+                // comes from the shared batch; only the comments are read per PR, on the
+                // response-cached REST path.
+                let mut polled_health: Option<PrHealth> = None;
+                let health_result = match polled_snapshot.as_ref() {
+                    Ok(snapshot) => github
+                        .fetch_pr_issue_comments(&working_dir, pr_number)
+                        .await
+                        .map(|comments| {
+                            PrHealth::from_snapshot_and_comments(snapshot.clone(), comments)
+                        }),
+                    Err(error) => Err(AppError::Infrastructure(error.to_string())),
+                };
+                match health_result {
                     Ok(health) => {
                         branch_status_cache.observe_pr_sync(
                             &working_dir,
@@ -1470,8 +1710,13 @@ async fn agent_workspace_poll_loop(
                                 );
                             }
                         }
+
+                        polled_health = Some(health);
                     }
                     Err(error) => {
+                        if matches!(error, AppError::GithubRateLimited { .. }) {
+                            note_rate_limited(&rate_limit);
+                        }
                         tracing::warn!(
                             conversation_id = conversation_id.as_str(),
                             pr_number,
@@ -1480,6 +1725,13 @@ async fn agent_workspace_poll_loop(
                         );
                     }
                 }
+
+                // Any observable change resets the cadence; a fully idle iteration lets it grow.
+                // `PrHealth` is `PartialEq`, so this covers head SHA, checks, comments, review
+                // decision, and auto-merge state without a hand-rolled fingerprint that could
+                // silently miss a field.
+                let mut observed_activity = polled_health != previous_health;
+                previous_health = polled_health.clone();
 
                 match route_agent_workspace_pr_autofix_if_needed_with_notifications(
                     Arc::clone(&github),
@@ -1493,6 +1745,7 @@ async fn agent_workspace_poll_loop(
                     Arc::clone(&chat_service),
                     notification_service.as_ref().map(Arc::clone),
                     Some(&project),
+                    polled_health.as_ref(),
                 )
                 .await
                 {
@@ -1508,6 +1761,9 @@ async fn agent_workspace_poll_loop(
                     }
                     Ok(false) => {}
                     Err(error) => {
+                        // A branch that could not complete is a reason to look again soon, not a
+                        // reason to slow down.
+                        observed_activity = true;
                         tracing::warn!(
                             conversation_id = conversation_id.as_str(),
                             pr_number,
@@ -1526,6 +1782,7 @@ async fn agent_workspace_poll_loop(
                     Arc::clone(&agent_run_repo),
                     Arc::clone(&chat_service),
                     notification_service.clone(),
+                    polled_health.as_ref(),
                 )
                 .await
                 {
@@ -1535,9 +1792,13 @@ async fn agent_workspace_poll_loop(
                             pr_number,
                             "Agent workspace PR poller: Review PR monitor routed new head to review agent"
                         );
+                        observed_activity = true;
                     }
                     Ok(false) => {}
                     Err(error) => {
+                        // A branch that could not complete is a reason to look again soon, not a
+                        // reason to slow down.
+                        observed_activity = true;
                         tracing::warn!(
                             conversation_id = conversation_id.as_str(),
                             pr_number,
@@ -1557,6 +1818,7 @@ async fn agent_workspace_poll_loop(
                     repair_repo.as_ref().map(Arc::clone),
                     branch_update_repo.as_ref().map(Arc::clone),
                     Arc::clone(&chat_service),
+                    polled_health.as_ref(),
                 )
                 .await
                 {
@@ -1572,6 +1834,7 @@ async fn agent_workspace_poll_loop(
                     }
                     Ok(false) => {}
                     Err(error) => {
+                        observed_activity = true;
                         tracing::warn!(
                             conversation_id = conversation_id.as_str(),
                             pr_number,
@@ -1580,9 +1843,22 @@ async fn agent_workspace_poll_loop(
                         );
                     }
                 }
+
+                interval = if observed_activity {
+                    base_interval
+                } else {
+                    (interval * 2).clamp(base_interval, max_interval)
+                };
             }
             Err(error) => {
                 drop(permit);
+                if matches!(error, AppError::GithubRateLimited { .. }) {
+                    note_rate_limited(&rate_limit);
+                }
+                // An unreadable PR status leaves this iteration with no evidence either way, so
+                // the cadence is reset rather than escalated.
+                interval = base_interval;
+                previous_health = None;
                 tracing::warn!(
                     conversation_id = conversation_id.as_str(),
                     pr_number,
@@ -3056,16 +3332,9 @@ async fn prepare_agent_workspace_pr_repair_auto_merge_state(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentWorkspacePrAutofixIssueKind {
-    Review,
-    Checks,
-    Mergeability,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentWorkspacePrAutofixIssue {
-    kind: AgentWorkspacePrAutofixIssueKind,
+    pub(crate) kind: AgentWorkspacePrAutofixIssueKind,
     summary: String,
     details: Vec<String>,
     pub(crate) classification: String,
@@ -3225,6 +3494,25 @@ async fn authorize_agent_workspace_pr_autofix(
     Ok(target.authorizes(&workspace).then_some(workspace))
 }
 
+/// Resolves the PR health a supervision branch should reason about.
+///
+/// The workspace poll loop already reads health once per iteration, so every branch in that
+/// iteration receives the same snapshot instead of paying its own GitHub read. Callers outside a
+/// poll iteration pass `None` and fetch their own. Reusing the snapshot is never staler than the
+/// per-branch fetch it replaces: all consumers run inside the same iteration, and the pre-change
+/// behavior already tolerated that much intra-iteration drift.
+async fn resolve_polled_pr_health(
+    github: &Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    pr_number: i64,
+    polled_health: Option<&PrHealth>,
+) -> crate::AppResult<PrHealth> {
+    match polled_health {
+        Some(health) => Ok(health.clone()),
+        None => github.fetch_pr_health(working_dir, pr_number).await,
+    }
+}
+
 #[cfg(test)]
 async fn route_agent_workspace_pr_autofix_if_needed(
     github: Arc<dyn GithubServiceTrait>,
@@ -3245,6 +3533,7 @@ async fn route_agent_workspace_pr_autofix_if_needed(
         None,
         None,
         chat_service,
+        None,
     )
     .await
 }
@@ -3263,6 +3552,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     chat_service: Arc<dyn ChatService>,
+    polled_health: Option<&PrHealth>,
 ) -> crate::AppResult<bool> {
     route_agent_workspace_pr_autofix_if_needed_with_notifications(
         github,
@@ -3276,6 +3566,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
         chat_service,
         None,
         None,
+        polled_health,
     )
     .await
 }
@@ -3293,6 +3584,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_notifications(
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
     project: Option<&Project>,
+    polled_health: Option<&PrHealth>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo
         .get_by_conversation_id(conversation_id)
@@ -3319,6 +3611,7 @@ async fn route_agent_workspace_pr_autofix_if_needed_with_notifications(
         notification_service,
         project,
         None,
+        polled_health,
     )
     .await
 }
@@ -3424,6 +3717,7 @@ async fn recheck_agent_workspace_pr_health_once(
         Some(state.notification_service()),
         Some(&project),
         Some(authority),
+        None,
     )
     .await
 }
@@ -3788,6 +4082,7 @@ pub(crate) async fn route_ideation_plan_pr_autofix_if_needed(
         None,
         None,
         None,
+        None,
     )
     .await
 }
@@ -3807,6 +4102,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
     notification_service: Option<Arc<NotificationService>>,
     project: Option<&Project>,
     expected_held_attempt: Option<HeldPrHealthRecheckAuthority>,
+    polled_health: Option<&PrHealth>,
 ) -> crate::AppResult<bool> {
     let target_matches_workspace_mode = matches!(
         (workspace.mode, &target.kind),
@@ -3842,9 +4138,8 @@ async fn route_agent_workspace_pr_autofix_for_target(
         return Ok(false);
     }
 
-    let health = github
-        .fetch_pr_health(working_dir, target.pr_number)
-        .await?;
+    let health =
+        resolve_polled_pr_health(&github, working_dir, target.pr_number, polled_health).await?;
     let mut current_issue = classify_agent_workspace_pr_autofix_issue(target.pr_number, &health);
     let mut superseding_base_commit = None;
     // A durable completion may have already reserved a rerun or classified this exact state as
@@ -4262,19 +4557,35 @@ async fn route_agent_workspace_pr_autofix_for_target(
     }
     // Checking the base costs one API call; sending an agent to "fix" a failure the PR did not
     // cause costs a full generation and cannot succeed.
-    if issue.kind == AgentWorkspacePrAutofixIssueKind::Checks
-        && pr_failures_already_fail_on_base(github.as_ref(), working_dir, &health).await
-    {
-        record_pre_existing_on_base_detection(
-            workspace_repo.as_ref(),
-            conversation_id,
-            &workspace,
-            &issue.classification,
-            &health,
-            notification_service.as_ref(),
-        )
-        .await?;
-        return Ok(false);
+    if issue.kind == AgentWorkspacePrAutofixIssueKind::Checks {
+        match pr_failures_already_fail_on_base(github.as_ref(), working_dir, &health).await {
+            BaseParityVerdict::Deterministic => {
+                record_pre_existing_on_base_detection(
+                    workspace_repo.as_ref(),
+                    conversation_id,
+                    &workspace,
+                    &issue.classification,
+                    &health,
+                    notification_service.as_ref(),
+                )
+                .await?;
+                return Ok(false);
+            }
+            BaseParityVerdict::TransientShape => {
+                record_base_parity_transient_detection(
+                    Arc::clone(&workspace_repo),
+                    repair_repo.clone(),
+                    conversation_id,
+                    &workspace,
+                    &issue.classification,
+                    &health,
+                    notification_service.as_ref(),
+                )
+                .await?;
+                return Ok(false);
+            }
+            BaseParityVerdict::None => {}
+        }
     }
     if authorize_agent_workspace_pr_autofix(workspace_repo.as_ref(), conversation_id, &target)
         .await?
@@ -4346,6 +4657,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
         &target,
         target.pr_number,
         &issue.classification,
+        issue.kind,
         auto_merge_before_reservation,
         AgentWorkspacePrAutofixDispatch {
             repair_summary: &issue.summary,
@@ -4374,6 +4686,15 @@ async fn route_agent_workspace_pr_autofix_for_target(
 pub(crate) const CROSS_STREAK_FINGERPRINT_HOLD_STEP: &str = "repair_fingerprint_cross_streak_hold";
 /// The step recorded when RalphX proves a PR's failing check already fails on the base branch.
 pub(crate) const PRE_EXISTING_ON_BASE_DETECTED_STEP: &str = "repair_pre_existing_on_base_detected";
+/// The step recorded when RalphX proves a PR's failing checks share a transient/timeout shape
+/// with the identical checks on the base branch.
+pub(crate) const BASE_PARITY_TRANSIENT_DETECTED_STEP: &str =
+    "repair_base_parity_transient_detected";
+/// The step recorded when a transient/timeout base-parity shape is observed but the current
+/// generation is not idle (`Repairing`/`Blocked`, or targets a different base ref), so no hold is
+/// written yet. Kept distinct from `BASE_PARITY_TRANSIENT_DETECTED_STEP` so the detection dedupe
+/// only suppresses a repeat hold, never the first hold once the generation settles to `Ready`.
+pub(crate) const BASE_PARITY_TRANSIENT_YIELDED_STEP: &str = "repair_base_parity_transient_yielded";
 
 /// Records a base-caused failure as a hand-off rather than a repair.
 ///
@@ -4456,64 +4777,292 @@ async fn record_pre_existing_on_base_detection(
     Ok(true)
 }
 
-/// True only when GitHub proves the PR's failing checks already fail on the base branch tip.
+/// Holds the current PR autofix generation at a transient/timeout base-parity shape without
+/// dispatching a fixer. Unlike `record_pre_existing_on_base_detection`, this never marks
+/// `last_blocked_pr_health_fingerprint` — a rerun might clear the shape, so the workspace must be
+/// free to re-enter normal supervision the moment GitHub reports different health.
+///
+/// The hold is durable (a repair-attempt CAS, not a plain workspace flag) so the poller's existing
+/// health-suppressed reconciliation — the same gate `record_pre_existing_on_base_detection` relies
+/// on — short-circuits repeat polls before they ever call GitHub again. No separate poll-cost gate
+/// belongs here.
+///
+/// The `BASE_PARITY_TRANSIENT_DETECTED_STEP` publication event and its notification are recorded
+/// **at most once per classification**, but the hold itself is not: unlike
+/// `record_pre_existing_on_base_detection`'s proven-deterministic hold, this hold is meant to be
+/// consumed (a user rerun clears the pending reason once its runs settle) and re-established later
+/// at the identical classification if the parity shape persists. Early-returning on the
+/// already-recorded event would leave the workspace with neither a hold nor a dispatch forever
+/// after the first consumption — gate only the once-per-classification side effects, never the
+/// reservation itself.
+async fn record_base_parity_transient_detection(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    classification: &str,
+    health: &PrHealth,
+    notification_service: Option<&Arc<NotificationService>>,
+) -> crate::error::AppResult<bool> {
+    let Some(repair_repo) = repair_repo else {
+        // Durable holds require repair-attempt authority. This only happens on the legacy
+        // test-only compatibility dispatch path, which does not exercise this feature.
+        return Ok(false);
+    };
+    let base_ref = health.sync_state.base_ref_name.trim();
+    let summary = format!(
+        "The failing checks on this PR share a transient/timeout shape with the identical checks \
+         on {base_ref}. RalphX is withholding a fixer generation because a rerun might clear this \
+         without any PR-side work."
+    );
+
+    let publication_events = workspace_repo.list_publication_events(conversation_id).await?;
+    // Once-per-classification gate for the event/notification only — never for the reservation.
+    // The hold this records is meant to be consumed (a user rerun clears the pending reason) and
+    // re-established later at the same classification if the parity shape persists; the workspace
+    // must not lose its only path back to a hold just because it already told the user once.
+    let already_recorded = publication_events.iter().any(|event| {
+        event.step == BASE_PARITY_TRANSIENT_DETECTED_STEP
+            && event.classification.as_deref() == Some(classification)
+    });
+
+    let start = start_or_join_agent_workspace_repair_without_projection(
+        Arc::clone(&repair_repo),
+        Arc::clone(&workspace_repo),
+        AgentWorkspaceRepairStartRequest {
+            conversation_id: conversation_id.clone(),
+            source: AgentWorkspaceRepairSource::PrAutofix,
+            continuation: AgentWorkspaceRepairContinuation::ResumePrSupervision,
+            target_base_ref: health.sync_state.base_ref_name.clone(),
+            target_base_commit: workspace.base_commit.clone(),
+            verified_newer_base: false,
+            // Contribute no pending reason here. `reason` is appended to `pending_reasons` on
+            // BOTH the started and joined paths, before this call knows whether the generation
+            // is even convertible into a hold. The prose would be read back as human-authored
+            // repair intent (it matches no machine marker) and the hold marker would paint a
+            // live `Repairing`/`Blocked` generation as health-held. The marker is written only
+            // once the hold actually applies, by `reserve_agent_workspace_base_parity_transient`
+            // below; the prose stays in `summary`, which is where the card reads it.
+            reason: String::new(),
+            summary: summary.clone(),
+            auto_merge_current: workspace.pr_auto_merge_current,
+            explicit_publish_requested: false,
+            retry_blocked: false,
+            carryover_pr_autofix_evidence: Some(PrAutofixCarryover {
+                health_fingerprint: Some(classification.to_string()),
+                dispatch_head_commit: None,
+                // Only reachable under a `Checks` classification (see the base-parity branch in
+                // `evaluate_and_dispatch_agent_workspace_pr_autofix`).
+                issue_kind: Some(AgentWorkspacePrAutofixIssueKind::Checks),
+            }),
+        },
+    )
+    .await?;
+
+    // Only a generation that is genuinely idle may be converted into this passive hold. A fresh
+    // `Started` attempt is idle by construction (this call created it). A `Joined` attempt is idle
+    // only when it is already sitting in `Ready`; joining it mid-repair, blocked, or anywhere else
+    // would silently steal an in-flight generation and lose track of what it was actually doing.
+    let attempt = match start {
+        AgentWorkspaceRepairStartOutcome::Started(attempt) => attempt,
+        AgentWorkspaceRepairStartOutcome::Joined(attempt)
+            if attempt.phase == AgentWorkspaceRepairPhase::Ready =>
+        {
+            attempt
+        }
+        AgentWorkspaceRepairStartOutcome::Joined(_)
+        | AgentWorkspaceRepairStartOutcome::BlockedByCurrent(_) => {
+            // Record a yield, never the detection step: the owning generation may still settle to
+            // `Ready` and re-enter this function on a later poll at the same classification, and
+            // the detection-step dedupe above must not have already suppressed that first hold.
+            let already_yielded = publication_events.iter().any(|event| {
+                event.step == BASE_PARITY_TRANSIENT_YIELDED_STEP
+                    && event.classification.as_deref() == Some(classification)
+            });
+            if !already_yielded {
+                workspace_repo
+                    .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                        conversation_id.clone(),
+                        BASE_PARITY_TRANSIENT_YIELDED_STEP,
+                        "blocked",
+                        &summary,
+                        Some(classification.to_string()),
+                    ))
+                    .await?;
+            }
+            return Ok(false);
+        }
+        AgentWorkspaceRepairStartOutcome::SuccessorStarted(_) => {
+            unreachable!(
+                "retry_blocked is false; start_or_join_agent_workspace_repair_without_projection \
+                 cannot settle and start a successor generation here"
+            )
+        }
+    };
+
+    let reserved = reserve_agent_workspace_base_parity_transient(
+        Arc::clone(&repair_repo),
+        attempt,
+        &summary,
+        workspace.pr_auto_merge_current,
+    )
+    .await?;
+    let AgentWorkspaceRepairTransitionOutcome::Applied(_) = reserved else {
+        return Ok(false);
+    };
+
+    if !already_recorded {
+        workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                BASE_PARITY_TRANSIENT_DETECTED_STEP,
+                "blocked",
+                &summary,
+                Some(classification.to_string()),
+            ))
+            .await?;
+
+        if let Some(notification_service) = notification_service {
+            notification_service
+                .record(NewNotification {
+                    project_id: Some(workspace.project_id.to_string()),
+                    category: NotificationCategory::TaskBlocked,
+                    severity: NotificationSeverity::ActionRequired,
+                    title: match workspace.publication_pr_number {
+                        Some(pr_number) => format!("PR #{pr_number} may clear on its own"),
+                        None => format!("Workspace is waiting on {base_ref}"),
+                    },
+                    body: Some(summary.clone()),
+                    target: NotificationTarget {
+                        kind: NotificationTargetKind::AgentConversation,
+                        project_id: Some(workspace.project_id.to_string()),
+                        task_id: None,
+                        conversation_id: Some(conversation_id.to_string()),
+                        setup_conversation_id: None,
+                        automation_id: None,
+                        run_id: None,
+                    },
+                    dedupe_key: Some(format!(
+                        "repair_base_parity_transient:{}:{classification}",
+                        conversation_id.as_str()
+                    )),
+                })
+                .await;
+        }
+    }
+
+    tracing::info!(
+        conversation_id = conversation_id.as_str(),
+        base_ref,
+        classification,
+        "PR failure matches a transient/timeout shape on base; holding a fixer generation without \
+         dispatching one"
+    );
+    Ok(true)
+}
+
+/// Base-parity classification for a PR's currently failing checks.
+///
+/// Reuses the CI-rerun deterministic/transient taxonomy (`classify_check_conclusion`) instead of
+/// a third ad-hoc conclusion string set, so "does this check conclusion count as failing" has
+/// exactly one answer across the codebase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BaseParityVerdict {
+    /// At least one failing PR check has no proven-matching base failure; the PR owns real work.
+    None,
+    /// Every matched PR/base pair is Deterministic/Deterministic — a real product failure that a
+    /// rerun cannot clear, so it authorizes handing the PR off rather than dispatching a fixer.
+    Deterministic,
+    /// Parity holds for every failing PR check, but at least one side of a matched pair is
+    /// `Transient` (e.g. a timeout). A rerun might clear this shape, so it must not be treated the
+    /// same as a proven deterministic base failure.
+    TransientShape,
+}
+
+/// Classifies whether GitHub proves the PR's failing checks already fail on the base branch tip.
 ///
 /// This authorizes skipping an agent entirely, so it is deliberately conservative in one
-/// direction: every ambiguity answers "no". An unreadable base, an unimplemented backend, a check
-/// absent from the base (the scope-gated-CI case), and an in-progress base run all fall through to
-/// the normal dispatch. Being wrong here means a wasted agent generation; being wrong the other
-/// way means silently ignoring a real PR failure.
+/// direction: every ambiguity answers `None`. An unreadable base, an unimplemented backend, a
+/// check absent from the base (the scope-gated-CI case), and an in-progress base run all fall
+/// through to the normal dispatch. Being wrong here means a wasted agent generation; being wrong
+/// the other way means silently ignoring a real PR failure. `Deterministic` and `TransientShape`
+/// both mean "the PR did not cause this failure"; they differ only in whether the failure shape
+/// could plausibly clear on its own via a rerun.
 async fn pr_failures_already_fail_on_base(
     github: &dyn GithubServiceTrait,
     working_dir: &Path,
     health: &PrHealth,
-) -> bool {
+) -> BaseParityVerdict {
     let failing_pr_checks = health
         .checks
         .iter()
         .filter(|check| {
-            check.conclusion.as_deref().is_some_and(|value| {
-                matches!(value.to_ascii_uppercase().as_str(), "FAILURE" | "TIMED_OUT")
-            })
+            check
+                .conclusion
+                .as_deref()
+                .is_some_and(|value| classify_check_conclusion(value).is_some())
         })
         .collect::<Vec<_>>();
     if failing_pr_checks.is_empty() {
-        return false;
+        return BaseParityVerdict::None;
     }
 
     let base_ref = health.sync_state.base_ref_name.trim();
     if base_ref.is_empty() {
-        return false;
+        return BaseParityVerdict::None;
     }
     let base_checks = match github
         .list_branch_check_conclusions(working_dir, base_ref)
         .await
     {
         Ok(Some(checks)) => checks,
-        Ok(None) => return false,
+        Ok(None) => return BaseParityVerdict::None,
         Err(error) => {
             tracing::warn!(
                 base_ref,
                 %error,
                 "Could not read base branch check conclusions; dispatching PR autofix as usual"
             );
-            return false;
+            return BaseParityVerdict::None;
         }
     };
     if base_checks.is_empty() {
-        return false;
+        return BaseParityVerdict::None;
     }
 
     // Every failing check must be proven failing on base. One PR-caused failure means the PR does
     // own work, even if another check is broken upstream.
-    failing_pr_checks.iter().all(|pr_check| {
-        base_checks.iter().any(|base_check| {
-            base_check.name.eq_ignore_ascii_case(pr_check.name.trim())
-                && base_check.conclusion.as_deref().is_some_and(|value| {
-                    matches!(value.to_ascii_uppercase().as_str(), "FAILURE" | "TIMED_OUT")
-                })
-        })
-    })
+    let mut any_transient = false;
+    for pr_check in &failing_pr_checks {
+        let Some(base_check) = base_checks
+            .iter()
+            .find(|base_check| base_check.name.eq_ignore_ascii_case(pr_check.name.trim()))
+        else {
+            return BaseParityVerdict::None;
+        };
+        let base_kind = base_check
+            .conclusion
+            .as_deref()
+            .and_then(classify_check_conclusion);
+        let Some(base_kind) = base_kind else {
+            return BaseParityVerdict::None;
+        };
+        // `failing_pr_checks` was already filtered by `classify_check_conclusion(...).is_some()`.
+        let pr_kind = pr_check
+            .conclusion
+            .as_deref()
+            .and_then(classify_check_conclusion)
+            .expect("failing_pr_checks entries always classify");
+        if pr_kind == CiFailureKind::Transient || base_kind == CiFailureKind::Transient {
+            any_transient = true;
+        }
+    }
+
+    if any_transient {
+        BaseParityVerdict::TransientShape
+    } else {
+        BaseParityVerdict::Deterministic
+    }
 }
 
 /// A repair attempt's fingerprint hold dies with its streak. Once a streak exhausts its retries,
@@ -4683,6 +5232,9 @@ async fn dispatch_agent_workspace_pr_autofix(
     _target: &AgentWorkspacePrAutofixTarget,
     pr_number: i64,
     classification: &str,
+    // The persisted health fingerprint hashes the kind away, so it must travel as its own typed
+    // value for the completion guard to be able to read it back.
+    issue_kind: AgentWorkspacePrAutofixIssueKind,
     auto_merge_before_reservation: Option<bool>,
     dispatch: AgentWorkspacePrAutofixDispatch<'_>,
 ) -> crate::AppResult<bool> {
@@ -4824,6 +5376,7 @@ async fn dispatch_agent_workspace_pr_autofix(
     // Backend-derived dispatch evidence fences later success completion and suppression.
     attempt.pr_autofix_dispatch_head_commit = health.sync_state.head_ref_oid.clone();
     attempt.pr_autofix_health_fingerprint = Some(classification.to_string());
+    attempt.pr_autofix_issue_kind = Some(issue_kind);
     let target_identity =
         GitService::canonical_target_identity(working_dir, &workspace.branch_name).await?;
     let dispatch_attempt = match reserve_agent_workspace_repair_dispatch(
@@ -5238,10 +5791,12 @@ async fn route_agent_workspace_pr_review_monitor_if_needed(
         agent_run_repo,
         chat_service,
         None,
+        None,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn route_agent_workspace_pr_review_monitor_if_needed_with_notifications(
     github: Arc<dyn GithubServiceTrait>,
     working_dir: &Path,
@@ -5251,6 +5806,7 @@ async fn route_agent_workspace_pr_review_monitor_if_needed_with_notifications(
     agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
     notification_service: Option<Arc<NotificationService>>,
+    polled_health: Option<&PrHealth>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo
         .get_by_conversation_id(conversation_id)
@@ -5290,7 +5846,7 @@ async fn route_agent_workspace_pr_review_monitor_if_needed_with_notifications(
         return Ok(false);
     }
 
-    let health = github.fetch_pr_health(working_dir, pr_number).await?;
+    let health = resolve_polled_pr_health(&github, working_dir, pr_number, polled_health).await?;
     import_agent_workspace_pr_comment_evidence(
         Arc::clone(&workspace_repo),
         conversation_id,
@@ -6000,10 +6556,12 @@ async fn route_agent_workspace_review_feedback_if_present(
         None,
         None,
         chat_service,
+        None,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
     github: Arc<dyn GithubServiceTrait>,
     working_dir: &Path,
@@ -6014,6 +6572,7 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     chat_service: Arc<dyn ChatService>,
+    polled_health: Option<&PrHealth>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo
         .get_by_conversation_id(conversation_id)
@@ -6057,7 +6616,7 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
         return Ok(false);
     }
 
-    let health = github.fetch_pr_health(working_dir, pr_number).await?;
+    let health = resolve_polled_pr_health(&github, working_dir, pr_number, polled_health).await?;
     let issue = agent_workspace_pr_review_issue(pr_number, &health);
     if !agent_workspace_pr_health_has_head(&health) {
         update_agent_workspace_pr_supervision_state(
@@ -6162,6 +6721,7 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
         &target,
         pr_number,
         &issue.classification,
+        issue.kind,
         auto_merge_before_reservation,
         AgentWorkspacePrAutofixDispatch {
             repair_summary,

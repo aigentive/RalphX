@@ -16,9 +16,13 @@ const SKIP_REASON_COPY: Record<string, string> = {
   insufficient_disk_headroom: "Not enough free disk space",
   disk_headroom_unavailable: "Free disk space could not be checked",
   database_missing: "No database file was found",
-  database_above_auto_limit: "Database is above the automatic size limit — schedule it manually",
+  // No longer produced: the size gate was removed because it locked large databases out of the
+  // self-healing they most needed. Kept so pre-existing sidecar records still read cleanly.
+  database_above_auto_limit: "Database was above the old automatic size limit (no longer applied)",
   freelist_below_auto_limit: "Too little reclaimable space to be worth it",
   wal_checkpoint_incomplete: "The database was still being written to",
+  swap_interrupted:
+    "RalphX stopped while swapping in the compacted database — the original is in the backup folder",
 };
 
 function describeLastCompaction(stats: DatabaseMaintenanceStats): string | null {
@@ -82,7 +86,7 @@ export function DatabaseMaintenanceSection() {
         </SettingRow>
       ) : null}
       <SettingRow id="database-compact" label="Compact database" description={stats?.pendingCompaction ? "Compaction is scheduled for the next launch." : "On the next launch, RalphX compacts into a new database file, verifies it, then swaps it in and keeps the original as the backup."}>
-        {stats?.pendingCompaction ? <Button variant="outline" disabled={saving} onClick={() => void setPending(false)}>Cancel scheduled compaction</Button> : <Button disabled={saving || !stats} onClick={() => setConfirming(true)}>{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Compact on next launch"}</Button>}
+        {stats?.pendingCompaction ? <Button variant="outline" disabled={saving} onClick={() => void setPending(false)}>Cancel scheduled compaction</Button> : <Button disabled={saving || !stats} onClick={() => setConfirming(true)} {...(saving && { "aria-label": "Scheduling compaction", "aria-busy": true })}>{saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : "Compact on next launch"}</Button>}
       </SettingRow>
     </SettingsSection>
     <AlertDialog open={confirming} onOpenChange={setConfirming}>

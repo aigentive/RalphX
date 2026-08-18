@@ -964,6 +964,23 @@ impl AtlassianIntegrationService {
         }
     }
 
+    /// Whether the Atlassian integration can currently serve API calls.
+    ///
+    /// Uses the exact predicate [`Self::enabled_auth_context_for_settings`]
+    /// enforces — `enabled` alone is not sufficient. Settings-read failures
+    /// resolve to `false` so callers fail closed.
+    pub async fn is_usable(&self) -> bool {
+        self.get_settings().await.is_ok_and(|settings| {
+            settings.enabled && settings.validation_status == IntegrationValidationStatus::Valid
+        })
+    }
+
+    /// Shared client seam for sibling modules that add operations on this
+    /// service without reaching around its enablement/credential gate.
+    pub(crate) fn client(&self) -> &Arc<dyn AtlassianApiClient> {
+        &self.client
+    }
+
     pub(crate) async fn enabled_auth_context(&self) -> Result<AtlassianAuthContext, String> {
         let settings = self.get_settings().await?;
         self.enabled_auth_context_for_settings(settings).await

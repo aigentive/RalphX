@@ -190,6 +190,8 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     next_auto_merge_restore_completion_error: Mutex<Option<String>>,
     #[cfg(test)]
     next_create_repair_effect_outcome: Mutex<Option<ForcedCreateAgentWorkspaceRepairEffectOutcome>>,
+    #[cfg(test)]
+    next_repair_effect_read_error: Mutex<Option<String>>,
 }
 
 impl MemoryAgentConversationWorkspaceRepository {
@@ -223,6 +225,8 @@ impl MemoryAgentConversationWorkspaceRepository {
             next_auto_merge_restore_completion_error: Mutex::new(None),
             #[cfg(test)]
             next_create_repair_effect_outcome: Mutex::new(None),
+            #[cfg(test)]
+            next_repair_effect_read_error: Mutex::new(None),
         }
     }
 
@@ -271,6 +275,12 @@ impl MemoryAgentConversationWorkspaceRepository {
         outcome: ForcedCreateAgentWorkspaceRepairEffectOutcome,
     ) {
         *self.next_create_repair_effect_outcome.lock().unwrap() = Some(outcome);
+    }
+
+    /// Forces the next repair-effect lookup to fail so callers can prove they fail closed.
+    #[cfg(test)]
+    pub fn fail_next_repair_effect_read(&self, message: impl Into<String>) {
+        *self.next_repair_effect_read_error.lock().unwrap() = Some(message.into());
     }
 
     pub async fn local_cleanup_status_for_test(

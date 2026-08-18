@@ -13,6 +13,7 @@ fn value(model: &str) -> ManualRoleDefault {
         persona_id: None,
         approval_policy: Some("never".to_string()),
         sandbox_mode: Some("danger-full-access".to_string()),
+        atlassian_access: None,
     }
 }
 

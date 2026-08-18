@@ -1,4 +1,8 @@
-use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
+use crate::application::agent_conversation_workspace::{
+    classify_effective_agent_conversation_workspace_path,
+    resolve_effective_agent_conversation_workspace_path, WorkspacePathResolution,
+};
+use crate::application::agent_workspace_publish_recovery::settle_missing_workspace_resolution;
 use crate::application::agent_workspace_publish_repair_state::{
     block_agent_workspace_repair_completion, validate_agent_workspace_repair_target_lease,
     AgentWorkspaceRepairTransitionOutcome,
@@ -391,12 +395,52 @@ async fn recover_repair_owned_git_mutation_claim(
                 workspace.project_id
             ))
         })?;
-    let target = resolve_effective_agent_conversation_workspace_path(
+    // Resolved rather than classified because the happy path needs the effective branch name too.
+    // On failure, classify to tell a deleted worktree apart from a real error: propagating here
+    // aborted the whole recovery pass and fenced every remaining claim.
+    let target = match resolve_effective_agent_conversation_workspace_path(
         &project,
         &workspace,
         state.plan_branch_repo.as_ref(),
     )
-    .await?;
+    .await
+    {
+        Ok(target) => target,
+        Err(error) => {
+            let classified = classify_effective_agent_conversation_workspace_path(
+                &project,
+                &workspace,
+                state.plan_branch_repo.as_ref(),
+            )
+            .await;
+            let Ok(WorkspacePathResolution::Missing {
+                expected,
+                parent_root_present,
+            }) = classified
+            else {
+                return Err(error);
+            };
+            let claim_id = claim.claim_id.clone();
+            // `release_target_lease` returns `MutationInFlight` while a claim is active.
+            // The worktree is gone so the push can never complete; completing the claim first
+            // is safe and required for `settle_missing_workspace_resolution` to release the lease.
+            let _ =
+                complete_repair_claim(state.branch_update_repo.as_ref(), claim, effect.id.as_str())
+                    .await?;
+            settle_missing_workspace_resolution(
+                state,
+                &workspace,
+                &expected,
+                parent_root_present,
+                "git_mutation_recovery",
+            )
+            .await?;
+            return Ok(GitMutationRecoveryOutcome::NeedsRepair {
+                claim_id,
+                reason: "repair mutation workspace worktree is missing".into(),
+            });
+        }
+    };
     let observed_identity =
         GitService::canonical_target_identity(&target.path, &target.branch_name).await?;
     if observed_identity != identity {
@@ -433,13 +477,15 @@ async fn recover_repair_owned_git_mutation_claim(
     }
 
     let reason = "repair push remote OID does not match either the recorded pre-push or intended post-push OID";
-    let failed = crate::application::publish_resilience::fail_agent_workspace_repair_push_effect(
-        state.agent_workspace_repair_repo.as_ref(),
-        &current,
-        effect,
-        reason,
-    )
-    .await?;
+    let failed =
+        crate::application::publish_resilience::fail_agent_workspace_repair_effect_for_phase(
+            state.agent_workspace_repair_repo.as_ref(),
+            &current,
+            effect,
+            AgentWorkspaceRepairPhase::Continuing,
+            reason,
+        )
+        .await?;
     let cleared =
         complete_repair_claim(state.branch_update_repo.as_ref(), claim, failed.id.as_str()).await?;
     let GitMutationRecoveryOutcome::Cleared { claim_id } = cleared else {
@@ -493,7 +539,14 @@ fn is_uninitialized_repair_push_preflight(effect: &AgentWorkspaceRepairEffect) -
         && !effect.expected_remote_absent
 }
 
-async fn read_repair_origin_branch_oid(
+/// Reads the exact commit `origin` currently publishes for a workspace branch, fetching first so
+/// the answer is not a stale tracking ref. `Ok(None)` means the branch has never been pushed.
+///
+/// # Errors
+///
+/// Returns an error when the fetch or either ref read fails; callers that only need best-effort
+/// evidence must degrade on that error rather than propagate it.
+pub(crate) async fn read_repair_origin_branch_oid(
     workspace_path: &std::path::Path,
     branch_name: &str,
 ) -> AppResult<Option<String>> {
@@ -598,6 +651,8 @@ async fn block_repair_attempt_after_claim_recovery(
         .get_by_conversation_id(&attempt.conversation_id)
         .await?
         .and_then(|workspace| workspace.pr_auto_merge_current);
+    let what_happened = attempt.what_happened.clone();
+    let what_i_did = attempt.what_i_did.clone();
     match block_agent_workspace_repair_completion(
         Arc::clone(&state.agent_workspace_repair_repo),
         Arc::clone(&state.branch_update_repo),
@@ -605,6 +660,8 @@ async fn block_repair_attempt_after_claim_recovery(
         "Workspace repair recovery is blocked.",
         reason,
         auto_merge_current,
+        what_happened.as_deref(),
+        what_i_did.as_deref(),
     )
     .await?
     {
