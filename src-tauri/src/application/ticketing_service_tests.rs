@@ -256,6 +256,11 @@ impl AtlassianApiClient for RecordingAtlassianClient {
             acceptance_criteria_text: None,
             comments: Vec::new(),
             attachments: Vec::new(),
+            issue_type: None,
+            labels: Vec::new(),
+            priority: None,
+            parent_key: None,
+            children: Vec::new(),
         })
     }
 

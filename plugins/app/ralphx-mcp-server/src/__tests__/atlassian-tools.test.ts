@@ -13,7 +13,13 @@ const READ_TOOLS = [
   "jira_get_issue",
   "jira_list_projects",
   "jira_list_transitions",
+  "jira_list_boards",
+  "jira_list_sprints",
+  "jira_get_sprint_issues",
+  "jira_list_comments",
+  "jira_search_users",
   "confluence_search_pages",
+  "confluence_list_spaces",
   "confluence_get_page",
   "atlassian_api_request",
 ];
@@ -121,13 +127,146 @@ describe("Atlassian MCP tool schemas", () => {
       "summary",
     ]);
     expect(required("jira_transition_issue")).toEqual(["issueKey", "transitionId"]);
-    expect(required("confluence_create_page")).toEqual([
-      "spaceId",
-      "title",
-      "bodyStorage",
-    ]);
+    expect(required("jira_list_boards")).toBeUndefined();
+    expect(required("jira_list_sprints")).toEqual(["boardId"]);
+    expect(required("jira_get_sprint_issues")).toEqual(["sprintId"]);
+    expect(required("jira_list_comments")).toEqual(["issueKey"]);
+    expect(required("jira_search_users")).toEqual(["query"]);
+    expect(required("confluence_list_spaces")).toBeUndefined();
+    // bodyStorage is no longer required: exactly one of bodyStorage/bodyMarkdown
+    // is required, enforced by the backend, not the schema's `required` array.
+    expect(required("confluence_create_page")).toEqual(["spaceId", "title"]);
     expect(required("confluence_update_page")).toEqual(["pageId"]);
     expect(required("atlassian_api_request")).toEqual(["method", "product", "path"]);
+  });
+
+  it("offers bodyMarkdown alongside bodyStorage on the Confluence write tools", () => {
+    const createPage = ATLASSIAN_TOOLS.find(
+      (tool) => tool.name === "confluence_create_page",
+    )!;
+    const updatePage = ATLASSIAN_TOOLS.find(
+      (tool) => tool.name === "confluence_update_page",
+    )!;
+    const createProperties = createPage.inputSchema.properties as Record<
+      string,
+      { type?: string }
+    >;
+    const updateProperties = updatePage.inputSchema.properties as Record<
+      string,
+      { type?: string }
+    >;
+
+    expect(createProperties.bodyStorage?.type).toBe("string");
+    expect(createProperties.bodyMarkdown?.type).toBe("string");
+    expect(updateProperties.bodyStorage?.type).toBe("string");
+    expect(updateProperties.bodyMarkdown?.type).toBe("string");
+  });
+
+  it("states that markdown formatting is rendered on the write-path text fields", () => {
+    const byName = (name: string) => ATLASSIAN_TOOLS.find((tool) => tool.name === name)!;
+    const properties = (name: string) =>
+      byName(name).inputSchema.properties as Record<string, { description?: string }>;
+
+    expect(properties("jira_create_issue").description?.description?.toLowerCase()).toContain(
+      "markdown",
+    );
+    expect(properties("jira_update_issue").description?.description?.toLowerCase()).toContain(
+      "markdown",
+    );
+    expect(properties("jira_add_comment").body?.description?.toLowerCase()).toContain(
+      "markdown",
+    );
+    expect(
+      properties("confluence_create_page").bodyMarkdown?.description?.toLowerCase(),
+    ).toContain("markdown");
+    expect(
+      properties("confluence_update_page").bodyMarkdown?.description?.toLowerCase(),
+    ).toContain("markdown");
+  });
+
+  it("exposes an opt-in raw jql/cql pass-through flag on the search tools", () => {
+    const jiraSearch = ATLASSIAN_TOOLS.find(
+      (tool) => tool.name === "jira_search_issues",
+    )!;
+    const confluenceSearch = ATLASSIAN_TOOLS.find(
+      (tool) => tool.name === "confluence_search_pages",
+    )!;
+    const jiraProperties = jiraSearch.inputSchema.properties as Record<
+      string,
+      { type?: string }
+    >;
+    const confluenceProperties = confluenceSearch.inputSchema.properties as Record<
+      string,
+      { type?: string }
+    >;
+
+    expect(jiraProperties.jql?.type).toBe("boolean");
+    expect(confluenceProperties.cql?.type).toBe("boolean");
+    // jql/cql are opt-in, not required: default mode stays free-text search.
+    expect(jiraSearch.inputSchema.required).toEqual(["query"]);
+    expect(confluenceSearch.inputSchema.required).toEqual(["query"]);
+  });
+
+  it("does not claim the default (non-raw) search mode uses JQL/CQL", () => {
+    const jiraSearch = ATLASSIAN_TOOLS.find(
+      (tool) => tool.name === "jira_search_issues",
+    )!;
+    const confluenceSearch = ATLASSIAN_TOOLS.find(
+      (tool) => tool.name === "confluence_search_pages",
+    )!;
+    const jiraProperties = jiraSearch.inputSchema.properties as Record<
+      string,
+      { description?: string }
+    >;
+    const confluenceProperties = confluenceSearch.inputSchema.properties as Record<
+      string,
+      { description?: string }
+    >;
+
+    // The old descriptions claimed every search used JQL/CQL. That claim must
+    // be gone; JQL/CQL is now opt-in via the jql/cql flag only.
+    expect(jiraSearch.description).not.toContain("Search Jira issues with JQL");
+    expect(confluenceSearch.description).not.toContain(
+      "Search Confluence pages with CQL",
+    );
+    expect(jiraSearch.description?.toLowerCase()).toContain("free text");
+    expect(confluenceSearch.description?.toLowerCase()).toContain("free text");
+    expect(jiraProperties.jql?.description?.toLowerCase()).toContain("jql");
+    expect(confluenceProperties.cql?.description?.toLowerCase()).toContain("cql");
+  });
+
+  it("exposes accountId on jira_assign_issue, taking precedence over assignToMe", () => {
+    const tool = ATLASSIAN_TOOLS.find(
+      (candidate) => candidate.name === "jira_assign_issue",
+    )!;
+    const properties = tool.inputSchema.properties as Record<
+      string,
+      { type?: string; description?: string }
+    >;
+    expect(properties.accountId?.type).toBe("string");
+    expect(properties.accountId?.description?.toLowerCase()).toContain("precedence");
+    expect(properties.assignToMe?.type).toBe("boolean");
+  });
+
+  it("exposes parentKey, assigneeAccountId, and components on jira_create_issue", () => {
+    const tool = ATLASSIAN_TOOLS.find(
+      (candidate) => candidate.name === "jira_create_issue",
+    )!;
+    const properties = tool.inputSchema.properties as Record<
+      string,
+      { type?: string; items?: { type?: string } }
+    >;
+    expect(properties.parentKey?.type).toBe("string");
+    expect(properties.assigneeAccountId?.type).toBe("string");
+    expect(properties.components?.type).toBe("array");
+    expect(properties.components?.items?.type).toBe("string");
+  });
+
+  it("points agents from confluence_list_spaces at confluence_create_page's spaceId", () => {
+    const listSpaces = ATLASSIAN_TOOLS.find(
+      (candidate) => candidate.name === "confluence_list_spaces",
+    )!;
+    expect(listSpaces.description?.toLowerCase()).toContain("spaceid");
   });
 
   it("constrains the escape hatch to known methods and products", () => {
@@ -172,12 +311,18 @@ describe("Atlassian MCP tool dispatch", () => {
     ["jira_get_issue", "atlassian-mcp/jira/issue"],
     ["jira_list_projects", "atlassian-mcp/jira/projects"],
     ["jira_list_transitions", "atlassian-mcp/jira/transitions"],
+    ["jira_list_boards", "atlassian-mcp/jira/agile/boards"],
+    ["jira_list_sprints", "atlassian-mcp/jira/agile/sprints"],
+    ["jira_get_sprint_issues", "atlassian-mcp/jira/agile/sprint/issues"],
+    ["jira_list_comments", "atlassian-mcp/jira/issue/comments"],
+    ["jira_search_users", "atlassian-mcp/jira/users/search"],
     ["jira_create_issue", "atlassian-mcp/jira/issue/create"],
     ["jira_update_issue", "atlassian-mcp/jira/issue/update"],
     ["jira_add_comment", "atlassian-mcp/jira/issue/comment"],
     ["jira_transition_issue", "atlassian-mcp/jira/issue/transition"],
     ["jira_assign_issue", "atlassian-mcp/jira/issue/assign"],
     ["confluence_search_pages", "atlassian-mcp/confluence/search"],
+    ["confluence_list_spaces", "atlassian-mcp/confluence/spaces"],
     ["confluence_get_page", "atlassian-mcp/confluence/page"],
     ["confluence_create_page", "atlassian-mcp/confluence/page/create"],
     ["confluence_update_page", "atlassian-mcp/confluence/page/update"],
