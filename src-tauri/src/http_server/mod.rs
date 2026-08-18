@@ -503,8 +503,32 @@ pub async fn start_http_server_with_listener_ready(
             post(atlassian_mcp::jira::jira_assign_issue),
         )
         .route(
+            "/api/atlassian-mcp/jira/issue/comments",
+            post(atlassian_mcp::jira::jira_list_comments),
+        )
+        .route(
+            "/api/atlassian-mcp/jira/users/search",
+            post(atlassian_mcp::jira::jira_search_users),
+        )
+        .route(
+            "/api/atlassian-mcp/jira/agile/boards",
+            post(atlassian_mcp::agile::jira_list_boards),
+        )
+        .route(
+            "/api/atlassian-mcp/jira/agile/sprints",
+            post(atlassian_mcp::agile::jira_list_sprints),
+        )
+        .route(
+            "/api/atlassian-mcp/jira/agile/sprint/issues",
+            post(atlassian_mcp::agile::jira_get_sprint_issues),
+        )
+        .route(
             "/api/atlassian-mcp/confluence/search",
             post(atlassian_mcp::confluence::confluence_search_pages),
+        )
+        .route(
+            "/api/atlassian-mcp/confluence/spaces",
+            post(atlassian_mcp::confluence::confluence_list_spaces),
         )
         .route(
             "/api/atlassian-mcp/confluence/page",

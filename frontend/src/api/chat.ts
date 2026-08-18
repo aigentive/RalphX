@@ -1971,7 +1971,14 @@ export interface ComposerProjectReference {
 
 export interface ComposerIntegrationReference {
   provider: "atlassian" | "linear" | "clickup" | "granola";
-  kind: "jira" | "confluence" | "linear" | "clickup" | "note";
+  kind:
+    | "jira"
+    | "jira_board"
+    | "confluence"
+    | "confluence_link"
+    | "linear"
+    | "clickup"
+    | "note";
   id: string;
   key?: string;
   title?: string;

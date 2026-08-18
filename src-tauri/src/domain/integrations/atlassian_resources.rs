@@ -52,6 +52,14 @@ pub struct AtlassianResourceSummary {
     pub title: String,
     pub url: Option<String>,
     pub excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +67,12 @@ pub struct AtlassianResourceSummary {
 pub struct AtlassianResourceUrlResolution {
     pub input_url: String,
     pub resource: Option<AtlassianResourceSummary>,
+    /// The exact composer reference kind (for example `"jira_board"` or
+    /// `"confluence_link"`) that produced `resource`, so the frontend chip
+    /// can render a subtype distinct from the routing-level Jira/Confluence
+    /// [`AtlassianResourceKind`] carried on `resource.kind`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,6 +99,18 @@ pub struct AtlassianJiraAttachment {
     pub created_at: Option<String>,
 }
 
+/// A Jira parent/child issue reference (subtask or epic child), rendered from
+/// already-returned issue fields or the capped epic-children lookup — never
+/// carries provider URLs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlassianJiraChildIssue {
+    pub key: String,
+    pub summary: String,
+    pub status: Option<String>,
+    pub issue_type: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AtlassianJiraTransition {
@@ -92,6 +118,35 @@ pub struct AtlassianJiraTransition {
     pub to_state_id: String,
     pub name: String,
     pub category: String,
+}
+
+/// A page of Jira issue comments plus the provider's true total, so callers
+/// that only see the newest few comments can point agents at
+/// `jira_list_comments` for the rest.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraCommentsPage {
+    pub comments: Vec<AtlassianJiraComment>,
+    pub total: usize,
+}
+
+/// A Confluence space (v2 API), used to unblock `confluence_create_page`'s
+/// otherwise-unguessable `spaceId`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfluenceSpaceSummary {
+    pub id: String,
+    pub key: String,
+    pub name: String,
+}
+
+/// A Jira user match from the bounded account search, used to resolve an
+/// `accountId` for `jira_assign_issue`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraUserSummary {
+    pub account_id: String,
+    pub display_name: String,
 }
 
 /// Lightweight summary of a Jira project used as a ticketing container.
@@ -161,6 +216,16 @@ pub struct AtlassianResourceContent {
     pub comments: Vec<AtlassianJiraComment>,
     #[serde(default)]
     pub attachments: Vec<AtlassianJiraAttachment>,
+    #[serde(default)]
+    pub issue_type: Option<String>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub priority: Option<String>,
+    #[serde(default)]
+    pub parent_key: Option<String>,
+    #[serde(default)]
+    pub children: Vec<AtlassianJiraChildIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -232,6 +297,22 @@ pub trait AtlassianApiClient: Send + Sync {
         reference: &ComposerIntegrationReference,
     ) -> Result<AtlassianResourceContent, String>;
 
+    /// Search using the caller's query string verbatim (raw JQL/CQL), with no
+    /// smart-mode rewriting. Errors preserve the Atlassian HTTP status so
+    /// callers can surface it (for example malformed JQL) instead of a flat
+    /// string.
+    async fn search_raw(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _kind: AtlassianResourceKind,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<AtlassianResourceSummary>, AtlassianApiError> {
+        Err(AtlassianApiError::transport(
+            "Raw Atlassian query pass-through is not available for this client",
+        ))
+    }
+
     async fn assign_jira_issue_to_current_user(
         &self,
         auth: &AtlassianAuthContext,
@@ -244,6 +325,17 @@ pub trait AtlassianApiClient: Send + Sync {
         _issue_key: &str,
     ) -> Result<(), String> {
         Err("Jira issue assignee clearing is not available for this client".to_string())
+    }
+
+    /// Assigns a Jira issue to a specific account. Takes precedence over
+    /// `assign_to_me` in `jira_assign_issue`'s resolution order.
+    async fn assign_jira_issue_to_account(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _account_id: &str,
+    ) -> Result<(), String> {
+        Err("Jira issue assignment by account is not available for this client".to_string())
     }
 
     async fn list_jira_issue_transitions(
@@ -328,6 +420,50 @@ pub trait AtlassianApiClient: Send + Sync {
         _board_id: &str,
     ) -> Result<Vec<JiraSprintSummary>, String> {
         Err("Jira sprint enumeration is not available for this client".to_string())
+    }
+
+    /// Lists issues in a Jira Software sprint as enriched summaries (status,
+    /// issue type, assignee, updated timestamp), capped at `limit`.
+    async fn list_jira_sprint_issues(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _sprint_id: &str,
+        _limit: usize,
+    ) -> Result<Vec<AtlassianResourceSummary>, String> {
+        Err("Jira sprint issue enumeration is not available for this client".to_string())
+    }
+
+    /// Lists comments on a Jira issue with the provider's true total, capped
+    /// at `max_results` starting from `start_at`.
+    async fn list_jira_comments(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _start_at: usize,
+        _max_results: usize,
+    ) -> Result<JiraCommentsPage, String> {
+        Err("Jira comment listing is not available for this client".to_string())
+    }
+
+    /// Lists Confluence spaces (v2 API) visible to the connected user, capped
+    /// at `limit`.
+    async fn list_confluence_spaces(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _limit: usize,
+    ) -> Result<Vec<ConfluenceSpaceSummary>, String> {
+        Err("Confluence space enumeration is not available for this client".to_string())
+    }
+
+    /// Bounded Jira user search (max 20 results), used to resolve an
+    /// `accountId` for `jira_assign_issue`.
+    async fn search_jira_users(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<JiraUserSummary>, String> {
+        Err("Jira user search is not available for this client".to_string())
     }
 
     // ---- Atlassian MCP tool operations ---------------------------------

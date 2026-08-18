@@ -28,10 +28,11 @@ pub use jira_agile_types::{
 pub mod atlassian_resources;
 pub use atlassian_resources::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
-    AtlassianJiraAttachment, AtlassianJiraComment, AtlassianJiraTransition,
-    AtlassianOAuthAuthorization, AtlassianOAuthResource, AtlassianOAuthTokenResponse,
-    AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
-    AtlassianResourceUrlResolution, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
+    AtlassianJiraAttachment, AtlassianJiraChildIssue, AtlassianJiraComment,
+    AtlassianJiraTransition, AtlassianOAuthAuthorization, AtlassianOAuthResource,
+    AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
+    AtlassianResourceSummary, AtlassianResourceUrlResolution, ConfluenceSpaceSummary,
+    JiraCommentsPage, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary, JiraUserSummary,
 };
 
 pub mod atlassian_api_error;
