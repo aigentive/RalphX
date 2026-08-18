@@ -20,6 +20,11 @@ const HEADROOM_SAFETY_DIVISOR: u64 = 5;
 #[derive(Debug, Clone, Copy)]
 pub struct CompactionConfig {
     pub auto_enabled: bool,
+    /// Deprecated and ignored. This once *skipped* auto-compaction above the limit, which inverted
+    /// the intent: the more a database needed compacting, the less likely it was to run, so a
+    /// bloated database could never self-heal. Disk headroom and freelist share are the real
+    /// guards. The field stays parsed and wired so shipped `db_auto_compact_max_db_bytes` configs
+    /// keep loading.
     pub auto_max_db_bytes: u64,
     pub auto_min_freelist_percent: u64,
 }
@@ -255,8 +260,6 @@ fn decide(
         Some("disk_headroom_unavailable")
     } else if available.is_none_or(|available| available < required_headroom) {
         Some("insufficient_disk_headroom")
-    } else if !manual && database_bytes > config.auto_max_db_bytes {
-        Some("database_above_auto_limit")
     } else if !manual && share_percent < config.auto_min_freelist_percent {
         Some("freelist_below_auto_limit")
     } else {

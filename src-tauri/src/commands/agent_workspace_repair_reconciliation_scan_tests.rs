@@ -20,7 +20,8 @@ use crate::application::agent_workspace_publish_repair_state::{
 };
 use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
-    schedule_pr_supervision_recovery_for_workspace, try_acquire_agent_workspace_publish_guard,
+    pr_supervision_schedule_route, schedule_pr_supervision_recovery_for_workspace,
+    try_acquire_agent_workspace_publish_guard, PrSupervisionScheduleRoute,
 };
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
@@ -695,10 +696,7 @@ async fn non_github_workspace_get_and_scan_tick_both_run_durable_reconciler() {
 
         schedule_pr_supervision_recovery_for_workspace(
             &state,
-            crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
-                &state,
-                Arc::new(ExecutionState::new()),
-            ),
+            &Arc::new(ExecutionState::new()),
             &workspace,
             trigger,
             true,
@@ -706,6 +704,47 @@ async fn non_github_workspace_get_and_scan_tick_both_run_durable_reconciler() {
 
         wait_for_repair_publication_event(&state, &conversation_id, "repair_sent").await;
     }
+}
+
+/// Proof obligation 2: routing a PR-supervision-ineligible workspace away from the expensive
+/// runtime must not drop durable repair. With GitHub configured and a terminal publication PR,
+/// scheduling still reconciles the stuck repair attempt through the durable-only reconciler — a
+/// plain "skip and return" veto would leave the attempt stranded forever.
+#[tokio::test]
+async fn pr_supervision_ineligible_workspace_still_runs_the_durable_reconciler() {
+    let mut state = AppState::new_test();
+    state.github_service = Some(
+        Arc::new(crate::tests::mock_github_service::MockGithubService::new())
+            as Arc<dyn crate::domain::services::GithubServiceTrait>,
+    );
+
+    let conversation_id = ChatConversationId::new();
+    let mut workspace = minimal_active_workspace(conversation_id.clone(), "ineligible-durable");
+    workspace.auto_publish_enabled = true;
+    workspace.pr_autofix_enabled = true;
+    workspace.publication_pr_number = Some(4242);
+    workspace.publication_pr_status = Some("merged".to_string());
+    assert_eq!(
+        pr_supervision_schedule_route(true, &workspace),
+        PrSupervisionScheduleRoute::DurableOnly("workspace_terminal"),
+        "fixture must exercise the durable-only routing arm"
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    seed_dispatching_repair_attempt(&state, conversation_id.clone()).await;
+
+    schedule_pr_supervision_recovery_for_workspace(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        &workspace,
+        AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
+        true,
+    );
+
+    wait_for_repair_publication_event(&state, &conversation_id, "repair_sent").await;
 }
 
 #[tokio::test]
