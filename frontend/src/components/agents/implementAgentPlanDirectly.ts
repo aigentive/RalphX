@@ -12,6 +12,7 @@ import {
 import { PLAN_IMPLEMENT_DIRECTLY_REQUEST } from "./agentPlanModeActions";
 import {
   PlanContinuationCommittedError,
+  planContinuationFailureDetail,
   refreshTransitionedAgentWorkspace,
 } from "./agentPlanProposalActivation";
 import {
@@ -161,7 +162,7 @@ function sameActivationSnapshot(
 
 function committedImplementationError(error: unknown) {
   if (error instanceof PlanContinuationCommittedError) return error;
-  const detail = error instanceof Error ? ` ${error.message}` : "";
+  const detail = planContinuationFailureDetail(error);
   return new PlanContinuationCommittedError(
     `Edit mode is active, but implementation launch failed. Retry will revalidate and resend only the originally approved plan; it will not switch modes again.${detail}`,
   );
