@@ -479,7 +479,7 @@ export const AGENT_WORKSPACE_TOOLS = [
                 resolution: {
                     type: "string",
                     enum: ["fixed", "transient_ci", "pre_existing_on_base", "needs_human"],
-                    description: "Use fixed only after pushing a real fix. transient_ci is only for GitHub Actions infrastructure failures; pre_existing_on_base requires evidence the failure reproduces on base; needs_human is for a blocker needing user action. Classify honestly rather than fabricating a commit.",
+                    description: "Use fixed only after pushing a real fix. transient_ci is only for GitHub Actions infrastructure failures; pre_existing_on_base applies to check failures only and requires evidence the same check fails on base, never mergeability; needs_human is for a blocker needing user action. A completed base update is a real fix — report fixed with the new HEAD. Classify honestly rather than fabricating a commit.",
                 },
                 fix_commit_sha: {
                     type: "string",
@@ -518,7 +518,7 @@ export const AGENT_WORKSPACE_TOOLS = [
                 resolution: {
                     type: "string",
                     enum: ["fixed", "transient_ci", "pre_existing_on_base", "needs_human"],
-                    description: "Classify the repair outcome honestly: fixed after a real repair, transient_ci only for GitHub Actions infrastructure failures, pre_existing_on_base with evidence the failure reproduces on base, or needs_human for a blocker requiring user action.",
+                    description: "Classify the repair outcome honestly: fixed after a real repair, transient_ci only for GitHub Actions infrastructure failures, pre_existing_on_base for check failures only with evidence the same check fails on base (never mergeability), or needs_human for a blocker requiring user action. A completed base update is a real fix — report fixed with the new HEAD.",
                 },
                 fix_commit_sha: {
                     type: "string",
