@@ -127,6 +127,10 @@ impl AtlassianApiClient for LargeAtlassianClient {
             title: "Large Atlassian resource".to_string(),
             url: Some("https://example.atlassian.net/browse/RX-1".to_string()),
             excerpt: None,
+            status: None,
+            issue_type: None,
+            assignee: None,
+            updated_at: None,
         }])
     }
 
@@ -155,6 +159,11 @@ impl AtlassianApiClient for LargeAtlassianClient {
             acceptance_criteria_text: None,
             comments: Vec::new(),
             attachments: Vec::new(),
+            issue_type: None,
+            labels: Vec::new(),
+            priority: None,
+            parent_key: None,
+            children: Vec::new(),
         })
     }
 
