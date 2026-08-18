@@ -3,9 +3,9 @@
 //! There are deliberately two sources of truth here, and they answer different questions:
 //!
 //! - [`super::pr_autofix_redelivery::repair_base_advanced`] is the cheap durable predicate. It
-//!   compares the generation's `target_base_commit` against `workspace.base_commit` and answers
-//!   *should we consider retargeting at all*. It is the same notion of "base advanced" the blocked
-//!   redelivery path already uses, so this module reuses it rather than inventing a second one.
+//!   compares the generation's `target_base_commit` against a caller-supplied observed base (the
+//!   live GitHub base in `evaluate_pr_autofix_successor`, the Git-read advanced base here) and
+//!   answers *should we consider retargeting at all*.
 //! - The completion classifier answers *onto exactly which commit*, because it read real Git. The
 //!   durable `workspace.base_commit` can itself be stale, so the classifier's commit always wins.
 //!
@@ -59,14 +59,14 @@ pub(super) async fn retarget_reserved_repair_to_advanced_base(
     workspace: &AgentConversationWorkspace,
     new_target_base_commit: &str,
 ) -> AppResult<DurableRepairRecoveryOutcome> {
-    if !repair_base_advanced(&reserved, Some(new_target_base_commit)) {
-        // The durable attempt target has not caught up yet. The classifier read Git directly, so it
-        // is the authority, but the disagreement is worth seeing in logs.
+    if repair_base_advanced(&reserved, Some(new_target_base_commit)) {
+        // The durable attempt target does not match the Git-read base. The classifier is the
+        // authority, but the disagreement is worth seeing in logs.
         tracing::info!(
             conversation_id = reserved.conversation_id.as_str(),
             durable_target_base = reserved.target_base_commit.as_deref().unwrap_or("<none>"),
             observed_target_base = new_target_base_commit,
-            "Retargeting an interrupted repair on Git evidence the durable attempt target does not show yet"
+            "Retargeting an interrupted repair onto a base the durable attempt target does not match"
         );
     }
     // The canonical target lease is owned per attempt id, so the superseded generation has to let
