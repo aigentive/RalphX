@@ -9661,14 +9661,22 @@ fn workspace_poller_interval_resets_to_base_on_observed_activity() {
     // Idle iteration (no activity): doubles.
     let after_idle = {
         let observed = false;
-        if observed { base } else { (base * 2).clamp(base, max) }
+        if observed {
+            base
+        } else {
+            (base * 2).clamp(base, max)
+        }
     };
     assert_eq!(after_idle, Duration::from_secs(120));
 
     // Iteration where autofix Err fired (observed_activity = true): stays at base.
     let after_autofix_err = {
         let observed = true; // set by the Err arm after Step-3 fix
-        if observed { base } else { (base * 2).clamp(base, max) }
+        if observed {
+            base
+        } else {
+            (base * 2).clamp(base, max)
+        }
     };
     assert_eq!(
         after_autofix_err, base,
@@ -13135,4 +13143,491 @@ async fn base_parity_transient_shape_joined_blocked_needs_human_attempt_is_left_
         reloaded.pending_reasons, blocked.pending_reasons,
         "joining a blocked generation must contribute no pending reason at all, marker or prose"
     );
+}
+
+/// Fixture for the base-staleness supersession of a blocked `needs_human` generation.
+///
+/// Builds a real repo whose branch is published and whose `main` has since advanced, then reserves
+/// a `Blocked` + `pr_autofix_needs_human` attempt holding a durable target lease — the exact shape
+/// of the PR #1038 incident.
+struct BlockedNeedsHumanSupersessionFixture {
+    _root: tempfile::TempDir,
+    worktree: std::path::PathBuf,
+    workspace: AgentConversationWorkspace,
+    project: Project,
+    conversation_id: ChatConversationId,
+    workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    branch_update_repo: Arc<dyn BranchUpdateRepository>,
+    attempt: AgentWorkspaceRepairAttempt,
+    observed_base_oid: String,
+    dispatch_head: String,
+}
+
+async fn blocked_needs_human_supersession_fixture(
+    slug: &str,
+    dispatch_head_commit: Option<&str>,
+    acquire_lease: bool,
+) -> BlockedNeedsHumanSupersessionFixture {
+    let root = tempfile::tempdir().expect("fixture root");
+    let remote = root.path().join("remote.git");
+    let worktree = root.path().join("worktree");
+    let remote_arg = remote.to_string_lossy().to_string();
+    let worktree_arg = worktree.to_string_lossy().to_string();
+    run_git(root.path(), &["init", "--bare", &remote_arg]);
+    run_git(root.path(), &["clone", &remote_arg, &worktree_arg]);
+    run_git(&worktree, &["config", "user.email", "test@example.com"]);
+    run_git(&worktree, &["config", "user.name", "Test User"]);
+    run_git(&worktree, &["checkout", "-b", "main"]);
+    std::fs::write(worktree.join("README.md"), "initial\n").expect("write initial file");
+    run_git(&worktree, &["add", "."]);
+    run_git(&worktree, &["commit", "-m", "initial"]);
+    run_git(&worktree, &["push", "-u", "origin", "main"]);
+    let attempt_base_oid = git_stdout(&worktree, &["rev-parse", "main"]);
+
+    let mut workspace = supervised_workspace(slug, &format!("project-{slug}"), &worktree);
+    run_git(&worktree, &["checkout", "-b", &workspace.branch_name]);
+    run_git(&worktree, &["push", "-u", "origin", &workspace.branch_name]);
+    run_git(&worktree, &["checkout", "main"]);
+    std::fs::write(worktree.join("BASE.md"), "advanced base\n").expect("advance base");
+    run_git(&worktree, &["add", "."]);
+    run_git(&worktree, &["commit", "-m", "advance base"]);
+    run_git(&worktree, &["push", "origin", "main"]);
+    let observed_base_oid = git_stdout(&worktree, &["rev-parse", "main"]);
+    run_git(&worktree, &["checkout", &workspace.branch_name]);
+    let branch_head = git_stdout(&worktree, &["rev-parse", &workspace.branch_name]);
+
+    workspace.base_commit = Some(observed_base_oid.clone());
+    let conversation_id = workspace.conversation_id.clone();
+    let mut project = Project::new(
+        format!("Blocked needs-human supersession {slug}"),
+        worktree.to_string_lossy().to_string(),
+    );
+    project.id = workspace.project_id.clone();
+    project.base_branch = Some("main".to_string());
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+
+    let blocked =
+        reserve_blocked_needs_human_attempt(repair_repo.as_ref(), &conversation_id, "main").await;
+    let mut targeted = blocked.clone();
+    targeted.target_base_commit = Some(attempt_base_oid);
+    targeted.pr_autofix_dispatch_head_commit = dispatch_head_commit
+        .map(str::to_string)
+        .or_else(|| Some(branch_head.clone()));
+    if dispatch_head_commit == Some("") {
+        targeted.pr_autofix_dispatch_head_commit = None;
+    }
+    targeted.updated_at += chrono::Duration::microseconds(1);
+    let mut attempt = match repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: targeted,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at: blocked.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist blocked base authority")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("blocked base authority must apply, got {outcome:?}"),
+    };
+
+    if acquire_lease {
+        let target_identity =
+            GitService::canonical_target_identity(&worktree, &workspace.branch_name)
+                .await
+                .expect("resolve blocked supersession target identity");
+        let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = branch_update_repo
+            .acquire_target_lease(AcquireGitTargetLease {
+                identity: target_identity.clone(),
+                owner: GitTargetLeaseOwner::agent_workspace_repair(attempt.id.as_str()),
+            })
+            .await
+            .expect("acquire blocked supersession target lease")
+        else {
+            panic!("blocked supersession fixture should acquire its target lease");
+        };
+        let mut leased = attempt.clone();
+        leased.git_common_dir = Some(
+            target_identity
+                .git_common_dir()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        leased.target_ref = Some(target_identity.full_ref().to_string());
+        leased.target_identity_version = Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION);
+        leased.target_lease_epoch = Some(fencing_epoch);
+        leased.updated_at += chrono::Duration::microseconds(1);
+        attempt = match repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: leased,
+                expected_phase: AgentWorkspaceRepairPhase::Blocked,
+                expected_updated_at: attempt.updated_at,
+                next_phase: AgentWorkspaceRepairPhase::Blocked,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("checkpoint blocked supersession target lease")
+        {
+            AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+            outcome => panic!("blocked supersession lease must apply, got {outcome:?}"),
+        };
+    }
+
+    BlockedNeedsHumanSupersessionFixture {
+        _root: root,
+        worktree,
+        workspace,
+        project,
+        conversation_id,
+        workspace_repo,
+        repair_repo,
+        branch_update_repo,
+        attempt,
+        observed_base_oid,
+        dispatch_head: branch_head,
+    }
+}
+
+/// Health for a blocked `needs_human` generation whose PR GitHub reports behind its base.
+fn behind_base_health(head_oid: &str, observed_base_oid: &str) -> PrHealth {
+    let mut health = open_pr_health(head_oid);
+    health.sync_state.base_ref_oid = Some(observed_base_oid.to_string());
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Behind);
+    health
+}
+
+async fn route_blocked_supersession(
+    fixture: &BlockedNeedsHumanSupersessionFixture,
+    health: PrHealth,
+) -> (bool, Arc<MockGithubService>, Arc<MockChatService>) {
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&fixture.conversation_id).await;
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_notifications(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        &fixture.worktree,
+        101,
+        &fixture.conversation_id,
+        fixture.workspace_repo.clone(),
+        Some(agent_run_repo),
+        Some(Arc::clone(&fixture.repair_repo)),
+        Some(Arc::clone(&fixture.branch_update_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+        Some(&fixture.project),
+        None,
+    )
+    .await
+    .expect("blocked supersession routing should settle");
+
+    (routed, github, chat)
+}
+
+fn needs_human_held(attempt: &AgentWorkspaceRepairAttempt) -> bool {
+    attempt.pending_reasons.iter().any(|reason| {
+        reason == crate::application::agent_workspace_publish_repair_state::NEEDS_HUMAN_REPAIR_REASON
+    })
+}
+
+/// The incident replay (PR #1038). A CI-only `needs_human` escalation with no local repair work
+/// stranded the workspace for ~19h while `main` moved. Base staleness must supersede it: RalphX
+/// merges the current base, pushes (restarting CI), and clears the hold head-scoped so the
+/// workspace stops rendering repair-blocked without any human action.
+#[tokio::test]
+async fn blocked_needs_human_behind_base_is_superseded_by_an_automatic_update() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-supersede-incident", None, true).await;
+    let health = behind_base_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+
+    let (routed, github, chat) = route_blocked_supersession(&fixture, health).await;
+
+    assert!(!routed, "the base update must not also dispatch a fixer");
+    assert_eq!(
+        github.state().push_branch_calls,
+        1,
+        "the branch must be pushed so CI reruns"
+    );
+    assert!(chat.get_sent_messages().await.is_empty());
+    run_git(
+        &fixture.worktree,
+        &["merge-base", "--is-ancestor", "origin/main", "HEAD"],
+    );
+
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load superseded attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.id, fixture.attempt.id);
+    assert_eq!(
+        current.base_update_target_commit.as_deref(),
+        Some(fixture.observed_base_oid.as_str())
+    );
+    assert!(
+        !needs_human_held(&current),
+        "base staleness must supersede the repair-blocked state, not just the branch"
+    );
+    assert_eq!(
+        fixture
+            .workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("list route events")
+            .into_iter()
+            .filter(|event| event.step == "pr_base_update" && event.status == "updated")
+            .count(),
+        1
+    );
+}
+
+/// A fixer that committed real work before escalating left something a human was asked to review.
+/// That generation keeps its hold regardless of base staleness.
+#[tokio::test]
+async fn blocked_needs_human_with_a_repair_head_is_not_superseded() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-supersede-repair-head", None, true).await;
+    let mut with_repair_head = fixture.attempt.clone();
+    with_repair_head.repair_head_commit = Some("a-real-fix-commit".to_string());
+    with_repair_head.updated_at += chrono::Duration::microseconds(1);
+    match fixture
+        .repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: with_repair_head,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at: fixture.attempt.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist repair head")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("repair head must apply, got {outcome:?}"),
+    }
+    let health = behind_base_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+
+    let (_routed, github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+    assert_eq!(
+        github.state().push_branch_calls,
+        0,
+        "local repair work at risk must keep the workspace waiting for a human"
+    );
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(needs_human_held(&current));
+}
+
+/// Updating an existing PR restarts its CI. Creating one is a different act, so a workspace with no
+/// published PR is never admitted to this path.
+#[tokio::test]
+async fn blocked_needs_human_without_a_published_pr_is_not_superseded() {
+    let mut fixture =
+        blocked_needs_human_supersession_fixture("blocked-supersede-no-pr", None, true).await;
+    fixture.workspace.publication_pr_number = None;
+    fixture
+        .workspace_repo
+        .create_or_update(fixture.workspace.clone())
+        .await
+        .expect("persist workspace without a PR");
+    let health = behind_base_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+
+    let (_routed, github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+    assert_eq!(github.state().push_branch_calls, 0);
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(needs_human_held(&current));
+}
+
+/// Admission is not a licence to churn: without GitHub reporting the PR behind its base there is
+/// nothing to supersede, so the generation is untouched.
+#[tokio::test]
+async fn blocked_needs_human_that_is_not_behind_is_untouched() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-supersede-not-behind", None, true).await;
+    let mut health = behind_base_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Clean);
+
+    let (_routed, github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+    assert_eq!(github.state().push_branch_calls, 0);
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert!(needs_human_held(&current));
+}
+
+/// Fail-closed on unreadable evidence: an unknown merge state or a blank base OID must never
+/// authorize an unattended merge and push.
+#[tokio::test]
+async fn blocked_needs_human_with_unreadable_health_is_untouched() {
+    for (label, merge_state, base_oid) in [
+        (
+            "unknown merge state",
+            Some(PrMergeStateStatus::Unknown),
+            true,
+        ),
+        ("absent merge state", None, true),
+        ("blank base oid", Some(PrMergeStateStatus::Behind), false),
+    ] {
+        let fixture = blocked_needs_human_supersession_fixture(
+            &format!("blocked-supersede-unreadable-{}", label.replace(' ', "-")),
+            None,
+            true,
+        )
+        .await;
+        let mut health = behind_base_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+        health.sync_state.merge_state_status = merge_state;
+        if !base_oid {
+            health.sync_state.base_ref_oid = Some("   ".to_string());
+        }
+
+        let (_routed, github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+        assert_eq!(
+            github.state().push_branch_calls,
+            0,
+            "{label}: unreadable health must not authorize an unattended push"
+        );
+        let current = fixture
+            .repair_repo
+            .get_current_repair_attempt(&fixture.conversation_id)
+            .await
+            .expect("load attempt")
+            .expect("attempt remains current");
+        assert!(needs_human_held(&current), "{label}");
+    }
+}
+
+/// The anti-runaway guard. Once RalphX has already updated to the tip GitHub still reports the
+/// branch behind, a second merge and push cannot help, so the generation is held instead. This is
+/// what keeps the blocked-admission path from becoming an unattended write loop.
+#[tokio::test]
+async fn blocked_needs_human_already_updated_to_the_observed_tip_is_held() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-supersede-anti-loop", None, true).await;
+    let mut already_updated = fixture.attempt.clone();
+    already_updated.base_update_target_commit = Some(fixture.observed_base_oid.clone());
+    already_updated.updated_at += chrono::Duration::microseconds(1);
+    match fixture
+        .repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: already_updated,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at: fixture.attempt.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist already-updated tip")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("already-updated tip must apply, got {outcome:?}"),
+    }
+    let health = behind_base_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+
+    let (_routed, github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+    assert_eq!(
+        github.state().push_branch_calls,
+        0,
+        "a second update against the same tip must never run"
+    );
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(needs_human_held(&current));
+}
+
+/// Rescued orphan attempts can carry a NULL `pr_autofix_dispatch_head_commit`. With no head
+/// evidence there is nothing to scope the release to, so the update still lands but the hold stays.
+#[tokio::test]
+async fn blocked_needs_human_with_a_null_dispatch_head_keeps_its_hold_after_the_update() {
+    let fixture = blocked_needs_human_supersession_fixture(
+        "blocked-supersede-null-dispatch-head",
+        Some(""),
+        true,
+    )
+    .await;
+    assert!(fixture.attempt.pr_autofix_dispatch_head_commit.is_none());
+    let health = behind_base_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+
+    let (_routed, github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+    assert_eq!(
+        github.state().push_branch_calls,
+        1,
+        "the branch update itself still runs"
+    );
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert!(
+        needs_human_held(&current),
+        "no head evidence must fail closed and leave the hold in place"
+    );
+}
+
+/// The durable target lease still fences the blocked path exactly as it fences the ready path.
+#[tokio::test]
+async fn blocked_needs_human_without_a_valid_target_lease_has_no_effects() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-supersede-no-lease", None, false).await;
+    let health = behind_base_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+
+    let (_routed, github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+    assert_eq!(
+        github.state().push_branch_calls,
+        0,
+        "an attempt with no durable target lease must not mutate the branch"
+    );
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(needs_human_held(&current));
 }

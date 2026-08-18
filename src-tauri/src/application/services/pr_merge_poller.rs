@@ -35,7 +35,8 @@ use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_is_base_stale_held, agent_workspace_repair_is_ci_held,
     agent_workspace_repair_is_health_held, classify_agent_workspace_repair_delivery,
     held_repair_has_unpublished_head, mark_agent_workspace_base_update_target,
-    release_agent_workspace_base_stale_hold, release_and_clear_agent_workspace_repair_target_lease,
+    release_agent_workspace_base_stale_hold, release_agent_workspace_needs_human_hold_for_new_head,
+    release_and_clear_agent_workspace_repair_target_lease,
     reserve_agent_workspace_base_parity_transient, reserve_agent_workspace_base_stale_hold,
     reserve_agent_workspace_base_update, reserve_agent_workspace_repair_dispatch,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
@@ -43,6 +44,7 @@ use crate::application::agent_workspace_publish_repair_state::{
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairStartOutcome,
     AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PrAutofixCarryover,
+    NEEDS_HUMAN_REPAIR_REASON,
 };
 #[cfg(test)]
 use crate::application::agent_workspace_publish_repair_state::{
@@ -3945,6 +3947,86 @@ async fn mark_behind_base_update_route(
     })
 }
 
+/// Releases the `needs_human` hold that a completed base update just made obsolete.
+///
+/// Without this, the branch moves and CI reruns but the workspace still renders "repair blocked"
+/// and `retry_safe_blocked_agent_workspace_repair` still no-ops on the marker — so base staleness
+/// would supersede the branch without superseding the state, which is the whole point.
+///
+/// Best effort by design: a failure to read the pushed head is reported and leaves the hold in
+/// place. The update itself already succeeded and must not be unwound.
+async fn clear_needs_human_hold_after_base_update(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    working_dir: &Path,
+    workspace: &AgentConversationWorkspace,
+    reserved: AgentWorkspaceRepairAttempt,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+) -> crate::AppResult<()> {
+    let pushed_head = match GitService::get_branch_sha(working_dir, &workspace.branch_name).await {
+        Ok(head) => head,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                attempt_id = reserved.id.as_str(),
+                error = %error,
+                "Base update pushed but RalphX could not read the new head, so the needs_human hold stays in place"
+            );
+            return Ok(());
+        }
+    };
+    if let AgentWorkspaceRepairTransitionOutcome::Applied(_) =
+        release_agent_workspace_needs_human_hold_for_new_head(
+            repair_repo,
+            reserved,
+            &pushed_head,
+            "RalphX merged the current base and pushed the PR branch, so the escalated CI evidence no longer describes the current head.",
+        )
+        .await?
+    {
+        tracing::info!(
+            conversation_id = conversation_id.as_str(),
+            pr_number,
+            "Base staleness superseded a needs_human repair hold after the branch head advanced"
+        );
+    }
+    Ok(())
+}
+
+/// Whether this generation may take the base-staleness supersession path.
+///
+/// A `Ready` generation always may — that is the pre-existing behavior and it stays untouched.
+///
+/// A `Blocked` generation additionally qualifies when its hold is a bare `needs_human` escalation
+/// with no local repair work at risk and the PR already exists. Updating the branch from its base
+/// merges and pushes, which restarts CI — and CI evidence is what such a hold is actually waiting
+/// on. It mutates nothing a human would need to review, and it cannot create a PR.
+///
+/// The three conditions are all durable first-class fields. `attempt.blocker` is deliberately not
+/// consulted to decide whether the hold is CI-related: it is free-form agent prose, not evidence.
+fn attempt_admits_base_staleness_supersession(
+    attempt: &AgentWorkspaceRepairAttempt,
+    workspace: &AgentConversationWorkspace,
+) -> bool {
+    if attempt.phase == AgentWorkspaceRepairPhase::Ready {
+        return true;
+    }
+    attempt.phase == AgentWorkspaceRepairPhase::Blocked
+        && attempt
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == NEEDS_HUMAN_REPAIR_REASON)
+        // A recorded repair head means a fixer committed real work before escalating. That work is
+        // what the human was asked to look at, so it is not ours to build on top of.
+        && attempt
+            .repair_head_commit
+            .as_deref()
+            .is_none_or(|commit| commit.trim().is_empty())
+        // Updating an existing PR restarts its CI. Creating one is a different act entirely.
+        && workspace.publication_pr_number.is_some()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn drive_agent_workspace_behind_base_update(
     github: &dyn GithubServiceTrait,
@@ -4167,7 +4249,14 @@ async fn route_agent_workspace_pr_autofix_for_target(
             }) {
                 return Ok(false);
             }
-            if attempt.phase == AgentWorkspaceRepairPhase::Ready {
+            // A `Blocked` `needs_human` generation is admitted here purely so base staleness can
+            // supersede it; `blocked_base_staleness_candidate` keeps every other behavior in this
+            // block `Ready`-only. The `expected_held_attempt` guard above already rejects any
+            // non-`Ready` attempt, so the held-health-recheck caller never reaches this path.
+            let blocked_base_staleness_candidate = attempt.phase
+                != AgentWorkspaceRepairPhase::Ready
+                && attempt_admits_base_staleness_supersession(&attempt, &workspace);
+            if attempt_admits_base_staleness_supersession(&attempt, &workspace) {
                 let mut attempt_already_settled = false;
                 let mut health_suppressed = agent_workspace_repair_is_health_held(&attempt);
                 let mut ci_held = agent_workspace_repair_is_ci_held(&attempt);
@@ -4240,8 +4329,20 @@ async fn route_agent_workspace_pr_autofix_for_target(
                         return Ok(false);
                     }
                 }
+                // The anti-runaway guard for the blocked path. Once RalphX has already updated to
+                // the tip GitHub still reports the branch behind, a second merge and push cannot
+                // help, so the generation waits instead. Held without mutating durable state: a
+                // blocked attempt has no hold reservation of its own to update.
+                if blocked_base_staleness_candidate
+                    && matches!(
+                        disposition,
+                        HealthHoldDisposition::BlockedStaleAfterUpdate { .. }
+                    )
+                {
+                    return Ok(false);
+                }
 
-                if hold_active
+                if (hold_active || blocked_base_staleness_candidate)
                     && matches!(
                         (&target.kind, &disposition, project),
                         (
@@ -4306,7 +4407,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
                     )
                     .await?
                     {
-                        BehindBaseUpdateRoute::Updated { .. } => {
+                        BehindBaseUpdateRoute::Updated { reserved } => {
                             persist_agent_workspace_observed_base(
                                 workspace_repo.as_ref(),
                                 conversation_id,
@@ -4322,6 +4423,20 @@ async fn route_agent_workspace_pr_autofix_for_target(
                                 "RalphX merged the current base and pushed the PR branch; waiting for fresh GitHub evidence.",
                             )
                             .await?;
+                            // Ordered after the observed-base and route writes so a failed
+                            // telemetry write can never leave a cleared hold with no record of
+                            // the update that justified clearing it.
+                            if blocked_base_staleness_candidate {
+                                clear_needs_human_hold_after_base_update(
+                                    Arc::clone(repair_repo),
+                                    working_dir,
+                                    &workspace,
+                                    reserved,
+                                    conversation_id,
+                                    target.pr_number,
+                                )
+                                .await?;
+                            }
                             return Ok(false);
                         }
                         BehindBaseUpdateRoute::DeferToAgent { reserved, reason } => {
@@ -4821,7 +4936,9 @@ async fn record_base_parity_transient_detection(
          without any PR-side work."
     );
 
-    let publication_events = workspace_repo.list_publication_events(conversation_id).await?;
+    let publication_events = workspace_repo
+        .list_publication_events(conversation_id)
+        .await?;
     // Once-per-classification gate for the event/notification only — never for the reservation.
     // The hold this records is meant to be consumed (a user rerun clears the pending reason) and
     // re-established later at the same classification if the parity shape persists; the workspace
