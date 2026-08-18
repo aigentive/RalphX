@@ -15,7 +15,9 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
     AgentWorkspacePrSupervisionRecoveryTrigger,
 };
 use crate::application::agent_workspace_publish_recovery::recover_agent_workspace_repair_attempts_for_state;
-use crate::application::agent_workspace_publish_repair_state::ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS;
+use crate::application::agent_workspace_publish_repair_state::{
+    NEEDS_HUMAN_REPAIR_REASON, ORPHANED_REPAIR_DISPATCH_RESCUE_GRACE_SECS,
+};
 use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
     pr_supervision_schedule_route, schedule_pr_supervision_recovery_for_workspace,
@@ -26,8 +28,9 @@ use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
     AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, ChatConversation, ChatConversationId,
-    GitTargetIdentity, GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, Project, ProjectId,
+    AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairSource, ChatConversation, ChatConversationId, GitTargetIdentity,
+    GitTargetLeaseOwner, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentWorkspaceRepairAttemptTransition,
@@ -43,6 +46,7 @@ use crate::domain::repositories::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
 
+use super::agent_workspace_blocked_repair_base_retry_scan::run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle;
 use super::agent_workspace_repair_reconciliation_scan::{
     persist_stale_base_detected_at_transition,
     run_agent_workspace_base_freshness_scan_tick_from_app_handle,
@@ -816,15 +820,33 @@ impl Drop for TestEnvVarGuard {
     }
 }
 
-/// Errors only on `list_recoverable_repair_attempts`; every other call delegates to a real memory
+/// Scripts only `list_recoverable_repair_attempts`; every other call delegates to a real memory
 /// repo so this fixture stays a narrow fault-injection wrapper rather than a second fake.
+/// `Duplicated` reproduces the per-attempt listing shape the memory repo's one-current-attempt
+/// invariant cannot otherwise produce: several unsettled rows for the same conversation.
+enum ScriptedRecoverableListing {
+    Error,
+    Duplicated,
+}
+
 struct ListingErrorRepairRepository {
     inner: Arc<dyn AgentWorkspaceRepairRepository>,
+    listing: ScriptedRecoverableListing,
 }
 
 impl ListingErrorRepairRepository {
     fn new(inner: Arc<dyn AgentWorkspaceRepairRepository>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            listing: ScriptedRecoverableListing::Error,
+        }
+    }
+
+    fn duplicating(inner: Arc<dyn AgentWorkspaceRepairRepository>) -> Self {
+        Self {
+            inner,
+            listing: ScriptedRecoverableListing::Duplicated,
+        }
     }
 }
 
@@ -866,9 +888,18 @@ impl AgentWorkspaceRepairRepository for ListingErrorRepairRepository {
     async fn list_recoverable_repair_attempts(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceRepairAttempt>> {
-        Err(AppError::Infrastructure(
-            "repair attempt listing failed".to_string(),
-        ))
+        match self.listing {
+            ScriptedRecoverableListing::Error => Err(AppError::Infrastructure(
+                "repair attempt listing failed".to_string(),
+            )),
+            ScriptedRecoverableListing::Duplicated => {
+                let attempts = self.inner.list_recoverable_repair_attempts().await?;
+                Ok(attempts
+                    .into_iter()
+                    .flat_map(|attempt| [attempt.clone(), attempt])
+                    .collect())
+            }
+        }
     }
 
     async fn list_repair_attempts_for_conversation(
@@ -1473,4 +1504,769 @@ async fn app_handle_base_freshness_scan_tick_errors_without_execution_state() {
         .expect_err("missing ExecutionState should fail");
 
     assert_eq!(error, "ExecutionState is not available");
+}
+
+// ============================================================================
+// Blocked-repair base-retry half: unattended parity for the selection-time
+// auto-refresh-from-base trigger (2026-08-13 incident)
+// ============================================================================
+
+/// The incident workspace shape: the unpublished Edit git fixture, published and routed to
+/// `needs_agent`. `list_active_unpublished_edit_workspaces` therefore does not list it, which is
+/// half of why the existing base-freshness lane never reached the stuck conversation.
+fn published_git_workspace_fixture() -> (tempfile::TempDir, Project, AgentConversationWorkspace) {
+    let (root, project, mut workspace) = unpublished_git_workspace_fixture();
+    workspace.publication_pr_number = Some(1042);
+    workspace.publication_pr_url = Some("https://github.com/example/repo/pull/1042".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    (root, project, workspace)
+}
+
+/// Generation 7's exact pending reasons: the `pr_autofix_needs_human` hold that falsified both
+/// candidate directions in plan v2, plus the agent-minutes spend-limit marker it also carried.
+fn incident_pending_reasons() -> Vec<String> {
+    vec![
+        NEEDS_HUMAN_REPAIR_REASON.to_string(),
+        "agent_minutes_spend_limit_reached".to_string(),
+    ]
+}
+
+/// Seeds project + workspace + a Blocked repair attempt with no queued dispatch — the exact shape
+/// `agent_workspace_repair_operation_recovery_action` projects as `RetryRepair`. Attempt defaults
+/// are the incident's (recorded target base commit = the workspace's pre-drift base tip, incident
+/// pending reasons); `tune_attempt` overrides them for the negative gates.
+async fn seed_blocked_repair_state(
+    project: Project,
+    workspace: AgentConversationWorkspace,
+    tune_attempt: impl FnOnce(&mut AgentWorkspaceRepairAttempt),
+) -> AppState {
+    let state = AppState::new_test();
+    let conversation_id = workspace.conversation_id.clone();
+    let recorded_target_base_commit = workspace.base_commit.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should seed");
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should seed");
+
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id,
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                Utc::now(),
+            ),
+            reason: "blocked repair base retry fixture".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(mut attempt) = started else {
+        panic!("first repair attempt must start");
+    };
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Blocked;
+    attempt.next_dispatch_at = None;
+    attempt.target_base_commit = recorded_target_base_commit;
+    attempt.pending_reasons = incident_pending_reasons();
+    attempt.dispatch_count = 0;
+    attempt.updated_at = Utc::now();
+    tune_attempt(&mut attempt);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: attempt.clone(),
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at,
+            next_phase: attempt.phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed blocked repair attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("seeding a blocked attempt must apply, got {outcome:?}"),
+    }
+
+    state
+}
+
+async fn current_repair_attempt(
+    repair_repo: &Arc<dyn AgentWorkspaceRepairRepository>,
+    conversation_id: &ChatConversationId,
+) -> AgentWorkspaceRepairAttempt {
+    repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("current repair attempt should load")
+        .expect("a repair attempt should exist")
+}
+
+/// Asserts the durable state is untouched: the seeded Blocked generation is still the current
+/// attempt, so no successor was started. A supersede would settle it and make the current attempt
+/// an unsettled `BaseUpdate` generation instead.
+async fn assert_no_repair_dispatch(
+    repair_repo: &Arc<dyn AgentWorkspaceRepairRepository>,
+    conversation_id: &ChatConversationId,
+) {
+    let attempt = current_repair_attempt(repair_repo, conversation_id).await;
+    assert_eq!(
+        attempt.phase,
+        AgentWorkspaceRepairPhase::Blocked,
+        "the blocked generation must survive untouched"
+    );
+    assert_eq!(
+        attempt.source,
+        AgentWorkspaceRepairSource::Publish,
+        "no base-update successor generation may be started"
+    );
+    assert!(
+        attempt.settled_at.is_none(),
+        "the blocked generation must not be superseded"
+    );
+}
+
+/// Proof obligations 1, 5, and 6. Reproduces generation 7 exactly: Blocked with no queued
+/// dispatch, holding `pr_autofix_needs_human` plus the spend-limit marker, its recorded target base
+/// commit left behind by a base branch that has since moved. Neither shipped scan half dispatches
+/// a repair; the new lane supersedes it with exactly one `BaseUpdate` successor, once per tip.
+#[tokio::test]
+async fn blocked_repair_base_retry_dispatches_once_when_base_moved() {
+    let (_repo, project, workspace) = published_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let state = seed_blocked_repair_state(project, workspace, |_| {}).await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let blocked_generation = current_repair_attempt(&repair_repo, &conversation_id)
+        .await
+        .generation;
+
+    // The two shipped halves run first and must leave the blocked generation exactly as it is.
+    // The reconciliation half still *schedules* PR-supervision recovery for this workspace, which
+    // is not a repair dispatch, so the assertion is on durable repair state rather than its count.
+    run_agent_workspace_repair_reconciliation_scan_tick_from_app_handle(app.handle())
+        .await
+        .expect("reconciliation half should succeed");
+    let base_freshness_updated =
+        run_agent_workspace_base_freshness_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("base-freshness half should succeed");
+    assert_eq!(
+        base_freshness_updated, 0,
+        "a published workspace is not even a base-freshness candidate"
+    );
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("blocked-repair base-retry tick should succeed");
+    assert_eq!(
+        dispatched, 1,
+        "a blocked, retry-admissible attempt whose base has moved must be re-driven unattended"
+    );
+
+    let successor = current_repair_attempt(&repair_repo, &conversation_id).await;
+    assert_eq!(
+        successor.generation,
+        blocked_generation + 1,
+        "the blocked generation must be superseded by exactly one successor"
+    );
+    assert_eq!(
+        successor.source,
+        AgentWorkspaceRepairSource::BaseUpdate,
+        "the successor must come from the update-from-base route, exactly like the UI lane"
+    );
+    let superseded = repair_repo
+        .list_repair_attempts_for_conversation(&conversation_id)
+        .await
+        .expect("repair attempts should load")
+        .into_iter()
+        .find(|attempt| attempt.generation == blocked_generation)
+        .expect("the original generation should still be readable");
+    assert_eq!(
+        superseded.outcome,
+        Some(crate::domain::entities::AgentWorkspaceRepairOutcome::Superseded),
+        "the stuck generation must be settled as superseded, not left unsettled"
+    );
+
+    // Obligation 5. The successor records the freshly observed tip as its target, so the very same
+    // base motion cannot read as new evidence twice — this is the one-retry-per-tip invariant, and
+    // it holds regardless of whether the successor's own dispatch then succeeds or re-blocks.
+    let dispatched_again =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("second tick should succeed");
+    assert_eq!(
+        dispatched_again, 0,
+        "one base tip may authorize at most one unattended retry"
+    );
+}
+
+/// Proof obligation 6, pinned on its own: the `pr_autofix_needs_human` hold does NOT block this
+/// lane. That is deliberate parity with the shipped selection-time lane (Overview Decision 1), and
+/// it is the behavior that actually resolved the incident. A future strictness change must break
+/// this test rather than silently diverge the two lanes again.
+#[tokio::test]
+async fn blocked_repair_base_retry_retries_through_the_needs_human_hold_by_design() {
+    let (_repo, project, workspace) = published_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let state = seed_blocked_repair_state(project, workspace, |attempt| {
+        attempt.pending_reasons = vec![NEEDS_HUMAN_REPAIR_REASON.to_string()];
+    })
+    .await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("tick should succeed");
+    assert_eq!(
+        dispatched, 1,
+        "the needs-human hold must not fence the unattended lane; the UI lane retries through it"
+    );
+
+    let settled_original = repair_repo
+        .list_repair_attempts_for_conversation(&conversation_id)
+        .await
+        .expect("repair attempts should load")
+        .into_iter()
+        .find(|attempt| attempt.settled_at.is_some())
+        .expect("the superseded generation should still be readable");
+    assert!(
+        settled_original
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == NEEDS_HUMAN_REPAIR_REASON),
+        "the retried generation is the one that carried the human hold"
+    );
+}
+
+/// Proof obligation 2: the base is ahead of the workspace, but the attempt already targets the
+/// fetched tip. That is the durable equivalent of the frontend's per-session dedupe key.
+#[tokio::test]
+async fn blocked_repair_base_retry_skips_when_the_attempt_already_targets_the_fetched_tip() {
+    let (_repo, project, workspace) = published_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+
+    // Advance the base before seeding so the attempt can record the post-drift tip.
+    let advanced_tip = commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let state = seed_blocked_repair_state(project, workspace, |attempt| {
+        attempt.target_base_commit = Some(advanced_tip);
+    })
+    .await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("tick should succeed");
+    assert_eq!(
+        dispatched, 0,
+        "an already-targeted tip is not new evidence and must not authorize another supersede"
+    );
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+}
+
+/// Proof obligation 3: the base has not moved at all.
+#[tokio::test]
+async fn blocked_repair_base_retry_skips_when_base_is_not_ahead() {
+    let (_repo, project, workspace) = published_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let state = seed_blocked_repair_state(project, workspace, |_| {}).await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("tick should succeed");
+    assert_eq!(dispatched, 0, "a current base authorizes no retry");
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+}
+
+/// Proof obligation 3: without a recorded target base commit, base motion cannot be proven for
+/// this attempt, so the lane fails closed and leaves the workspace to the selection lane.
+#[tokio::test]
+async fn blocked_repair_base_retry_skips_when_the_recorded_target_commit_is_missing() {
+    let (_repo, project, workspace) = published_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let state = seed_blocked_repair_state(project, workspace, |attempt| {
+        attempt.target_base_commit = None;
+    })
+    .await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("tick should succeed");
+    assert_eq!(
+        dispatched, 0,
+        "an unprovable base move must fail closed, not retry optimistically"
+    );
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+}
+
+/// Proof obligation 3: the frontend gate requires `!hasUncommittedChanges`.
+#[tokio::test]
+async fn blocked_repair_base_retry_skips_when_the_worktree_is_dirty() {
+    let (_repo, project, workspace) = published_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    let state = seed_blocked_repair_state(project, workspace, |_| {}).await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+    std::fs::write(worktree_path.join("uncommitted.txt"), "wip\n")
+        .expect("uncommitted change should be written");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("tick should succeed");
+    assert_eq!(
+        dispatched, 0,
+        "an unattended timer must never re-drive a dirty worktree"
+    );
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+}
+
+/// Proof obligation 3: the frontend gate requires `unpublishedCommitCount === 0`.
+#[tokio::test]
+async fn blocked_repair_base_retry_skips_when_the_branch_has_unpublished_commits() {
+    let (_repo, project, workspace) = published_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    let state = seed_blocked_repair_state(project, workspace, |_| {}).await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+
+    run_git(
+        &worktree_path,
+        &["config", "user.email", "test@example.com"],
+    );
+    run_git(&worktree_path, &["config", "user.name", "Test User"]);
+    commit_file(&worktree_path, "work.txt", "work\n", "workspace work");
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("tick should succeed");
+    assert_eq!(
+        dispatched, 0,
+        "unpublished work on the branch must not be re-driven unattended"
+    );
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+}
+
+/// Proof obligation 3: a blocked base is not stale, mirroring the existing base-freshness half.
+#[tokio::test]
+async fn blocked_repair_base_retry_skips_when_the_base_is_blocked() {
+    let (_repo, project, mut workspace) = published_git_workspace_fixture();
+    workspace.base_ref = "deleted-base".to_string();
+    let conversation_id = workspace.conversation_id.clone();
+    let state = seed_blocked_repair_state(project, workspace, |_| {}).await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("a blocked base must not fail the tick");
+    assert_eq!(dispatched, 0);
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+}
+
+/// Proof obligation 3: Overview Decision 2's consent gate. A non-opted-in workspace keeps today's
+/// selection-triggered behavior.
+#[tokio::test]
+async fn blocked_repair_base_retry_skips_when_not_opted_in() {
+    let (_repo, project, mut workspace) = published_git_workspace_fixture();
+    workspace.auto_publish_enabled = false;
+    workspace.auto_publish_initial_pr_enabled = false;
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let state = seed_blocked_repair_state(project, workspace, |_| {}).await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("tick should succeed");
+    assert_eq!(
+        dispatched, 0,
+        "unattended agent spend requires an automation opt-in"
+    );
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+}
+
+/// Proof obligation 3: the idle gate.
+#[tokio::test]
+async fn blocked_repair_base_retry_skips_when_an_agent_run_is_active() {
+    let (_repo, project, workspace) = published_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let state = seed_blocked_repair_state(project, workspace, |_| {}).await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+    state
+        .agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("active run should seed");
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("tick should succeed");
+    assert_eq!(dispatched, 0, "an active run blocks unattended re-drive");
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+}
+
+/// Proof obligation 3: a queued dispatch means the attempt is not retry-admissible
+/// (`agent_workspace_repair_operation_recovery_action` returns `None`, not `RetryRepair`).
+#[tokio::test]
+async fn blocked_repair_base_retry_skips_when_the_attempt_has_a_queued_dispatch() {
+    let (_repo, project, workspace) = published_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let state = seed_blocked_repair_state(project, workspace, |attempt| {
+        attempt.next_dispatch_at = Some(Utc::now() + chrono::Duration::minutes(5));
+    })
+    .await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("tick should succeed");
+    assert_eq!(
+        dispatched, 0,
+        "an already-queued retry must not be superseded by this lane"
+    );
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+}
+
+/// Proof obligation 3: an open durable repair effect fences retry admission.
+#[tokio::test]
+async fn blocked_repair_base_retry_skips_when_an_open_repair_effect_fences_admission() {
+    let (_repo, project, workspace) = published_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let state = seed_blocked_repair_state(project, workspace, |_| {}).await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+
+    let attempt = current_repair_attempt(&repair_repo, &conversation_id).await;
+    let created = repair_repo
+        .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_attempt_updated_at: attempt.updated_at,
+            effect: AgentWorkspaceRepairEffect::new(
+                attempt.id.clone(),
+                AgentWorkspaceRepairEffectKind::CreatePr,
+                "blocked-retry-open-effect",
+                Utc::now(),
+            ),
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("open repair effect should be creatable");
+    assert!(
+        matches!(created, CreateAgentWorkspaceRepairEffectOutcome::Created(_)),
+        "fixture must actually leave an open effect, got {created:?}"
+    );
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("tick should succeed");
+    assert_eq!(
+        dispatched, 0,
+        "an open create-PR effect must keep the attempt fenced"
+    );
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+}
+
+/// The Edit-mode gate (blueprint E12). `resolve_agent_workspace_publish_target` materializes a
+/// worktree for an Ideation workspace with a linked plan branch, so an unattended timer must
+/// reject non-Edit workspaces before it ever resolves a publish target.
+#[tokio::test]
+async fn blocked_repair_base_retry_skips_a_non_edit_workspace() {
+    let (_repo, project, mut workspace) = published_git_workspace_fixture();
+    workspace.mode = AgentConversationWorkspaceMode::Ideation;
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let state = seed_blocked_repair_state(project, workspace, |_| {}).await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("tick should succeed");
+    assert_eq!(dispatched, 0, "only Edit workspaces are candidates");
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+}
+
+/// Proof obligation 8: an *unpublished* Edit workspace with an unsettled blocked attempt is a
+/// candidate for both halves. The base-freshness half must still skip it on its settled-repair
+/// gate, so exactly one lane acts and there is no double dispatch.
+#[tokio::test]
+async fn blocked_repair_base_retry_acts_where_the_base_freshness_half_skips_on_its_repair_gate() {
+    let (_repo, project, workspace) = unpublished_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let state = seed_blocked_repair_state(project, workspace, |_| {}).await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let base_freshness_updated =
+        run_agent_workspace_base_freshness_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("base-freshness half should succeed");
+    assert_eq!(
+        base_freshness_updated, 0,
+        "the unsettled-repair gate must keep the base-freshness half out of this workspace"
+    );
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("blocked-repair base-retry tick should succeed");
+    assert_eq!(dispatched, 1, "exactly one lane may act on this workspace");
+}
+
+/// Proof obligation 4: a structurally broken candidate is skipped without failing the tick or
+/// starving a healthy candidate in the same pass.
+#[tokio::test]
+async fn blocked_repair_base_retry_skips_a_broken_candidate_without_blocking_a_healthy_one() {
+    let (_repo, project, healthy_workspace) = published_git_workspace_fixture();
+    let healthy_conversation_id = healthy_workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+
+    let broken_conversation_id = ChatConversationId::new();
+    let broken_workspace = AgentConversationWorkspace::new(
+        broken_conversation_id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        healthy_workspace.base_commit.clone(),
+        format!("ralphx/test/{}", broken_conversation_id.as_str()),
+        format!(
+            "/tmp/ralphx-blocked-retry-missing-worktree-{}",
+            broken_conversation_id.as_str()
+        ),
+    );
+
+    let state = seed_blocked_repair_state(project, healthy_workspace, |_| {}).await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(broken_workspace)
+        .await
+        .expect("broken workspace should seed");
+    seed_blocked_attempt_for(&state, broken_conversation_id.clone()).await;
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("a broken candidate must not fail the tick");
+    assert_eq!(
+        dispatched, 1,
+        "the healthy candidate must still be re-driven in the same pass"
+    );
+    assert_no_repair_dispatch(&repair_repo, &broken_conversation_id).await;
+
+    let healthy = current_repair_attempt(&repair_repo, &healthy_conversation_id).await;
+    assert_eq!(
+        healthy.source,
+        AgentWorkspaceRepairSource::BaseUpdate,
+        "the healthy candidate must dispatch a base-update successor"
+    );
+}
+
+/// Seeds a second Blocked attempt for an already-seeded workspace, reusing the same shape as
+/// `seed_blocked_repair_state`'s attempt.
+async fn seed_blocked_attempt_for(state: &AppState, conversation_id: ChatConversationId) {
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                conversation_id,
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                Utc::now(),
+            ),
+            reason: "secondary blocked repair fixture".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("start secondary repair attempt");
+    let StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(mut attempt) = started else {
+        panic!("secondary repair attempt must start");
+    };
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Blocked;
+    attempt.next_dispatch_at = None;
+    attempt.target_base_commit = Some("stale-base-sha".to_string());
+    attempt.pending_reasons = incident_pending_reasons();
+    attempt.updated_at = Utc::now();
+    state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed secondary blocked attempt");
+}
+
+#[tokio::test]
+async fn app_handle_blocked_repair_base_retry_tick_skips_when_startup_git_auth_is_pending() {
+    let state = AppState::new_test();
+    state.startup_git_auth_recovery_state.mark_pending();
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("pending startup recovery should skip the scan");
+
+    assert_eq!(dispatched, 0);
+}
+
+#[tokio::test]
+async fn app_handle_blocked_repair_base_retry_tick_errors_without_execution_state() {
+    let app = mock_app_with_state(AppState::new_test());
+
+    let error =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect_err("missing ExecutionState should fail");
+
+    assert_eq!(error, "ExecutionState is not available");
+}
+
+/// Proof obligation 9 / the dedupe constraint: `list_recoverable_repair_attempts` returns one row
+/// per unsettled attempt, so a conversation can appear more than once (blueprint E13). The lane
+/// must collapse them before doing any git work, or it fetches the same repo twice per tick and
+/// can supersede the same generation twice. The memory repo enforces one current attempt per
+/// conversation, so the duplicate listing is injected at the seam the lane actually reads.
+#[tokio::test]
+async fn blocked_repair_base_retry_dedupes_multiple_attempt_rows_for_one_conversation() {
+    let (_repo, project, workspace) = published_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let mut state = seed_blocked_repair_state(project, workspace, |_| {}).await;
+    let inner_repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+    state.agent_workspace_repair_repo = Arc::new(ListingErrorRepairRepository::duplicating(
+        Arc::clone(&inner_repair_repo),
+    ));
+
+    let recoverable = state
+        .agent_workspace_repair_repo
+        .list_recoverable_repair_attempts()
+        .await
+        .expect("recoverable attempts should list");
+    assert_eq!(
+        recoverable
+            .iter()
+            .filter(|attempt| attempt.conversation_id == conversation_id)
+            .count(),
+        2,
+        "the fixture must actually produce two candidate rows for one conversation"
+    );
+    let blocked_generation = current_repair_attempt(&inner_repair_repo, &conversation_id)
+        .await
+        .generation;
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("tick should succeed");
+    assert_eq!(
+        dispatched, 1,
+        "two attempt rows for one conversation must produce at most one candidate pass"
+    );
+
+    let successor = current_repair_attempt(&inner_repair_repo, &conversation_id).await;
+    assert_eq!(
+        successor.generation,
+        blocked_generation + 1,
+        "a duplicated candidate row must not supersede the blocked generation twice"
+    );
 }
