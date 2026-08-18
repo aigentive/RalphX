@@ -5342,10 +5342,6 @@ async fn base_update_on_a_blocked_repair_updates_the_branch_instead_of_restartin
         response.updated,
         "the branch must actually update rather than only restarting the fixer"
     );
-    assert!(
-        !response.repair_started,
-        "a clean mechanical merge needs no repair successor"
-    );
     let current = super::get_agent_conversation_workspace_freshness_for_app_state(
         &conversation_id,
         Some("full"),

@@ -7034,58 +7034,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         PublishBranchFreshnessOutcome::AlreadyFresh {
             base_commit,
             target_ref,
-        } => {
-            // The branch already contains its base tip, so there is no mechanical work left. Only
-            // now is restarting a blocked repair the most useful thing the button can do. A
-            // conflict or operational failure takes the arms below instead, and those already
-            // dispatch a repair successor with the correct context.
-            if blocked_repair_retry_allowed
-                && retry_blocked_agent_workspace_repair_for_explicit_user_action(
-                    state,
-                    &workspace,
-                    &repair_service,
-                    AgentWorkspacePostRepairAction::UpdateOnly,
-                )
-                .await
-            {
-                let refreshed = state
-                    .agent_conversation_workspace_repo
-                    .get_by_conversation_id(&conversation_id)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .unwrap_or(workspace);
-                return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
-                    target_ref,
-                    base_commit,
-                    workspace: agent_workspace_response_with_pr_supervision_for_state(
-                        state,
-                        execution_state,
-                        refreshed,
-                    )
-                    .await?,
-                    updated: false,
-                    repair_started: true,
-                    // Derived exactly as the normal return below does. The mechanical path already
-                    // ran, so its resolved base is real information the caller should not lose
-                    // just because a repair successor was also dispatched.
-                    base_status: base_resolution
-                        .as_ref()
-                        .map(|resolution| resolution.status)
-                        .unwrap_or(BaseStatus::Valid)
-                        .as_str()
-                        .to_string(),
-                    effective_base_display_name: explicit_base
-                        .as_ref()
-                        .map(|selection| selection.display_name.clone())
-                        .or_else(|| {
-                            base_resolution
-                                .as_ref()
-                                .and_then(|resolution| resolution.display_name.clone())
-                        }),
-                });
-            }
-            (false, target_ref, base_commit)
-        }
+        } => (false, target_ref, base_commit),
         PublishBranchFreshnessOutcome::Updated {
             base_commit,
             target_ref,
@@ -7289,6 +7238,55 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         .await
         .map_err(|e| e.to_string())?
         .unwrap_or(workspace);
+
+    // The mechanical merge has now run and its bookkeeping is durable. A blocked generation that
+    // survived it is still stranded on a target the user just changed, so retry it here — after
+    // the update rather than instead of it. Merge conflicts and operational failures never reach
+    // this point; they return early from the arms above, which dispatch their own successor.
+    if blocked_repair_retry_allowed
+        && retry_blocked_agent_workspace_repair_for_explicit_user_action(
+            state,
+            &refreshed,
+            &repair_service,
+            AgentWorkspacePostRepairAction::UpdateOnly,
+        )
+        .await
+    {
+        // Auto-review is deliberately skipped: a repair successor is about to change this
+        // workspace again, so reviewing it now would review a state nobody asked about.
+        let repaired = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&refreshed.conversation_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or(refreshed);
+        return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
+            workspace: agent_workspace_response_with_pr_supervision_for_state(
+                state,
+                execution_state,
+                repaired,
+            )
+            .await?,
+            updated,
+            repair_started: true,
+            target_ref,
+            base_commit,
+            base_status: base_resolution
+                .as_ref()
+                .map(|resolution| resolution.status)
+                .unwrap_or(BaseStatus::Valid)
+                .as_str()
+                .to_string(),
+            effective_base_display_name: explicit_base
+                .as_ref()
+                .map(|selection| selection.display_name.clone())
+                .or_else(|| {
+                    base_resolution
+                        .as_ref()
+                        .and_then(|resolution| resolution.display_name.clone())
+                }),
+        });
+    }
 
     let workspace_changed_events = Arc::clone(&state.events);
     let workspace_changed_emitter =
