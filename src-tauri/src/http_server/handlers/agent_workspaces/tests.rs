@@ -6174,6 +6174,199 @@ async fn pr_autofix_pre_existing_on_base_persists_narrative_fields() {
     );
 }
 
+/// Rewrites the fixture's current attempt in place so a guard input can be exercised without
+/// re-deriving the whole dispatch chain.
+async fn amend_current_pr_autofix_attempt(
+    fixture: &PrFixReviewGateFixture,
+    amend: impl FnOnce(&mut crate::domain::entities::AgentWorkspaceRepairAttempt),
+) {
+    use crate::domain::repositories::{
+        AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
+    };
+
+    let repair_repo = Arc::clone(&fixture.app_state.agent_workspace_repair_repo);
+    let current = repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt to amend")
+        .expect("attempt exists to amend");
+    let expected_phase = current.phase;
+    let expected_updated_at = current.updated_at;
+    let mut amended = current;
+    amend(&mut amended);
+    amended.updated_at += chrono::Duration::microseconds(1);
+    match repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: amended,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("amend the current attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("amending the current attempt must apply, got {outcome:?}"),
+    }
+}
+
+async fn complete_pre_existing_on_base(
+    fixture: &PrFixReviewGateFixture,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    super::complete_agent_workspace_pr_fix(
+        State(test_http_state(Arc::clone(&fixture.app_state))),
+        Path(fixture.conversation_id.to_string()),
+        Json(CompleteAgentWorkspacePrFixRequest {
+            summary: "The failing check also fails on main.".to_string(),
+            blocker: None,
+            fix_commit_sha: None,
+            resolution: Some(AgentWorkspacePrFixResolution::PreExistingOnBase),
+            created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            what_happened: None,
+            what_i_did: None,
+        }),
+    )
+    .await
+    .map(|Json(response)| response.status)
+}
+
+/// A `pre_existing_on_base` hold cannot self-release: its fingerprint cannot change while the
+/// repaired head is unpublished. So the backend rejects the claim whenever its own durable facts
+/// contradict it, rather than parking the workspace forever.
+#[tokio::test]
+async fn pre_existing_on_base_is_rejected_when_a_base_update_already_produced_a_head() {
+    let fixture = setup_transient_ci_rerun_fixture("pre-existing-base-update-head").await;
+    amend_current_pr_autofix_attempt(&fixture, |attempt| {
+        attempt.base_update_head_commit = Some("base-update-merge-head".to_string());
+    })
+    .await;
+
+    let error = complete_pre_existing_on_base(&fixture)
+        .await
+        .expect_err("a recorded base update contradicts pre_existing_on_base");
+    assert_eq!(error.0, StatusCode::CONFLICT);
+    assert!(error.1 .0["error"]
+        .as_str()
+        .expect("error message")
+        .contains("base update"));
+
+    // Rejection must not transition the attempt; the run stays authorized to re-complete honestly.
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt stays current");
+    assert_eq!(
+        attempt.phase,
+        crate::domain::entities::AgentWorkspaceRepairPhase::Repairing
+    );
+    assert!(attempt.settled_at.is_none());
+}
+
+#[tokio::test]
+async fn pre_existing_on_base_is_rejected_for_mergeability_blockers() {
+    let fixture = setup_transient_ci_rerun_fixture("pre-existing-mergeability").await;
+    amend_current_pr_autofix_attempt(&fixture, |attempt| {
+        attempt.pr_autofix_issue_kind =
+            Some(crate::domain::entities::AgentWorkspacePrAutofixIssueKind::Mergeability);
+    })
+    .await;
+
+    let error = complete_pre_existing_on_base(&fixture)
+        .await
+        .expect_err("behind/conflicting cannot be pre-existing on the base");
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(error.1 .0["error"]
+        .as_str()
+        .expect("error message")
+        .contains("mergeability"));
+}
+
+#[tokio::test]
+async fn pre_existing_on_base_is_rejected_when_the_head_moved_since_dispatch() {
+    let fixture = setup_transient_ci_rerun_fixture("pre-existing-head-moved").await;
+    let workspace = fixture
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fixture.conversation_id)
+        .await
+        .expect("load fixture workspace")
+        .expect("fixture workspace exists");
+    let workspace_path = std::path::Path::new(&workspace.worktree_path);
+    std::fs::write(
+        workspace_path.join("moved-head.txt"),
+        "work after dispatch\n",
+    )
+    .expect("write post-dispatch change");
+    git(workspace_path, &["add", "moved-head.txt"]);
+    git(workspace_path, &["commit", "-m", "work after dispatch"]);
+    assert_ne!(
+        git(workspace_path, &["rev-parse", "HEAD"]),
+        fixture.fix_commit_sha
+    );
+
+    let error = complete_pre_existing_on_base(&fixture)
+        .await
+        .expect_err("a moved head contradicts pre_existing_on_base");
+    assert_eq!(error.0, StatusCode::CONFLICT);
+    assert!(error.1 .0["error"]
+        .as_str()
+        .expect("error message")
+        .contains("moved"));
+}
+
+/// Checks-kind and legacy attempts with an unmoved head keep the existing accepted behavior; the
+/// guard must not turn an honest classification into a rejection.
+#[tokio::test]
+async fn pre_existing_on_base_is_still_accepted_for_unmoved_checks_and_legacy_attempts() {
+    let legacy = setup_transient_ci_rerun_fixture("pre-existing-legacy-kind").await;
+    assert_eq!(
+        complete_pre_existing_on_base(&legacy)
+            .await
+            .expect("legacy attempts keep the existing hold"),
+        "accepted"
+    );
+
+    let checks = setup_transient_ci_rerun_fixture("pre-existing-checks-kind").await;
+    amend_current_pr_autofix_attempt(&checks, |attempt| {
+        attempt.pr_autofix_issue_kind =
+            Some(crate::domain::entities::AgentWorkspacePrAutofixIssueKind::Checks);
+    })
+    .await;
+    assert_eq!(
+        complete_pre_existing_on_base(&checks)
+            .await
+            .expect("a reproduced check failure is exactly what this resolution is for"),
+        "accepted"
+    );
+}
+
+#[tokio::test]
+async fn pre_existing_on_base_holds_when_the_head_cannot_be_inspected() {
+    let fixture = setup_transient_ci_rerun_fixture("pre-existing-uninspectable").await;
+    let workspace = fixture
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fixture.conversation_id)
+        .await
+        .expect("load fixture workspace")
+        .expect("fixture workspace exists");
+    // Holding is the safe state when the backend cannot verify the head for itself.
+    std::fs::remove_dir_all(std::path::Path::new(&workspace.worktree_path))
+        .expect("remove the worktree the guard would inspect");
+
+    assert_eq!(
+        complete_pre_existing_on_base(&fixture)
+            .await
+            .expect("an inspection failure must degrade to the existing hold"),
+        "accepted"
+    );
+}
+
 #[tokio::test]
 async fn pr_autofix_plain_success_persists_narrative_fields_on_fixed_path() {
     let fixture = setup_transient_ci_rerun_fixture("fixed-path-narrative").await;
