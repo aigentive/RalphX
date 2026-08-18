@@ -1,9 +1,10 @@
 use super::*;
 
 use crate::domain::entities::{
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectId, AgentWorkspaceRepairEffectStatus,
-    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    AgentWorkspacePrAutofixIssueKind, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectId,
+    AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase,
+    AgentWorkspaceRepairSource,
 };
 use crate::domain::repositories::{
     AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
@@ -74,6 +75,12 @@ fn row_to_repair_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentWorks
         ci_rerun_fingerprint: row.get("ci_rerun_fingerprint")?,
         pr_autofix_dispatch_head_commit: row.get("pr_autofix_dispatch_head_commit")?,
         pr_autofix_health_fingerprint: row.get("pr_autofix_health_fingerprint")?,
+        // Fail-open on unknown kinds: absence only disables the newer completion guards, so a row
+        // written by a future variant must not make the whole attempt unreadable.
+        pr_autofix_issue_kind: row
+            .get::<_, Option<String>>("pr_autofix_issue_kind")?
+            .and_then(|kind| AgentWorkspacePrAutofixIssueKind::from_str(&kind).ok()),
+        base_update_head_commit: row.get("base_update_head_commit")?,
         base_update_target_commit: row.get("base_update_target_commit")?,
         repair_head_commit: row.get("repair_head_commit")?,
         summary: row.get("summary")?,
@@ -202,11 +209,12 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             pr_autofix_dispatch_head_commit, pr_autofix_health_fingerprint, base_update_target_commit,
             repair_head_commit, summary, blocker, what_happened, what_i_did,
             git_common_dir, target_ref, target_identity_version, target_lease_epoch, outcome,
-            created_at, updated_at, settled_at, explicit_publish_requested
+            created_at, updated_at, settled_at, explicit_publish_requested,
+            pr_autofix_issue_kind, base_update_head_commit
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
             ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
-            ?32, ?33, ?34, ?35
+            ?32, ?33, ?34, ?35, ?36, ?37
          )",
         rusqlite::params![
             attempt.id.as_str(),
@@ -263,6 +271,8 @@ fn write_repair_attempt(conn: &Connection, attempt: &AgentWorkspaceRepairAttempt
             attempt.updated_at.to_rfc3339(),
             attempt.settled_at.map(|value| value.to_rfc3339()),
             attempt.explicit_publish_requested,
+            attempt.pr_autofix_issue_kind.map(|kind| kind.as_str()),
+            attempt.base_update_head_commit,
         ],
     )?;
     Ok(())
@@ -306,7 +316,9 @@ fn update_repair_attempt(
              outcome = ?30,
              updated_at = ?31,
              settled_at = ?32,
-             explicit_publish_requested = ?33
+             explicit_publish_requested = ?33,
+             pr_autofix_issue_kind = ?36,
+             base_update_head_commit = ?37
          WHERE id = ?1 AND generation = ?2 AND phase = ?3
            AND (?34 IS NULL OR updated_at = ?34)
            AND (?35 = 0 OR settled_at IS NULL)",
@@ -365,6 +377,8 @@ fn update_repair_attempt(
             attempt.explicit_publish_requested,
             expected_updated_at.map(|value| value.to_rfc3339()),
             if require_unsettled { 1_i64 } else { 0_i64 },
+            attempt.pr_autofix_issue_kind.map(|kind| kind.as_str()),
+            attempt.base_update_head_commit,
         ],
     )?;
     Ok(rows == 1)

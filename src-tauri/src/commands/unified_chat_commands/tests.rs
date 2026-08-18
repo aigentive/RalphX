@@ -53,6 +53,7 @@ use super::{
     switch_agent_conversation_mode_for_state_stopping_running_agent,
     try_acquire_agent_workspace_publish_guard, update_agent_conversation_coordination_mode,
     update_agent_conversation_workspace_from_base_for_app_state,
+    update_agent_conversation_workspace_from_base_for_app_state_with_caller,
     validate_explicit_publish_base_ref, AgentConversationResponse,
     AgentConversationRuntimeIndexGroup, AgentConversationRuntimeIndexKind,
     AgentConversationRuntimeLifecycle, AgentConversationRuntimeSource,
@@ -101,7 +102,7 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
-    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus,
+    AgentConversationWorkspaceStatus, AgentRun, AgentRunActionKind, AgentRunId, AgentRunStatus,
     AgentTaskAssignmentState, AgentTaskCreate, AgentTaskScope, AgentWorkspacePrMetadataDecision,
     AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairOutcome,
     AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewAutoMergeGuard,
@@ -6071,6 +6072,148 @@ fn setup_publish_repo(repo_path: &Path) -> String {
     git(repo_path, &["rev-parse", "HEAD"])
 }
 
+/// Seeds one unsettled repair attempt of the requested source and returns the branch head the
+/// base-update evidence recorder should observe.
+async fn seed_base_update_evidence_attempt(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    source: AgentWorkspaceRepairSource,
+) {
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            ProjectId::from_string("project-base-update-evidence".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-before-update".to_string()),
+            "ralphx/test/base-update-evidence".to_string(),
+            "/tmp/base-update-evidence-workspace".to_string(),
+        ))
+        .await
+        .expect("seed workspace for the repair attempt");
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(
+            crate::domain::repositories::StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: crate::domain::entities::AgentWorkspaceRepairAttempt::new(
+                    conversation_id.clone(),
+                    source,
+                    AgentWorkspaceRepairContinuation::ResumePrSupervision,
+                    "main",
+                    false,
+                    true,
+                    false,
+                    None,
+                    chrono::Utc::now(),
+                ),
+                reason: "base update evidence fixture".to_string(),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("seed repair attempt");
+    assert!(matches!(
+        started,
+        crate::domain::repositories::StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+}
+
+async fn recorded_base_update_head(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Option<String> {
+    state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+        .expect("load attempt")
+        .and_then(|attempt| attempt.base_update_head_commit)
+}
+
+/// The base update already succeeded by the time this runs, so every failure mode must degrade to
+/// a warning rather than failing the update or writing evidence it cannot prove.
+#[tokio::test]
+async fn base_update_head_evidence_is_recorded_only_for_an_active_pr_autofix_attempt() {
+    let repository = tempfile::tempdir().expect("base update evidence repository");
+    let repo_path = repository.path().join("base-update-evidence");
+    let head = setup_publish_repo(&repo_path);
+
+    // No attempt at all: the recorder must be a silent no-op, not a panic or an error.
+    let empty_state = AppState::new_test();
+    let empty_conversation = ChatConversationId::from_string("base-update-evidence-none");
+    super::record_pr_autofix_base_update_head_evidence(
+        &empty_state,
+        &empty_conversation,
+        &repo_path,
+        "main",
+    )
+    .await;
+    assert_eq!(
+        recorded_base_update_head(&empty_state, &empty_conversation).await,
+        None
+    );
+
+    // A non-PrAutofix repair owns its own evidence contract; this route must not touch it.
+    let publish_state = AppState::new_test();
+    let publish_conversation = ChatConversationId::from_string("base-update-evidence-publish");
+    seed_base_update_evidence_attempt(
+        &publish_state,
+        &publish_conversation,
+        AgentWorkspaceRepairSource::Publish,
+    )
+    .await;
+    super::record_pr_autofix_base_update_head_evidence(
+        &publish_state,
+        &publish_conversation,
+        &repo_path,
+        "main",
+    )
+    .await;
+    assert_eq!(
+        recorded_base_update_head(&publish_state, &publish_conversation).await,
+        None
+    );
+
+    // An unreadable branch cannot produce evidence, but must still not fail.
+    let autofix_state = AppState::new_test();
+    let autofix_conversation = ChatConversationId::from_string("base-update-evidence-autofix");
+    seed_base_update_evidence_attempt(
+        &autofix_state,
+        &autofix_conversation,
+        AgentWorkspaceRepairSource::PrAutofix,
+    )
+    .await;
+    super::record_pr_autofix_base_update_head_evidence(
+        &autofix_state,
+        &autofix_conversation,
+        &repo_path,
+        "branch-that-does-not-exist",
+    )
+    .await;
+    assert_eq!(
+        recorded_base_update_head(&autofix_state, &autofix_conversation).await,
+        None
+    );
+
+    super::record_pr_autofix_base_update_head_evidence(
+        &autofix_state,
+        &autofix_conversation,
+        &repo_path,
+        "main",
+    )
+    .await;
+    assert_eq!(
+        recorded_base_update_head(&autofix_state, &autofix_conversation).await,
+        Some(head),
+        "the active PR autofix attempt records the exact branch head the update produced"
+    );
+}
+
 async fn setup_publish_command_state(
     suffix: &str,
     capture_base_commit: bool,
@@ -7826,6 +7969,238 @@ async fn update_workspace_from_base_pr_selection_fetches_remote_head_before_vali
         GitService::ref_exists(&repo_path, "origin/feature/pr-remote-only")
             .await
             .expect("remote tracking check should succeed after update")
+    );
+}
+
+/// Seeds one active, unsettled `PrAutofix` repair attempt for a workspace that already exists,
+/// without touching the workspace's own persisted fields.
+async fn seed_active_pr_autofix_repair_attempt(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) {
+    let started = state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(
+            crate::domain::repositories::StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: crate::domain::entities::AgentWorkspaceRepairAttempt::new(
+                    conversation_id.clone(),
+                    AgentWorkspaceRepairSource::PrAutofix,
+                    AgentWorkspaceRepairContinuation::ResumePrSupervision,
+                    "main",
+                    false,
+                    true,
+                    false,
+                    None,
+                    chrono::Utc::now(),
+                ),
+                reason: "pr autofix base-update gate fixture".to_string(),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            },
+        )
+        .await
+        .expect("seed active pr autofix repair attempt");
+    assert!(matches!(
+        started,
+        crate::domain::repositories::StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(_)
+    ));
+}
+
+/// Seeds a `Running` PR-autofix `AgentRun` whose action metadata makes it the exact, current
+/// completion authority for `pr_number`, and returns its id as the `created_by_run_id` caller.
+async fn seed_current_pr_autofix_completion_authority_run(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+) -> String {
+    let mut run = AgentRun::new(conversation_id.clone());
+    run.action_kind = Some(AgentRunActionKind::PrAutofix);
+    run.action_context_id = Some(pr_number.to_string());
+    run.action_target_id = Some(format!("github_pr_autofix:{pr_number}:gate-fixture"));
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("active pr autofix completion-authority run should persist")
+        .id
+        .to_string()
+}
+
+/// Marks a workspace as an active PR-autofix fixer claim: `needs_agent` push status, `fixing`
+/// supervision. Callers seed the matching completion-authority run and PR number separately.
+async fn claim_workspace_for_pr_autofix(state: &AppState, conversation_id: &ChatConversationId) {
+    let mut workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("claimed workspace should persist");
+}
+
+/// The `if preserve_pr_autofix_claim && updated` gate at the base-update command call site is the
+/// sole trigger for the whole PR-autofix base-update-evidence layer: the completion guard, the
+/// accessor sweep, and the publish redrive all depend on evidence this gate decides whether to
+/// record. Pin its three outcomes directly against the command, not just the evidence recorder it
+/// calls, so a regression in the gate itself cannot hide behind a green suite.
+#[tokio::test]
+async fn base_update_records_pr_autofix_evidence_only_when_claimed_and_updated() {
+    // Claimed + updated: the branch actually moves, and the base-update command must record the
+    // resulting head as unpublished evidence on the active attempt.
+    let (temp, state, conversation_id, _github) = setup_publish_command_state(
+        "gate-claimed-updated",
+        true,
+        Some(701),
+        Arc::new(MockGithubService::new()),
+    )
+    .await;
+    claim_workspace_for_pr_autofix(&state, &conversation_id).await;
+    seed_active_pr_autofix_repair_attempt(&state, &conversation_id).await;
+    let caller_run_id =
+        seed_current_pr_autofix_completion_authority_run(&state, &conversation_id, 701).await;
+    let repo_path = temp.path().join("repo");
+    git(
+        &repo_path,
+        &["checkout", "-b", "release/gate-claimed-updated"],
+    );
+    std::fs::write(repo_path.join("release.txt"), "release\n")
+        .expect("release fixture should be written");
+    git(&repo_path, &["add", "release.txt"]);
+    git(&repo_path, &["commit", "-m", "release base"]);
+    git(&repo_path, &["checkout", "main"]);
+    let execution_state = Arc::new(ExecutionState::new());
+
+    let response = update_agent_conversation_workspace_from_base_for_app_state_with_caller(
+        &state,
+        &execution_state,
+        conversation_id.clone(),
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+            branch_mode: None,
+            base_ref: Some("release/gate-claimed-updated".to_string()),
+            display_name: Some("release/gate-claimed-updated".to_string()),
+            source_pull_request: None,
+        },
+        Some(caller_run_id.as_str()),
+    )
+    .await
+    .expect("claimed base update should succeed");
+
+    assert!(
+        response.updated,
+        "explicit new base branch must produce an update"
+    );
+    assert_eq!(
+        recorded_base_update_head(&state, &conversation_id).await,
+        Some(response.base_commit.clone()),
+        "a claimed, updated base-update must record the resulting branch head as evidence"
+    );
+
+    // Claimed + already fresh: same claim, but nothing moves, so `updated` owns the other half of
+    // the gate and no evidence should be written.
+    let (_temp_fresh, fresh_state, fresh_conversation_id, _github_fresh) =
+        setup_publish_command_state(
+            "gate-claimed-fresh",
+            true,
+            Some(702),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+    claim_workspace_for_pr_autofix(&fresh_state, &fresh_conversation_id).await;
+    seed_active_pr_autofix_repair_attempt(&fresh_state, &fresh_conversation_id).await;
+    let fresh_caller_run_id =
+        seed_current_pr_autofix_completion_authority_run(&fresh_state, &fresh_conversation_id, 702)
+            .await;
+    let fresh_execution_state = Arc::new(ExecutionState::new());
+
+    let fresh_response = update_agent_conversation_workspace_from_base_for_app_state_with_caller(
+        &fresh_state,
+        &fresh_execution_state,
+        fresh_conversation_id.clone(),
+        AgentConversationWorkspaceBaseSelection {
+            kind: None,
+            branch_mode: None,
+            base_ref: None,
+            display_name: None,
+            source_pull_request: None,
+        },
+        Some(fresh_caller_run_id.as_str()),
+    )
+    .await
+    .expect("claimed base update against an unmoved base should still succeed");
+
+    assert!(
+        !fresh_response.updated,
+        "the base has not moved, so the command must report no update"
+    );
+    assert_eq!(
+        recorded_base_update_head(&fresh_state, &fresh_conversation_id).await,
+        None,
+        "an already-fresh base must not record evidence even for a claimed attempt"
+    );
+
+    // Not claimed + updated: an active PR-autofix attempt exists and the base genuinely moves,
+    // but the workspace was never claimed (no `fixing` supervision status), so the gate must not
+    // fire even though `updated` alone would be true.
+    let (temp_unclaimed, unclaimed_state, unclaimed_conversation_id, _github_unclaimed) =
+        setup_publish_command_state(
+            "gate-unclaimed-updated",
+            true,
+            Some(703),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+    seed_active_pr_autofix_repair_attempt(&unclaimed_state, &unclaimed_conversation_id).await;
+    let unclaimed_caller_run_id = seed_current_pr_autofix_completion_authority_run(
+        &unclaimed_state,
+        &unclaimed_conversation_id,
+        703,
+    )
+    .await;
+    let unclaimed_repo_path = temp_unclaimed.path().join("repo");
+    git(
+        &unclaimed_repo_path,
+        &["checkout", "-b", "release/gate-unclaimed-updated"],
+    );
+    std::fs::write(unclaimed_repo_path.join("release.txt"), "release\n")
+        .expect("release fixture should be written");
+    git(&unclaimed_repo_path, &["add", "release.txt"]);
+    git(&unclaimed_repo_path, &["commit", "-m", "release base"]);
+    git(&unclaimed_repo_path, &["checkout", "main"]);
+    let unclaimed_execution_state = Arc::new(ExecutionState::new());
+
+    let unclaimed_response =
+        update_agent_conversation_workspace_from_base_for_app_state_with_caller(
+            &unclaimed_state,
+            &unclaimed_execution_state,
+            unclaimed_conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
+                base_ref: Some("release/gate-unclaimed-updated".to_string()),
+                display_name: Some("release/gate-unclaimed-updated".to_string()),
+                source_pull_request: None,
+            },
+            Some(unclaimed_caller_run_id.as_str()),
+        )
+        .await
+        .expect("unclaimed base update should still succeed");
+
+    assert!(
+        unclaimed_response.updated,
+        "the base genuinely moved even though the workspace was never claimed"
+    );
+    assert_eq!(
+        recorded_base_update_head(&unclaimed_state, &unclaimed_conversation_id).await,
+        None,
+        "an unclaimed attempt must not record evidence even when the base update succeeds"
     );
 }
 

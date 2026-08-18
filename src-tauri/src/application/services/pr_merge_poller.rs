@@ -70,8 +70,9 @@ use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation,
+    AgentWorkspacePrAutofixIssueKind, AgentWorkspacePrCommentEvidenceUpsert,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation,
     AgentWorkspaceRepairOperationStatus, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
     ChatContextType, ChatConversationId, IdeationSessionId, ProjectId,
 };
@@ -3331,16 +3332,9 @@ async fn prepare_agent_workspace_pr_repair_auto_merge_state(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentWorkspacePrAutofixIssueKind {
-    Review,
-    Checks,
-    Mergeability,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentWorkspacePrAutofixIssue {
-    kind: AgentWorkspacePrAutofixIssueKind,
+    pub(crate) kind: AgentWorkspacePrAutofixIssueKind,
     summary: String,
     details: Vec<String>,
     pub(crate) classification: String,
@@ -4663,6 +4657,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
         &target,
         target.pr_number,
         &issue.classification,
+        issue.kind,
         auto_merge_before_reservation,
         AgentWorkspacePrAutofixDispatch {
             repair_summary: &issue.summary,
@@ -4856,6 +4851,9 @@ async fn record_base_parity_transient_detection(
             carryover_pr_autofix_evidence: Some(PrAutofixCarryover {
                 health_fingerprint: Some(classification.to_string()),
                 dispatch_head_commit: None,
+                // Only reachable under a `Checks` classification (see the base-parity branch in
+                // `evaluate_and_dispatch_agent_workspace_pr_autofix`).
+                issue_kind: Some(AgentWorkspacePrAutofixIssueKind::Checks),
             }),
         },
     )
@@ -5234,6 +5232,9 @@ async fn dispatch_agent_workspace_pr_autofix(
     _target: &AgentWorkspacePrAutofixTarget,
     pr_number: i64,
     classification: &str,
+    // The persisted health fingerprint hashes the kind away, so it must travel as its own typed
+    // value for the completion guard to be able to read it back.
+    issue_kind: AgentWorkspacePrAutofixIssueKind,
     auto_merge_before_reservation: Option<bool>,
     dispatch: AgentWorkspacePrAutofixDispatch<'_>,
 ) -> crate::AppResult<bool> {
@@ -5375,6 +5376,7 @@ async fn dispatch_agent_workspace_pr_autofix(
     // Backend-derived dispatch evidence fences later success completion and suppression.
     attempt.pr_autofix_dispatch_head_commit = health.sync_state.head_ref_oid.clone();
     attempt.pr_autofix_health_fingerprint = Some(classification.to_string());
+    attempt.pr_autofix_issue_kind = Some(issue_kind);
     let target_identity =
         GitService::canonical_target_identity(working_dir, &workspace.branch_name).await?;
     let dispatch_attempt = match reserve_agent_workspace_repair_dispatch(
@@ -6719,6 +6721,7 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
         &target,
         pr_number,
         &issue.classification,
+        issue.kind,
         auto_merge_before_reservation,
         AgentWorkspacePrAutofixDispatch {
             repair_summary,
