@@ -592,20 +592,25 @@ async fn flush_streaming_persistence_if_dirty(
     *last_persisted_at = std::time::Instant::now();
 }
 
+/// Persists a message's text timeline item.
+///
+/// Returns the persisted item, whose `sequence` is repo-assigned, so callers can
+/// hand the frontend a render-ready position instead of a guess. `None` means
+/// nothing was persisted (no repo/conversation, empty, or hidden message).
 pub(super) async fn persist_message_text_timeline_item(
     chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
     message: &ChatMessage,
-) {
+) -> Option<ChatTimelineItem> {
     let (Some(repo), Some(conversation_id)) =
         (chat_timeline_repo.as_ref(), message.conversation_id)
     else {
-        return;
+        return None;
     };
     if message.content.is_empty() {
-        return;
+        return None;
     }
     if message_metadata_hidden_from_ui(message.metadata.as_deref()) {
-        return;
+        return None;
     }
 
     let mut item = ChatTimelineItem::for_message_block(
@@ -624,7 +629,7 @@ pub(super) async fn persist_message_text_timeline_item(
     item.updated_at = message.created_at;
     item.finalized_at = Some(message.created_at);
 
-    let _ = repo.upsert_item(item).await;
+    repo.upsert_item(item).await.ok()
 }
 
 fn json_preview(value: &serde_json::Value) -> String {

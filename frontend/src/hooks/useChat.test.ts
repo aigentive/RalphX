@@ -996,6 +996,79 @@ describe("useConversationTimelineWindow", () => {
     ).toBe(true);
   });
 
+  it("keeps already-cached block sequences when finalizing around a mid-run user message", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [
+          timelinePage([
+            {
+              ...mockMessage1,
+              id: "block:assistant-final:0",
+              parentMessageId: "assistant-final",
+              role: "assistant",
+              content: "Streamed before the send",
+              contentBlocks: [{ type: "text", text: "Streamed before the send" }],
+              timelineSequence: 3,
+            },
+            {
+              ...mockMessage1,
+              id: "block:user-mid-run:0",
+              parentMessageId: "user-mid-run",
+              content: "Mid-run question",
+              contentBlocks: [{ type: "text", text: "Mid-run question" }],
+              timelineSequence: 84,
+            },
+          ], {
+            totalItemCount: 84,
+            oldestLoadedSequence: 3,
+            newestLoadedSequence: 84,
+          }),
+        ],
+        pageParams: [null],
+      },
+    );
+
+    const finalized: ChatMessageResponse = {
+      ...mockMessage1,
+      id: "assistant-final",
+      role: "assistant",
+      parentMessageId: null,
+      content: "Streamed before the send",
+      contentBlocks: [
+        { type: "text", text: "Streamed before the send" },
+        { type: "text", text: "Streamed after the send" },
+      ],
+      createdAt: "2026-01-24T10:01:00Z",
+    };
+
+    expect(upsertFinalizedMessageIntoConversationCache(queryClient, "conv-1", finalized)).toBe(true);
+
+    const page = queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1")
+    )?.pages[0];
+
+    // The already-durable block keeps sequence 3 and stays below the user
+    // message; only the genuinely new block appends past the tail.
+    expect(page?.items.map((item) => [item.id, item.sequence])).toEqual([
+      ["block:assistant-final:0", 3],
+      ["block:user-mid-run:0", 84],
+      ["block:assistant-final:1", 85],
+    ]);
+    expect(page?.messages.map((message) => message.id)).toEqual([
+      "block:assistant-final:0",
+      "block:user-mid-run:0",
+      "block:assistant-final:1",
+    ]);
+    expect(page?.oldestLoadedSequence).toBe(3);
+    expect(page?.newestLoadedSequence).toBe(85);
+  });
+
   it("does not upsert finalized messages when the active timeline cache is absent", () => {
     const { queryClient } = createWrapperWithClient();
     const finalized: ChatMessageResponse = {
@@ -1226,6 +1299,195 @@ describe("useConversationTimelineWindow", () => {
     expect(timelineData?.pages[0]?.newestLoadedSequence).toBe(12);
     expect(timelineData?.pages[0]?.messages[1]?.providerHarness).toBe("codex");
     expect(timelineData?.pages[0]?.messages[1]?.toolCalls?.[0]?.result).toBe("preview");
+  });
+
+  it("replaces the optimistic user row when render-ready arrives under the backend id", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 0,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [
+          timelinePage([
+            {
+              ...mockMessage1,
+              id: "block:assistant-live:0",
+              parentMessageId: "assistant-live",
+              role: "assistant",
+              content: "Streamed before the send",
+              timelineSequence: 83,
+            },
+          ], {
+            totalItemCount: 83,
+            oldestLoadedSequence: 83,
+            newestLoadedSequence: 83,
+          }),
+        ],
+        pageParams: [null],
+      },
+    );
+
+    // The optimistic row carries a client-generated `optimistic:` id and a
+    // guessed tail sequence — the backend id can never match it.
+    addOptimisticUserMessageToConversationCache(queryClient, "conv-1", "Mid-run question");
+
+    const didUpsert = upsertRenderReadyMessageIntoConversationCache(queryClient, "conv-1", {
+      message: {
+        id: "user-mid-run",
+        conversation_id: "conv-1",
+        role: "user",
+        content: "Mid-run question",
+        content_blocks: [{ type: "text", text: "Mid-run question" }],
+        created_at: "2026-01-24T10:01:00Z",
+      },
+      timeline_items: [{
+        id: "block:user-mid-run:0",
+        conversation_id: "conv-1",
+        message_id: "user-mid-run",
+        run_id: null,
+        sequence: 84,
+        block_index: 0,
+        role: "user",
+        kind: "text",
+        status: "finalized",
+        content: "Mid-run question",
+        content_blocks: [{ type: "text", text: "Mid-run question" }],
+        tool_call: null,
+        metadata: null,
+        provider_harness: null,
+        provider_session_id: null,
+        created_at: "2026-01-24T10:01:00Z",
+        updated_at: "2026-01-24T10:01:00Z",
+        finalized_at: "2026-01-24T10:01:00Z",
+      }],
+    });
+
+    expect(didUpsert).toBe(true);
+    const page = queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1")
+    )?.pages[0];
+
+    expect(page?.items.map((item) => [item.id, item.sequence])).toEqual([
+      ["block:assistant-live:0", 83],
+      ["block:user-mid-run:0", 84],
+    ]);
+    expect(
+      page?.items.filter((item) => item.content === "Mid-run question"),
+    ).toHaveLength(1);
+    expect(
+      page?.items.some((item) => item.id.startsWith("optimistic-timeline:")),
+    ).toBe(false);
+  });
+
+  it("retires only the first matching optimistic row when two identical-content optimistic rows exist", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 0,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [
+          timelinePage([], {
+            totalItemCount: 0,
+            oldestLoadedSequence: null,
+            newestLoadedSequence: null,
+          }),
+        ],
+        pageParams: [null],
+      },
+    );
+
+    // Seed two optimistic rows with identical content — rapid double-send scenario.
+    addOptimisticUserMessageToConversationCache(queryClient, "conv-1", "Same message");
+    addOptimisticUserMessageToConversationCache(queryClient, "conv-1", "Same message");
+
+    const pageBefore = queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1")
+    )?.pages[0];
+    expect(
+      pageBefore?.items.filter((item) => item.id.startsWith("optimistic-timeline:"))
+    ).toHaveLength(2);
+
+    upsertRenderReadyMessageIntoConversationCache(queryClient, "conv-1", {
+      message: {
+        id: "user-double-send",
+        conversation_id: "conv-1",
+        role: "user",
+        content: "Same message",
+        content_blocks: [{ type: "text", text: "Same message" }],
+        created_at: "2026-01-24T10:01:00Z",
+      },
+      timeline_items: [{
+        id: "block:user-double-send:0",
+        conversation_id: "conv-1",
+        message_id: "user-double-send",
+        run_id: null,
+        sequence: 2,
+        block_index: 0,
+        role: "user",
+        kind: "text",
+        status: "finalized",
+        content: "Same message",
+        content_blocks: [{ type: "text", text: "Same message" }],
+        tool_call: null,
+        metadata: null,
+        provider_harness: null,
+        provider_session_id: null,
+        created_at: "2026-01-24T10:01:00Z",
+        updated_at: "2026-01-24T10:01:00Z",
+        finalized_at: "2026-01-24T10:01:00Z",
+      }],
+    });
+
+    const pageAfter = queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1")
+    )?.pages[0];
+
+    // Exactly one optimistic row survives (the second one); the backend row is inserted.
+    expect(
+      pageAfter?.items.filter((item) => item.id.startsWith("optimistic-timeline:"))
+    ).toHaveLength(1);
+    expect(
+      pageAfter?.items.filter((item) => item.id === "block:user-double-send:0")
+    ).toHaveLength(1);
+    expect(pageAfter?.items.filter((item) => item.content === "Same message")).toHaveLength(2);
   });
 
   it("does not upsert hidden render-ready bootstrap rows into conversation caches", () => {

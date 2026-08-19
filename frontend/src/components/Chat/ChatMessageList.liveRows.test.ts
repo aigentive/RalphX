@@ -4,7 +4,9 @@ import {
   buildLiveTranscriptRows,
   isLiveThinkingGroupKey,
   liveThinkingGroupKey,
+  liveTranscriptRowSortTimes,
 } from "./ChatMessageList.liveRows";
+import type { LiveTranscriptRow } from "./ChatMessageList.liveRows";
 
 function textBlock(index: number, text = `Live update ${index}`): StreamingContentBlock {
   return { type: "text", text, seq: index };
@@ -267,5 +269,65 @@ describe("ChatMessageList live transcript rows", () => {
     );
 
     expect(rows).toEqual([]);
+  });
+});
+
+describe("liveTranscriptRowSortTimes", () => {
+  function row(key: string, receivedAt?: number): LiveTranscriptRow {
+    return {
+      kind: "text",
+      key,
+      text: key,
+      sourceIndex: 0,
+      ...(receivedAt != null ? { receivedAt } : {}),
+    };
+  }
+
+  it("uses receipt times so persisted rows can interleave with the live tail", () => {
+    const sortTimes = liveTranscriptRowSortTimes([
+      row("first", 1_000),
+      row("second", 3_000),
+    ]);
+
+    expect(sortTimes).toEqual([1_000, 3_000]);
+  });
+
+  it("carries the last known receipt time forward across rows that have none", () => {
+    const sortTimes = liveTranscriptRowSortTimes([
+      row("first", 1_000),
+      row("gap"),
+      row("last", 3_000),
+    ]);
+
+    expect(sortTimes).toEqual([1_000, 1_000, 3_000]);
+  });
+
+  it("carries the first known receipt time back over recovered prefix rows", () => {
+    const sortTimes = liveTranscriptRowSortTimes([
+      row("recovered-text"),
+      row("recovered-tools"),
+      row("late-live", 60_000),
+    ]);
+
+    // Recovered rows carry no wall clock; they must stay ahead of the late
+    // live row instead of floating to epoch 0.
+    expect(sortTimes).toEqual([60_000, 60_000, 60_000]);
+  });
+
+  it("keeps the legacy bottom-pinned scheme when no row carries a receipt time", () => {
+    const rows = [row("a"), row("b"), row("c")];
+
+    const sortTimes = liveTranscriptRowSortTimes(rows);
+
+    expect(sortTimes).toEqual([
+      Number.MAX_SAFE_INTEGER - 4,
+      Number.MAX_SAFE_INTEGER - 3,
+      Number.MAX_SAFE_INTEGER - 2,
+    ]);
+    expect(sortTimes.every((sortTime) => sortTime < Number.MAX_SAFE_INTEGER)).toBe(true);
+  });
+
+  it("returns an empty projection for an empty tail", () => {
+    expect(liveTranscriptRowSortTimes([])).toEqual([]);
   });
 });
