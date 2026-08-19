@@ -1706,6 +1706,94 @@ describe("useChatEvents", () => {
       });
     });
 
+    it("places a user message from its backend render-ready payload", () => {
+      mockUpsertRenderReadyMessageIntoConversationCache.mockReturnValue(true);
+      const renderReady = {
+        message: {
+          id: "user-mid-run",
+          conversation_id: CONV_ID,
+          role: "user",
+          content: "Mid-run question",
+          content_blocks: [{ type: "text", text: "Mid-run question" }],
+          created_at: "2026-01-24T10:01:00Z",
+        },
+        timeline_items: [{
+          id: "block:user-mid-run:0",
+          conversation_id: CONV_ID,
+          message_id: "user-mid-run",
+          run_id: null,
+          sequence: 84,
+          block_index: 0,
+          role: "user",
+          kind: "text",
+          status: "finalized",
+          content: "Mid-run question",
+          content_blocks: [{ type: "text", text: "Mid-run question" }],
+          tool_call: null,
+          metadata: null,
+          provider_harness: null,
+          provider_session_id: null,
+          created_at: "2026-01-24T10:01:00Z",
+          updated_at: "2026-01-24T10:01:00Z",
+          finalized_at: "2026-01-24T10:01:00Z",
+        }],
+      };
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:message_created", {
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          role: "user",
+          message_id: "user-mid-run",
+          content: "Mid-run question",
+          render_ready: renderReady,
+        });
+      });
+
+      expect(mockUpsertRenderReadyMessageIntoConversationCache).toHaveBeenCalledWith(
+        expect.anything(),
+        CONV_ID,
+        renderReady,
+      );
+      // User messages never enter the assistant finalization machinery.
+      expect(props.setIsFinalizing).not.toHaveBeenCalled();
+      expect(props.setStreamingContentBlocks).not.toHaveBeenCalled();
+      // Attachment hydration still rides on the broad refetch, so the
+      // user-role invalidation gate stays exactly as it was.
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID, "history"],
+      });
+    });
+
+    it("leaves user messages without render_ready on the existing invalidation path", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:message_created", {
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+          role: "user",
+          message_id: "user-mid-run",
+          content: "Mid-run question",
+        });
+      });
+
+      expect(mockUpsertRenderReadyMessageIntoConversationCache).not.toHaveBeenCalled();
+      expect(props.setIsFinalizing).not.toHaveBeenCalled();
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", CONV_ID, "history"],
+      });
+    });
+
     it("should invalidate conversation stats on assistant message", () => {
       const props = makeProps();
       renderAndClear(props);
