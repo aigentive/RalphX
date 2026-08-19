@@ -85,6 +85,9 @@ const WORKSPACE_REVIEW_FIXER_INTERRUPTED_ON_STARTUP_ERROR: &str =
 const WORKSPACE_REVIEW_FIXER_INVALID_AUTHORITY_ON_STARTUP_ERROR: &str =
     "Workspace Review fixer recovery found invalid attempt authority";
 const WORKSPACE_REVIEW_FIXER_STATUS_FAILED: &str = "failed";
+/// Prefix for the `last_error` a Workspace Review fixer writes when it cannot repair safely.
+const WORKSPACE_REVIEW_FIXER_BLOCKER_ERROR_PREFIX: &str =
+    "Workspace Review fixer reported a blocker: ";
 const WORKSPACE_REVIEW_FIXER_SKIPPED_ALREADY_ACTIVE: &str = "fixer_already_active";
 const WORKSPACE_REVIEW_PLAN_CONTEXT_CHANGED_ERROR: &str =
     "The linked plan changed after this Workspace Review. Run Workspace Review again before repairing its findings.";
@@ -3965,6 +3968,108 @@ async fn settle_workspace_review_fixer_attempt(
                 "workspace Review fixer attempt was superseded before settlement".to_string(),
             )
         })
+}
+
+/// Result of a Workspace Review fixer run reporting its own completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceReviewFixerCompletionOutcome {
+    /// Summary accepted; the run should end and a fresh Workspace Review settles the loop.
+    Accepted,
+    /// Blocker recorded; the fixer attempt settled `failed`, so the loop stops re-routing.
+    Blocked,
+    /// Fixer linkage matches but the attempt already reached a terminal status.
+    AlreadySettled,
+    /// The fixer attempt was superseded between the monitor read and the CAS settle.
+    Superseded,
+    /// The run is not the active Review fixer for this conversation.
+    NotFixerRun,
+}
+
+/// Records a Workspace Review fixer run's own completion report.
+///
+/// Review fixers never own a durable `agent_workspace_repair_attempts` row, so the repair
+/// completion handler cannot authorize them from attempt lineage. This is their completion
+/// channel: it re-proves the caller is the active fixer, then either accepts the summary —
+/// leaving the run-end → re-review loop as the settlement authority — or records a blocker that
+/// terminates the fix loop for the same findings.
+///
+/// # Errors
+/// Returns an error when the run, the monitor, or the fixer settlement cannot be read or written.
+pub async fn complete_workspace_review_fixer_run(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    run_id: &AgentRunId,
+    blocker: Option<&str>,
+) -> AppResult<WorkspaceReviewFixerCompletionOutcome> {
+    let outcome =
+        resolve_workspace_review_fixer_completion(state, conversation_id, run_id, blocker).await?;
+    info!(
+        target: WORKSPACE_REVIEW_LOG_TARGET,
+        operation = "fixer_completion_tool",
+        conversation_id = %conversation_id,
+        run_id = %run_id,
+        blocked = blocker.is_some(),
+        outcome = ?outcome,
+        "Workspace Review fixer reported completion"
+    );
+    Ok(outcome)
+}
+
+/// Fails closed at every gate: anything that cannot be proven is `NotFixerRun`, which leaves the
+/// caller on its existing rejection path.
+async fn resolve_workspace_review_fixer_completion(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    run_id: &AgentRunId,
+    blocker: Option<&str>,
+) -> AppResult<WorkspaceReviewFixerCompletionOutcome> {
+    let Some(run) = state.agent_run_repo.get_by_id(run_id).await? else {
+        return Ok(WorkspaceReviewFixerCompletionOutcome::NotFixerRun);
+    };
+    if run.conversation_id != *conversation_id || run.status != AgentRunStatus::Running {
+        return Ok(WorkspaceReviewFixerCompletionOutcome::NotFixerRun);
+    }
+    let Some(monitor) = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(conversation_id)
+        .await?
+    else {
+        return Ok(WorkspaceReviewFixerCompletionOutcome::NotFixerRun);
+    };
+    if monitor.review_fixer_run_id.as_deref() != Some(run_id.as_str().as_str()) {
+        return Ok(WorkspaceReviewFixerCompletionOutcome::NotFixerRun);
+    }
+    if !workspace_review_fixer_status_is_active(monitor.review_fixer_status.as_deref()) {
+        return Ok(WorkspaceReviewFixerCompletionOutcome::AlreadySettled);
+    }
+    let Some(blocker) = blocker else {
+        // The run-end → review-invalidation → re-review loop remains the settlement authority for
+        // a successful fix, so the accepted path deliberately leaves the monitor untouched.
+        return Ok(WorkspaceReviewFixerCompletionOutcome::Accepted);
+    };
+    let Some(attempt_id) = monitor.review_fixer_attempt_id.clone() else {
+        return Ok(WorkspaceReviewFixerCompletionOutcome::NotFixerRun);
+    };
+    let Some(snapshot) = AgentWorkspaceReviewFixerSnapshot::from_monitor(&monitor) else {
+        return Ok(WorkspaceReviewFixerCompletionOutcome::NotFixerRun);
+    };
+    let mut next = monitor;
+    next.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED.to_string());
+    next.last_error = Some(format!(
+        "{WORKSPACE_REVIEW_FIXER_BLOCKER_ERROR_PREFIX}{}",
+        blocker.trim()
+    ));
+    // The repo returns `None` for a lost CAS; read supersession from that, never from an error.
+    Ok(
+        match state
+            .agent_conversation_workspace_repo
+            .settle_workspace_review_fixer_attempt(next, &attempt_id, &snapshot)
+            .await?
+        {
+            Some(_) => WorkspaceReviewFixerCompletionOutcome::Blocked,
+            None => WorkspaceReviewFixerCompletionOutcome::Superseded,
+        },
+    )
 }
 
 fn workspace_review_fixer_request_metadata(
