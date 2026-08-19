@@ -52,6 +52,7 @@ import {
   buildLiveTranscriptRows,
   isLiveThinkingGroupKey,
   liveToolGroupKey,
+  liveTranscriptRowSortTimes,
   type LiveTranscriptRow,
   type StreamingToolUseBlock,
 } from "./ChatMessageList.liveRows";
@@ -364,14 +365,6 @@ function canContinueToolCallGroup(
     return false;
   }
   return true;
-}
-
-function liveTranscriptRowSortTime(
-  _row: LiveTranscriptRow,
-  rowIndex: number,
-  rowCount: number,
-): number {
-  return Number.MAX_SAFE_INTEGER - rowCount + rowIndex - 1;
 }
 
 function collectToolCallGroupRun(
@@ -1645,15 +1638,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }
       }
 
+      const liveSortTimes = liveTranscriptRowSortTimes(liveTranscriptRows);
       liveTranscriptRows.forEach((row, rowIndex) => {
         items.push({
           kind: "streaming_row",
           data: row,
-          sortTime: liveTranscriptRowSortTime(
-            row,
-            rowIndex,
-            liveTranscriptRows.length,
-          ),
+          sortTime: liveSortTimes[rowIndex] ?? Number.MAX_SAFE_INTEGER - 1,
         });
       });
 
