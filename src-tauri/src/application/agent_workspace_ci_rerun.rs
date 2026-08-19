@@ -116,7 +116,14 @@ impl CiHoldIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TransientCiPlan {
     MissingHead,
+    /// Something at this head is unresolved — a transient conclusion whose run id could not be
+    /// parsed, or an in-flight check with no usable run URL — so RalphX cannot name a run to
+    /// rerun. Distinct from [`TransientCiPlan::NoFailuresAtHead`]: here there *is* a signal and
+    /// RalphX cannot act on it, which is a genuine blocker.
     NoObservedFailure,
+    /// Nothing failed and nothing is running. A healthy PR is not a blocked repair, so this
+    /// rejects the classification instead of burning a generation on a hold with no evidence.
+    NoFailuresAtHead,
     /// Formatted `name (conclusion)` strings for the rejection message. Run-scoped: a
     /// deterministic conclusion inside a workflow run that also has a transient
     /// (`cancelled`/`timed_out`/`startup_failure`) sibling does not veto here — that run
@@ -179,7 +186,35 @@ pub(crate) fn transient_ci_rerun_plan(health: &PrHealth) -> TransientCiPlan {
     }
 
     if transient_run_ids.is_empty() {
-        return TransientCiPlan::NoObservedFailure;
+        // `classify_check_conclusion` requires a conclusion and `check_is_in_flight` requires the
+        // absence of one, so an in-flight run can never reach `transient_run_ids`. Before this
+        // branch existed, a head whose only signal was an in-progress run fell through to
+        // `NoObservedFailure` and blocked the attempt — which is what stranded a fixer that
+        // correctly wanted to rerun a run once it finished. Hold for the run instead.
+        let in_flight_run_ids = health
+            .checks
+            .iter()
+            .filter(|check| check_is_in_flight(check))
+            .filter_map(workflow_run_id)
+            .collect::<Vec<_>>();
+        if !in_flight_run_ids.is_empty() {
+            return TransientCiPlan::AwaitRuns(CiHoldIdentity::new(head_oid, in_flight_run_ids));
+        }
+        // An unresolved signal RalphX cannot name a run for stays a blocker; only a genuinely
+        // quiet head is reported as having nothing to rerun.
+        let has_unresolved_signal = health.checks.iter().any(|check| {
+            check_is_in_flight(check)
+                || check
+                    .conclusion
+                    .as_deref()
+                    .and_then(classify_check_conclusion)
+                    == Some(CiFailureKind::Transient)
+        });
+        return if has_unresolved_signal {
+            TransientCiPlan::NoObservedFailure
+        } else {
+            TransientCiPlan::NoFailuresAtHead
+        };
     }
 
     let in_flight_run_ids = transient_run_ids
@@ -285,6 +320,9 @@ pub(crate) async fn execute_transient_ci_rerun(
             )
             .await
         }
+        TransientCiPlan::NoFailuresAtHead => Ok(TransientCiRerunOutcome::Rejected(
+            "Rejected `transient_ci`: fresh PR health reports no failing and no in-progress checks at the current head, so there is no GitHub Actions run to rerun. If your change resolved the failure, complete with `fixed`; otherwise classify `pre_existing_on_base` / `needs_human`.".to_string(),
+        )),
         TransientCiPlan::DeterministicFailures(checks) => Ok(TransientCiRerunOutcome::Rejected(format!(
             "Rejected `transient_ci`: PR health still reports real failing checks at the current head: {}. Rerunning cannot clear them. Fix the failure and complete with `fixed`, or classify `pre_existing_on_base` / `needs_human`.",
             checks.join(", ")
