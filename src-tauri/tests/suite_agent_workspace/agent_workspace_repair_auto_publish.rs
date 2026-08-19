@@ -1616,7 +1616,7 @@ async fn terminal_recovery_reports_a_failed_clean_repair_continuation_as_pending
         workspace
             .pr_supervision_summary
             .as_deref()
-            .is_some_and(|summary| summary.contains("pending reconciliation")),
+            .is_some_and(|summary| summary.contains("will try again")),
         "the compatibility projection must not claim successful continuation"
     );
     assert_eq!(
