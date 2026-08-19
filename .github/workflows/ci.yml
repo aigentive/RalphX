@@ -314,6 +314,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
+      # Debug-info lib test builds exceed the hosted runner memory limit at full
+      # Cargo concurrency and take the runner down mid-compile (exit 143 +
+      # "runner has received a shutdown signal"). Mirrors the cap the coverage
+      # lib archive already needs; revert to 1 if the build still OOMs.
+      CARGO_BUILD_JOBS: "2"
       CARGO_PROFILE_TEST_DEBUG: "1"
       RALPHX_TEST_MODE: "1"
     steps:
