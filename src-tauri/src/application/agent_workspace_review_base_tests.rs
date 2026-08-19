@@ -40,6 +40,13 @@ fn git(repo: &Path, args: &[&str]) -> String {
 }
 
 fn init_diverged_repo() -> (tempfile::TempDir, String) {
+    let (temp, branch_point, _advanced_main) = init_diverged_repo_with_main_head();
+    (temp, branch_point)
+}
+
+/// Same repo shape as `init_diverged_repo`, but also returns the advanced `main` head so tests can
+/// simulate a `base_commit` snapshot that was retargeted ahead of the branch it is diffed against.
+fn init_diverged_repo_with_main_head() -> (tempfile::TempDir, String, String) {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo = temp.path();
     git(repo, &["init", "-b", "main"]);
@@ -61,21 +68,81 @@ fn init_diverged_repo() -> (tempfile::TempDir, String) {
         .expect("main file should be written");
     git(repo, &["add", "main.rs"]);
     git(repo, &["commit", "-m", "main"]);
+    let advanced_main = git(repo, &["rev-parse", "HEAD"]);
 
-    (temp, branch_point)
+    (temp, branch_point, advanced_main)
 }
 
 #[tokio::test]
 async fn isolated_workspace_review_base_uses_trimmed_captured_base() {
-    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (temp, branch_point) = init_diverged_repo();
+    let workspace = workspace(AgentConversationWorkspaceBranchMode::Isolated);
+    let padded_captured_base = format!(" {branch_point} ");
+
+    let base = resolve_agent_workspace_review_base(
+        temp.path(),
+        &workspace,
+        "feature",
+        &padded_captured_base,
+    )
+    .await
+    .expect("isolated workspace should use captured base");
+
+    assert_eq!(base, branch_point);
+}
+
+#[tokio::test]
+async fn isolated_review_base_keeps_genuine_snapshot_when_ancestor_of_head() {
+    let (temp, branch_point) = init_diverged_repo();
     let workspace = workspace(AgentConversationWorkspaceBranchMode::Isolated);
 
     let base =
-        resolve_agent_workspace_review_base(temp.path(), &workspace, "ignored", " captured-sha ")
+        resolve_agent_workspace_review_base(temp.path(), &workspace, "feature", &branch_point)
             .await
-            .expect("isolated workspace should use captured base");
+            .expect("isolated workspace should keep a captured base contained in the branch");
 
-    assert_eq!(base, "captured-sha");
+    assert_eq!(base, branch_point);
+}
+
+#[tokio::test]
+async fn isolated_review_base_falls_back_to_merge_base_when_captured_base_is_ahead_of_head() {
+    let (temp, branch_point, advanced_main) = init_diverged_repo_with_main_head();
+    let workspace = workspace(AgentConversationWorkspaceBranchMode::Isolated);
+
+    let base =
+        resolve_agent_workspace_review_base(temp.path(), &workspace, "feature", &advanced_main)
+            .await
+            .expect("isolated workspace should degrade to the branch point");
+
+    assert_eq!(base, branch_point);
+    assert_ne!(base, advanced_main);
+}
+
+#[tokio::test]
+async fn isolated_review_base_surfaces_git_error_for_unknown_captured_base() {
+    let (temp, _branch_point) = init_diverged_repo();
+    let workspace = workspace(AgentConversationWorkspaceBranchMode::Isolated);
+
+    let result = resolve_agent_workspace_review_base(
+        temp.path(),
+        &workspace,
+        "feature",
+        "0000000000000000000000000000000000000000",
+    )
+    .await;
+
+    assert!(matches!(result, Err(AppError::GitOperation(_))));
+}
+
+#[tokio::test]
+async fn isolated_workspace_review_base_requires_head_ref() {
+    let (temp, branch_point) = init_diverged_repo();
+    let workspace = workspace(AgentConversationWorkspaceBranchMode::Isolated);
+
+    let result =
+        resolve_agent_workspace_review_base(temp.path(), &workspace, " ", &branch_point).await;
+
+    assert!(matches!(result, Err(AppError::Validation(message)) if message.contains("head ref")));
 }
 
 #[tokio::test]

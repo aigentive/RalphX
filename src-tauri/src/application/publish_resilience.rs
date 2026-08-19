@@ -1020,7 +1020,7 @@ pub(crate) async fn has_authoritative_observed_agent_workspace_repair_push(
 pub(crate) async fn retarget_agent_workspace_repair_pr_handoff(
     state: &AppState,
     repo_path: &Path,
-    attempt: AgentWorkspaceRepairAttempt,
+    mut attempt: AgentWorkspaceRepairAttempt,
     reason: &str,
 ) -> AppResult<()> {
     // Refresh the persisted base commit first (origin was already fetched during receipt
@@ -1040,7 +1040,7 @@ pub(crate) async fn retarget_agent_workspace_repair_pr_handoff(
             {
                 if workspace.base_commit.as_deref() != Some(current_base_commit.as_str()) {
                     let mut refreshed = workspace;
-                    refreshed.base_commit = Some(current_base_commit);
+                    refreshed.base_commit = Some(current_base_commit.clone());
                     refreshed.updated_at = Utc::now();
                     if let Err(error) = state
                         .agent_conversation_workspace_repo
@@ -1053,6 +1053,9 @@ pub(crate) async fn retarget_agent_workspace_repair_pr_handoff(
                             "Could not persist refreshed base commit before retargetable repair block"
                         );
                     }
+                    // Mirror the target on the attempt so auto-retry successors inherit the
+                    // fresh base via target_base_commit rather than the stale dispatch value.
+                    attempt.target_base_commit = Some(current_base_commit);
                 }
             }
         }
