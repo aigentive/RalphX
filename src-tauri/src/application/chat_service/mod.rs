@@ -3691,7 +3691,7 @@ impl AppChatService {
 
         match self.chat_message_repo.create(assistant_msg.clone()).await {
             Ok(_) => {
-                chat_service_streaming::persist_message_text_timeline_item(
+                let _ = chat_service_streaming::persist_message_text_timeline_item(
                     &self.chat_timeline_repo,
                     &assistant_msg,
                 )
@@ -6098,13 +6098,15 @@ impl ChatService for AppChatService {
                     .await
                     .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
                 options.persisted_message_id = Some(user_msg_id.clone());
-                if !hide_user_message {
+                let persisted_timeline_item = if hide_user_message {
+                    None
+                } else {
                     chat_service_streaming::persist_message_text_timeline_item(
                         &self.chat_timeline_repo,
                         user_msg,
                     )
-                    .await;
-                }
+                    .await
+                };
                 self.link_turn_attachments(&turn_attachments, &user_msg_id)
                     .await?;
                 if !hide_user_message {
@@ -6155,7 +6157,14 @@ impl ChatService for AppChatService {
                             content: message.to_string(),
                             created_at: Some(user_msg_created_at),
                             metadata: persisted_metadata.clone(),
-                            render_ready: None,
+                            // Carries the repo-assigned sequence so the frontend can
+                            // place the message instead of guessing a tail position.
+                            render_ready: persisted_timeline_item.and_then(|item| {
+                                AgentMessageRenderReadyPayload::from_message_and_timeline_items(
+                                    user_msg,
+                                    vec![item],
+                                )
+                            }),
                         },
                     );
                 }
@@ -7225,7 +7234,7 @@ impl ChatService for AppChatService {
                 }
                 user_message_persisted = true;
                 if !hide_user_message {
-                    chat_service_streaming::persist_message_text_timeline_item(
+                    let _ = chat_service_streaming::persist_message_text_timeline_item(
                         &self.chat_timeline_repo,
                         &user_msg,
                     )
@@ -8294,11 +8303,12 @@ impl ChatService for AppChatService {
                             }
                         }
 
-                        chat_service_streaming::persist_message_text_timeline_item(
-                            &self.chat_timeline_repo,
-                            &user_msg,
-                        )
-                        .await;
+                        let persisted_timeline_item =
+                            chat_service_streaming::persist_message_text_timeline_item(
+                                &self.chat_timeline_repo,
+                                &user_msg,
+                            )
+                            .await;
 
                         if context_type == ChatContextType::Ideation {
                             let _ = self
@@ -8319,7 +8329,12 @@ impl ChatService for AppChatService {
                                 content: content.to_string(),
                                 created_at: Some(user_msg_created_at),
                                 metadata: None,
-                                render_ready: None,
+                                render_ready: persisted_timeline_item.and_then(|item| {
+                                    AgentMessageRenderReadyPayload::from_message_and_timeline_items(
+                                        &user_msg,
+                                        vec![item],
+                                    )
+                                }),
                             },
                         );
 
@@ -9399,8 +9414,9 @@ mod agent_workspace_send_tests {
         AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
         AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
         AgentWorkspaceSourcePullRequest, ChatAttachment, ChatAttachmentId, ChatContextType,
-        ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession,
-        MessageRole, Project, ProjectId, TaskId,
+        ChatConversation, ChatConversationId, ChatMessageId, ChatTimelineItem,
+        ChatTimelineItemKind, IdeationAnalysisBaseRefKind, IdeationSession, MessageRole, Project,
+        ProjectId, TaskId,
     };
     use crate::domain::services::{
         ComposerProjectReference, ComposerProjectReferenceKind, RunningAgentKey,
@@ -9676,6 +9692,285 @@ mod agent_workspace_send_tests {
         assert_eq!(
             result.agent_run_id, run_id,
             "Gate 1 sends must not invent a run id that terminal events cannot match"
+        );
+    }
+
+    async fn send_to_running_interactive_process(
+        state: &AppState,
+        context_id: &str,
+        conversation_id: ChatConversationId,
+        message: &str,
+        options: SendMessageOptions,
+    ) {
+        let run = AgentRun::new(conversation_id);
+        let run_id = run.id.as_str().to_string();
+        state
+            .agent_run_repo
+            .create(run)
+            .await
+            .expect("active run should persist");
+
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("cat should spawn for stdin test");
+        let stdin = child.stdin.take().expect("cat stdin should be piped");
+        let interactive_key = InteractiveProcessKey::new("task", context_id);
+        state
+            .interactive_process_registry
+            .register_with_metadata(
+                interactive_key.clone(),
+                stdin,
+                InteractiveProcessMetadata {
+                    agent_run_id: Some(run_id.clone()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new("task", context_id),
+                0,
+                conversation_id.as_str().to_string(),
+                run_id,
+                None,
+                None,
+            )
+            .await;
+
+        let service =
+            state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+        service
+            .send_message(ChatContextType::Task, context_id, message, options)
+            .await
+            .expect("interactive stdin send should succeed");
+
+        state
+            .interactive_process_registry
+            .remove(&interactive_key)
+            .await;
+        let _ = child.kill().await;
+    }
+
+    #[tokio::test]
+    async fn interactive_stdin_send_emits_render_ready_user_message_at_repo_sequence() {
+        let mut state = AppState::new_test();
+        let events = RecordingEventSink::new();
+        state.events = Arc::new(events.clone());
+        let context_id = "task-interactive-render-ready";
+        let conversation = ChatConversation::new_task(TaskId::from_string(context_id.to_string()));
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+
+        // Streamed activity already occupies the timeline, so a mid-run user
+        // message must land above it rather than at sequence 1.
+        for index in 0..3 {
+            let mut streamed = ChatTimelineItem::for_message_block(
+                ChatMessageId::from_string(format!("streamed-{index}")),
+                conversation_id,
+                0,
+                MessageRole::Orchestrator,
+                ChatTimelineItemKind::Text,
+            );
+            streamed.text = Some(format!("streamed {index}"));
+            state
+                .chat_timeline_repo
+                .upsert_item(streamed)
+                .await
+                .expect("streamed evidence should persist");
+        }
+
+        send_to_running_interactive_process(
+            &state,
+            context_id,
+            conversation_id,
+            "follow-up",
+            SendMessageOptions::default(),
+        )
+        .await;
+
+        let created = events
+            .events()
+            .into_iter()
+            .find(|event| event.event == "agent:message_created")
+            .expect("visible Gate 1 send should emit agent:message_created");
+        let message_id = created.payload["message_id"]
+            .as_str()
+            .expect("message id")
+            .to_string();
+        let persisted = state
+            .chat_timeline_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("timeline should read back")
+            .into_iter()
+            .find(|item| {
+                item.message_id.as_ref().map(|id| id.as_str()) == Some(message_id.as_str())
+            })
+            .expect("user message should have a persisted timeline item");
+
+        let render_ready = &created.payload["render_ready"];
+        assert!(
+            !render_ready.is_null(),
+            "user-message event must carry render_ready so the frontend can place it"
+        );
+        assert_eq!(render_ready["message"]["id"], message_id.as_str());
+        assert_eq!(render_ready["message"]["role"], "user");
+        let items = render_ready["timeline_items"]
+            .as_array()
+            .expect("timeline items");
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0]["sequence"].as_i64(),
+            Some(persisted.sequence),
+            "render_ready must carry the repo-assigned sequence, not a guess"
+        );
+        assert_eq!(persisted.sequence, 4);
+    }
+
+    #[tokio::test]
+    async fn queue_message_interactive_fast_path_emits_render_ready_at_repo_sequence() {
+        let mut state = AppState::new_test();
+        let events = RecordingEventSink::new();
+        state.events = Arc::new(events.clone());
+        let context_id = "task-queue-interactive-render-ready";
+        let conversation = ChatConversation::new_task(TaskId::from_string(context_id.to_string()));
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+
+        // Seed streamed timeline items so the user message lands above them.
+        for index in 0..3 {
+            let mut streamed = ChatTimelineItem::for_message_block(
+                ChatMessageId::from_string(format!("streamed-q-{index}")),
+                conversation_id,
+                0,
+                MessageRole::Orchestrator,
+                ChatTimelineItemKind::Text,
+            );
+            streamed.text = Some(format!("streamed {index}"));
+            state
+                .chat_timeline_repo
+                .upsert_item(streamed)
+                .await
+                .expect("streamed evidence should persist");
+        }
+
+        // Register an interactive process so queue_message uses the fast-path.
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("cat should spawn for queue_message fast-path test");
+        let stdin = child.stdin.take().expect("cat stdin should be piped");
+        let interactive_key = InteractiveProcessKey::new("task", context_id);
+        state
+            .interactive_process_registry
+            .register_with_metadata(
+                interactive_key.clone(),
+                stdin,
+                InteractiveProcessMetadata {
+                    agent_run_id: None,
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        let service =
+            state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+        service
+            .queue_message(ChatContextType::Task, context_id, "queue-follow-up", None)
+            .await
+            .expect("queue_message fast-path should succeed");
+
+        state
+            .interactive_process_registry
+            .remove(&interactive_key)
+            .await;
+        let _ = child.kill().await;
+
+        let created = events
+            .events()
+            .into_iter()
+            .find(|event| event.event == "agent:message_created")
+            .expect("queue_message fast-path should emit agent:message_created");
+        let message_id = created.payload["message_id"]
+            .as_str()
+            .expect("message id")
+            .to_string();
+        let persisted = state
+            .chat_timeline_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("timeline should read back")
+            .into_iter()
+            .find(|item| {
+                item.message_id.as_ref().map(|id| id.as_str()) == Some(message_id.as_str())
+            })
+            .expect("user message should have a persisted timeline item");
+
+        let render_ready = &created.payload["render_ready"];
+        assert!(
+            !render_ready.is_null(),
+            "queue_message fast-path must carry render_ready"
+        );
+        assert_eq!(render_ready["message"]["id"], message_id.as_str());
+        assert_eq!(render_ready["message"]["role"], "user");
+        let items = render_ready["timeline_items"]
+            .as_array()
+            .expect("timeline items");
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0]["sequence"].as_i64(),
+            Some(persisted.sequence),
+            "render_ready must carry the repo-assigned sequence, not a guess"
+        );
+        assert_eq!(persisted.sequence, 4);
+    }
+
+    #[tokio::test]
+    async fn interactive_stdin_send_emits_nothing_for_hidden_user_messages() {
+        let mut state = AppState::new_test();
+        let events = RecordingEventSink::new();
+        state.events = Arc::new(events.clone());
+        let context_id = "task-interactive-hidden";
+        let conversation = ChatConversation::new_task(TaskId::from_string(context_id.to_string()));
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+
+        send_to_running_interactive_process(
+            &state,
+            context_id,
+            conversation_id,
+            "<instructions>hidden</instructions>",
+            SendMessageOptions {
+                metadata: Some(r#"{"recovery_context":true}"#.to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        assert!(
+            events
+                .events()
+                .iter()
+                .all(|event| event.event != "agent:message_created"),
+            "Gate 1 must keep skipping the event entirely for hidden user messages"
         );
     }
 

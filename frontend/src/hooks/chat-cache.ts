@@ -6,6 +6,32 @@ import type {
 
 export type ConversationHistoryCacheData = InfiniteData<ConversationMessagesPageResponse>;
 
+const OPTIMISTIC_MESSAGE_ID_PREFIX = "optimistic:";
+
+type OptimisticMatchCandidate = {
+  id: string;
+  conversationId?: string | null;
+  role: string;
+  content: string;
+};
+
+/**
+ * Matches an optimistic row against the message that just came back from the
+ * backend. Optimistic ids are client-generated, so the backend id can never
+ * identify the row it replaces — content identity is the only available key.
+ */
+export function matchesOptimisticMessage(
+  candidate: OptimisticMatchCandidate,
+  message: Pick<ChatMessageResponse, "conversationId" | "role" | "content">
+): boolean {
+  return (
+    candidate.id.startsWith(OPTIMISTIC_MESSAGE_ID_PREFIX) &&
+    (candidate.conversationId ?? null) === (message.conversationId ?? null) &&
+    candidate.role === message.role &&
+    candidate.content === message.content
+  );
+}
+
 export function createOptimisticUserMessage({
   conversationId,
   content,
@@ -18,7 +44,7 @@ export function createOptimisticUserMessage({
   createdAt?: string;
 }): ChatMessageResponse {
   return {
-    id: `optimistic:${conversationId}:${createdAt}:${Math.random().toString(36).slice(2)}`,
+    id: `${OPTIMISTIC_MESSAGE_ID_PREFIX}${conversationId}:${createdAt}:${Math.random().toString(36).slice(2)}`,
     conversationId,
     sessionId: null,
     projectId: null,
@@ -42,12 +68,8 @@ export function replaceMatchingOptimisticMessage(
     return messages;
   }
 
-  const optimisticIndex = messages.findIndex(
-    (item) =>
-      item.id.startsWith("optimistic:") &&
-      item.conversationId === message.conversationId &&
-      item.role === message.role &&
-      item.content === message.content
+  const optimisticIndex = messages.findIndex((item) =>
+    matchesOptimisticMessage(item, message)
   );
 
   if (optimisticIndex === -1) {

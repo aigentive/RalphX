@@ -16,7 +16,7 @@ use super::chat_service_streaming::{
 };
 use super::chat_service_types::{
     AgentErrorPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload,
-    AgentQueueSentPayload, AgentRunStartedPayload,
+    AgentMessageRenderReadyPayload, AgentQueueSentPayload, AgentRunStartedPayload,
 };
 use super::has_meaningful_output;
 use super::{
@@ -2125,9 +2125,12 @@ pub(super) async fn process_queued_messages(
                 let user_msg_id = user_msg.id.as_str().to_string();
                 let user_msg_created_at = user_msg.created_at.to_rfc3339();
                 let user_msg_metadata = user_msg.metadata.clone();
-                if chat_message_repo.create(user_msg.clone()).await.is_ok() {
-                    persist_message_text_timeline_item(&chat_timeline_repo, &user_msg).await;
-                }
+                let persisted_timeline_item =
+                    if chat_message_repo.create(user_msg.clone()).await.is_ok() {
+                        persist_message_text_timeline_item(&chat_timeline_repo, &user_msg).await
+                    } else {
+                        None
+                    };
                 let assignment_project_id = project_id
                     .map(str::to_string)
                     .or_else(|| {
@@ -2220,7 +2223,14 @@ pub(super) async fn process_queued_messages(
                         content: queued_msg.content.clone(),
                         created_at: Some(user_msg_created_at),
                         metadata: user_msg_metadata,
-                        render_ready: None,
+                        // Hidden messages persist no timeline item, so they keep
+                        // emitting the event with no render-ready position.
+                        render_ready: persisted_timeline_item.and_then(|item| {
+                            AgentMessageRenderReadyPayload::from_message_and_timeline_items(
+                                &user_msg,
+                                vec![item],
+                            )
+                        }),
                     },
                 );
             }
