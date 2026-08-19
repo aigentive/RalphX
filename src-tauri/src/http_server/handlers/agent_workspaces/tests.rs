@@ -6466,3 +6466,370 @@ async fn transient_ci_completion_persists_narrative_fields() {
         Some("Requested a rerun of the failed jobs.")
     );
 }
+
+fn in_flight_only_pr_health(head_sha: &str, run_id: i64) -> PrHealth {
+    let mut health = open_review_pr_health();
+    health.sync_state.head_ref_oid = Some(head_sha.to_string());
+    health
+        .checks
+        .push(crate::domain::services::github_service::PrHealthCheck {
+            name: "CI / test".to_string(),
+            status: Some("in_progress".to_string()),
+            conclusion: None,
+            details_url: Some(format!(
+                "https://github.com/owner/repo/actions/runs/{run_id}/jobs/1"
+            )),
+        });
+    health
+}
+
+fn deterministic_failure_pr_health(head_sha: &str, run_id: i64) -> PrHealth {
+    let mut health = open_review_pr_health();
+    health.sync_state.head_ref_oid = Some(head_sha.to_string());
+    health
+        .checks
+        .push(crate::domain::services::github_service::PrHealthCheck {
+            name: "CI / test".to_string(),
+            status: Some("completed".to_string()),
+            conclusion: Some("failure".to_string()),
+            details_url: Some(format!(
+                "https://github.com/owner/repo/actions/runs/{run_id}/jobs/1"
+            )),
+        });
+    health
+}
+
+/// In-flight GitHub Actions runs mean no human action is needed yet; `NeedsHuman` must be
+/// rejected so the workspace waits for CI to finish and reports `transient_ci` instead.
+#[tokio::test]
+async fn needs_human_rejected_when_pr_health_shows_in_flight_ci() {
+    let fixture = setup_transient_ci_rerun_fixture("needs-human-in-flight").await;
+    fixture.github.state().fetch_pr_health_result =
+        Some(Ok(in_flight_only_pr_health("in-flight-head", 801)));
+
+    let error = super::complete_agent_workspace_pr_fix(
+        State(test_http_state(Arc::clone(&fixture.app_state))),
+        Path(fixture.conversation_id.to_string()),
+        Json(CompleteAgentWorkspacePrFixRequest {
+            summary: "All external token scopes need maintainer approval.".to_string(),
+            blocker: None,
+            fix_commit_sha: None,
+            resolution: Some(AgentWorkspacePrFixResolution::NeedsHuman),
+            created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect_err("needs_human must be rejected while CI is still in flight");
+    assert_eq!(error.0, StatusCode::CONFLICT);
+    assert!(
+        error.1["error"]
+            .as_str()
+            .is_some_and(|msg| msg.contains("in-progress GitHub Actions runs")),
+        "rejection must explain that CI is still running"
+    );
+    let attempt = fixture
+        .app_state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("repair attempt should load")
+        .expect("rejected attempt stays current");
+    assert_eq!(
+        attempt.phase,
+        crate::domain::entities::AgentWorkspaceRepairPhase::Repairing,
+        "a rejected needs_human must leave the attempt unsettled"
+    );
+}
+
+/// Only terminal transient failures (all cancelled, no in-flight) mean RalphX can still rerun
+/// automatically; `NeedsHuman` must be rejected to route through `transient_ci` instead.
+#[tokio::test]
+async fn needs_human_rejected_when_pr_health_shows_only_transient_failures() {
+    let fixture = setup_transient_ci_rerun_fixture("needs-human-transient").await;
+    fixture.github.state().fetch_pr_health_result =
+        Some(Ok(failed_ci_pr_health("transient-head", 802)));
+
+    let error = super::complete_agent_workspace_pr_fix(
+        State(test_http_state(Arc::clone(&fixture.app_state))),
+        Path(fixture.conversation_id.to_string()),
+        Json(CompleteAgentWorkspacePrFixRequest {
+            summary: "Flaky network check failed; needs human to re-approve.".to_string(),
+            blocker: None,
+            fix_commit_sha: None,
+            resolution: Some(AgentWorkspacePrFixResolution::NeedsHuman),
+            created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect_err("needs_human must be rejected when only transient failures remain");
+    assert_eq!(error.0, StatusCode::CONFLICT);
+    assert!(
+        error.1["error"]
+            .as_str()
+            .is_some_and(|msg| msg.contains("infrastructure failures")),
+        "rejection must explain that RalphX can rerun"
+    );
+}
+
+/// A health-fetch failure must fail open: the guard cannot prove the CI state and must not
+/// swallow a real escalation. `NeedsHuman` is accepted and blocks the attempt normally.
+#[tokio::test]
+async fn needs_human_accepted_when_health_fetch_fails() {
+    let fixture = setup_transient_ci_rerun_fixture("needs-human-health-fetch-fail").await;
+    fixture.github.state().fetch_pr_health_result =
+        Some(Err(crate::error::AppError::Infrastructure(
+            "GitHub API rate limit".to_string(),
+        )));
+
+    let Json(response) = super::complete_agent_workspace_pr_fix(
+        State(test_http_state(Arc::clone(&fixture.app_state))),
+        Path(fixture.conversation_id.to_string()),
+        Json(CompleteAgentWorkspacePrFixRequest {
+            summary: "Credential scope change requires maintainer approval.".to_string(),
+            blocker: None,
+            fix_commit_sha: None,
+            resolution: Some(AgentWorkspacePrFixResolution::NeedsHuman),
+            created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("health-fetch failure must fail open and accept needs_human");
+    assert_eq!(response.status, "blocked");
+}
+
+/// A deterministic CI failure (non-transient, non-infrastructure) is a real escalation the
+/// guard must not swallow. `NeedsHuman` is accepted so the workspace routes to a human.
+#[tokio::test]
+async fn needs_human_accepted_when_health_shows_deterministic_failure() {
+    let fixture = setup_transient_ci_rerun_fixture("needs-human-deterministic").await;
+    fixture.github.state().fetch_pr_health_result =
+        Some(Ok(deterministic_failure_pr_health("deterministic-head", 803)));
+
+    let Json(response) = super::complete_agent_workspace_pr_fix(
+        State(test_http_state(Arc::clone(&fixture.app_state))),
+        Path(fixture.conversation_id.to_string()),
+        Json(CompleteAgentWorkspacePrFixRequest {
+            summary: "Lint check fails; maintainer must override the rule.".to_string(),
+            blocker: None,
+            fix_commit_sha: None,
+            resolution: Some(AgentWorkspacePrFixResolution::NeedsHuman),
+            created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("deterministic failure must not be swallowed; needs_human must be accepted");
+    assert_eq!(response.status, "blocked");
+}
+
+/// Once the CI rerun budget is exhausted the guard fails open regardless of CI state, so the
+/// fixer can still escalate to `needs_human` without looping indefinitely on transient CI.
+#[tokio::test]
+async fn needs_human_accepted_when_ci_rerun_budget_is_exhausted_even_with_in_flight_ci() {
+    let fixture = setup_transient_ci_rerun_fixture("needs-human-budget-exhausted").await;
+    let repair_repo = Arc::clone(&fixture.app_state.agent_workspace_repair_repo);
+    let current = repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("repair attempt should load")
+        .expect("repair attempt should exist");
+    let mut exhausted = current.clone();
+    exhausted.ci_rerun_count =
+        crate::application::agent_workspace_publish_repair_state::MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES;
+    exhausted.updated_at += chrono::Duration::microseconds(1);
+    use crate::domain::repositories::{
+        AgentWorkspaceRepairAttemptTransition, AgentWorkspaceRepairAttemptTransitionOutcome,
+    };
+    assert!(matches!(
+        repair_repo
+            .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+                attempt: exhausted,
+                expected_phase: current.phase,
+                expected_updated_at: current.updated_at,
+                next_phase: current.phase,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("test fixture should persist an exhausted rerun budget"),
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_)
+    ));
+    fixture.github.state().fetch_pr_health_result =
+        Some(Ok(in_flight_only_pr_health("budget-exhausted-head", 804)));
+
+    let Json(response) = super::complete_agent_workspace_pr_fix(
+        State(test_http_state(Arc::clone(&fixture.app_state))),
+        Path(fixture.conversation_id.to_string()),
+        Json(CompleteAgentWorkspacePrFixRequest {
+            summary: "CI still in flight but budget exhausted; escalating.".to_string(),
+            blocker: None,
+            fix_commit_sha: None,
+            resolution: Some(AgentWorkspacePrFixResolution::NeedsHuman),
+            created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("exhausted budget must fail open even with in-flight CI; needs_human must be accepted");
+    assert_eq!(response.status, "blocked");
+}
+
+/// A fixture variant with a non-PR-autofix repair source. Structurally identical to
+/// `setup_transient_ci_rerun_fixture` except the attempt carries `AgentWorkspaceRepairSource::Publish`,
+/// so the source guard in `needs_human_rejection_for_rerunnable_ci` returns `None` immediately.
+async fn setup_publish_source_ci_rerun_fixture(suffix: &str) -> PrFixReviewGateFixture {
+    use crate::domain::entities::{
+        AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairPhase,
+        AgentWorkspaceRepairSource, GitTargetIdentity, GitTargetLeaseOwner,
+    };
+    use crate::domain::repositories::{
+        AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentWorkspaceRepairAttemptTransition,
+        AgentWorkspaceRepairAttemptTransitionOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome,
+    };
+
+    let fixture =
+        setup_pr_fix_workspace_with_review_gate(suffix, AgentWorkspaceReviewGateStatus::Blocking)
+            .await;
+    let repair_repo = Arc::clone(&fixture.app_state.agent_workspace_repair_repo);
+    let started = match repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                fixture.conversation_id.clone(),
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                true,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "publish source ci rerun completion fixture".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("repair attempt should start")
+    {
+        StartOrJoinAgentWorkspaceRepairAttemptOutcome::Started(attempt) => attempt,
+        outcome => panic!("expected new repair attempt, got {outcome:?}"),
+    };
+    let workspace = fixture
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fixture.conversation_id)
+        .await
+        .expect("load fixture workspace")
+        .expect("fixture workspace exists");
+    let target_identity = GitTargetIdentity::new(
+        std::path::PathBuf::from(&workspace.worktree_path),
+        format!("refs/heads/{}", workspace.branch_name),
+    )
+    .expect("test workspace branch should form a canonical target identity");
+    let repair_owner = GitTargetLeaseOwner::agent_workspace_repair(started.id.as_str());
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = fixture
+        .app_state
+        .branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner: repair_owner.clone(),
+        })
+        .await
+        .expect("repair lease should acquire")
+    else {
+        panic!("repair attempt should own its initial canonical target lease");
+    };
+    let mut repairing = started.clone();
+    repairing.phase = AgentWorkspaceRepairPhase::Repairing;
+    repairing.reserved_agent_run_id = Some(fixture.pr_fix_run_id.clone());
+    repairing.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .to_string(),
+    );
+    repairing.target_ref = Some(target_identity.full_ref().to_string());
+    repairing.target_identity_version = Some(1);
+    repairing.target_lease_epoch = Some(fencing_epoch);
+    repairing.pr_autofix_dispatch_head_commit = Some(fixture.fix_commit_sha.clone());
+    repairing.pr_autofix_health_fingerprint = Some("github_pr_autofix:267:test".to_string());
+    repairing.updated_at += chrono::Duration::microseconds(1);
+    match repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: repairing,
+            expected_phase: AgentWorkspaceRepairPhase::Requested,
+            expected_updated_at: started.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Repairing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("repair attempt should bind the trusted run")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("expected repairing attempt, got {outcome:?}"),
+    }
+    fixture
+}
+
+/// A non-PR-autofix repair (e.g. publish/update) must never be rejected for CI rerunability:
+/// `transient_ci` is a PR-CI classification and cannot resolve a merge conflict or worktree
+/// problem. The source guard must return `None` immediately and let the existing `needs_human`
+/// path accept the escalation.
+#[tokio::test]
+async fn needs_human_accepted_for_a_non_pr_autofix_repair_with_in_flight_ci() {
+    let fixture = setup_publish_source_ci_rerun_fixture("needs-human-non-pr-autofix").await;
+    fixture.github.state().fetch_pr_health_result =
+        Some(Ok(in_flight_only_pr_health("non-pr-autofix-head", 901)));
+
+    let Json(response) = super::complete_agent_workspace_pr_fix(
+        State(test_http_state(Arc::clone(&fixture.app_state))),
+        Path(fixture.conversation_id.to_string()),
+        Json(CompleteAgentWorkspacePrFixRequest {
+            summary: "Merge conflict cannot be resolved automatically; needs human.".to_string(),
+            blocker: None,
+            fix_commit_sha: None,
+            resolution: Some(AgentWorkspacePrFixResolution::NeedsHuman),
+            created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("non-PR-autofix needs_human must not be rejected even with in-flight CI");
+    assert_eq!(
+        response.status, "blocked",
+        "non-PR-autofix escalation must be accepted as blocked, not 409'd"
+    );
+}
+
+/// Regression guard: PR-autofix attempts must still be rejected when CI is in flight.
+/// Covered by `needs_human_rejected_when_pr_health_shows_in_flight_ci` at line 6505.
+/// This test confirms the source narrowing in `needs_human_rejection_for_rerunnable_ci`
+/// did not remove the guard for the PR-autofix case.
+#[tokio::test]
+async fn needs_human_still_rejected_for_a_pr_autofix_repair_with_in_flight_ci() {
+    let fixture = setup_transient_ci_rerun_fixture("needs-human-pr-autofix-regression").await;
+    fixture.github.state().fetch_pr_health_result =
+        Some(Ok(in_flight_only_pr_health("pr-autofix-regression-head", 902)));
+
+    let error = super::complete_agent_workspace_pr_fix(
+        State(test_http_state(Arc::clone(&fixture.app_state))),
+        Path(fixture.conversation_id.to_string()),
+        Json(CompleteAgentWorkspacePrFixRequest {
+            summary: "CI is in flight; waiting for it to finish.".to_string(),
+            blocker: None,
+            fix_commit_sha: None,
+            resolution: Some(AgentWorkspacePrFixResolution::NeedsHuman),
+            created_by_run_id: Some(fixture.pr_fix_run_id.to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect_err("PR-autofix needs_human must still be rejected while CI is in flight");
+    assert_eq!(error.0, StatusCode::CONFLICT);
+}

@@ -6913,37 +6913,12 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
     let explicit_base = normalize_explicit_publish_base_selection(selection)?;
     let repair_service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
 
-    if created_by_run_id.is_none()
-        && explicit_base.is_none()
-        && retry_blocked_agent_workspace_repair_for_explicit_user_action(
-            state,
-            &workspace,
-            &repair_service,
-            AgentWorkspacePostRepairAction::UpdateOnly,
-        )
-        .await
-    {
-        let refreshed = state
-            .agent_conversation_workspace_repo
-            .get_by_conversation_id(&conversation_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .unwrap_or(workspace);
-        return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
-            target_ref: refreshed.base_ref.clone(),
-            base_commit: refreshed.base_commit.clone().unwrap_or_default(),
-            workspace: agent_workspace_response_with_pr_supervision_for_state(
-                state,
-                execution_state,
-                refreshed,
-            )
-            .await?,
-            updated: false,
-            repair_started: true,
-            base_status: BaseStatus::Valid.as_str().to_string(),
-            effective_base_display_name: None,
-        });
-    }
+    // "Update from base" attempts the mechanical merge first, always. Dispatching a repair
+    // successor before trying is what let a repair-blocked workspace stay stranded on a stale base:
+    // the button restarted the fixer and never updated the branch, even when the merge was clean
+    // and would have restarted CI on its own. The retry is now the fallback for the one case where
+    // the mechanical path has nothing to offer — see `blocked_repair_retry` below.
+    let blocked_repair_retry_allowed = created_by_run_id.is_none();
 
     let project = state
         .project_repo
@@ -7063,30 +7038,6 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             .create_or_update(workspace)
             .await
             .map_err(|e| e.to_string())?;
-        if created_by_run_id.is_none()
-            && retry_blocked_agent_workspace_repair_for_explicit_user_action(
-                state,
-                &workspace,
-                &repair_service,
-                AgentWorkspacePostRepairAction::UpdateOnly,
-            )
-            .await
-        {
-            return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
-                target_ref: workspace.base_ref.clone(),
-                base_commit: workspace.base_commit.clone().unwrap_or_default(),
-                workspace: agent_workspace_response_with_pr_supervision_for_state(
-                    state,
-                    execution_state,
-                    workspace,
-                )
-                .await?,
-                updated: false,
-                repair_started: true,
-                base_status: BaseStatus::Valid.as_str().to_string(),
-                effective_base_display_name: None,
-            });
-        }
         let retargeted_base = BaseResolutionResult {
             status: BaseStatus::Retargeted,
             old_base_ref: previous_base_ref,
@@ -7417,6 +7368,55 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         .await
         .map_err(|e| e.to_string())?
         .unwrap_or(workspace);
+
+    // The mechanical merge has now run and its bookkeeping is durable. A blocked generation that
+    // survived it is still stranded on a target the user just changed, so retry it here — after
+    // the update rather than instead of it. Merge conflicts and operational failures never reach
+    // this point; they return early from the arms above, which dispatch their own successor.
+    if blocked_repair_retry_allowed
+        && retry_blocked_agent_workspace_repair_for_explicit_user_action(
+            state,
+            &refreshed,
+            &repair_service,
+            AgentWorkspacePostRepairAction::UpdateOnly,
+        )
+        .await
+    {
+        // Auto-review is deliberately skipped: a repair successor is about to change this
+        // workspace again, so reviewing it now would review a state nobody asked about.
+        let repaired = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&refreshed.conversation_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or(refreshed);
+        return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
+            workspace: agent_workspace_response_with_pr_supervision_for_state(
+                state,
+                execution_state,
+                repaired,
+            )
+            .await?,
+            updated,
+            repair_started: true,
+            target_ref,
+            base_commit,
+            base_status: base_resolution
+                .as_ref()
+                .map(|resolution| resolution.status)
+                .unwrap_or(BaseStatus::Valid)
+                .as_str()
+                .to_string(),
+            effective_base_display_name: explicit_base
+                .as_ref()
+                .map(|selection| selection.display_name.clone())
+                .or_else(|| {
+                    base_resolution
+                        .as_ref()
+                        .and_then(|resolution| resolution.display_name.clone())
+                }),
+        });
+    }
 
     let workspace_changed_events = Arc::clone(&state.events);
     let workspace_changed_emitter =
@@ -10920,7 +10920,11 @@ where
         worktree_path: Some(resolved.path),
     };
 
-    let error = compose_blocked_repair_retry_context(&attempt, &target.base_ref);
+    let error = compose_blocked_repair_retry_context(
+        &attempt,
+        &target.base_ref,
+        retry_workspace.base_commit.as_deref(),
+    );
     mark_agent_workspace_failure_with_routing_and_action_classified(
         state,
         &retry_workspace,
@@ -10966,9 +10970,15 @@ fn repair_handoff_verification_result(
 /// Successor context for a user-directed retry of a blocked repair. Prefer the previous fixer's
 /// blocker and human-authored reason before the durable delivery summary; machine markers in
 /// `pending_reasons` must never become the successor's only context.
+///
+/// `new_base_commit` is the freshly resolved tip of `new_base_ref`. It exists because a ref-name
+/// comparison alone misses a `main` → `main` retarget where only the commit moved, which is the
+/// exact shape that leaves a successor believing its stale base is current. An unreadable commit
+/// on either side is not evidence of a move, so the hint stays silent.
 fn compose_blocked_repair_retry_context(
     attempt: &AgentWorkspaceRepairAttempt,
     new_base_ref: &str,
+    new_base_commit: Option<&str>,
 ) -> String {
     let core = attempt
         .blocker
@@ -10998,6 +11008,21 @@ fn compose_blocked_repair_retry_context(
             " The base has since been updated from {} to {new_base_ref}; verify the workspace against the new base.",
             attempt.target_base_ref
         ));
+    } else if let (Some(previous_commit), Some(current_commit)) = (
+        attempt
+            .target_base_commit
+            .as_deref()
+            .map(str::trim)
+            .filter(|commit| !commit.is_empty()),
+        new_base_commit
+            .map(str::trim)
+            .filter(|commit| !commit.is_empty()),
+    ) {
+        if previous_commit != current_commit {
+            context.push_str(&format!(
+                " The base {new_base_ref} has since moved from {previous_commit} to {current_commit}; verify the workspace against the new base tip."
+            ));
+        }
     }
     context
 }
