@@ -270,6 +270,98 @@ impl FromStr for AgentWorkspaceReviewOutcome {
     }
 }
 
+/// What the last settled review produced, frozen at the start of the next review run.
+///
+/// Lets a re-review triage delta-first instead of re-reading a delta it already cleared.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspacePreviousReviewSnapshot {
+    pub overview_artifact_id: ArtifactId,
+    pub requested_changes_artifact_id: Option<ArtifactId>,
+    pub artifact_version: Option<u32>,
+    pub reviewed_diff_fingerprint: Option<String>,
+    pub reviewed_head_sha: Option<String>,
+    pub outcome: AgentWorkspaceReviewOutcome,
+}
+
+/// Disposition the reviewer recorded on its final Review artifact write.
+///
+/// Deliberately narrower than [`AgentWorkspaceReviewOutcome`]: `run_failed` and `no_changes`
+/// are backend-derived states a reviewer must never be able to assert about its own artifact,
+/// so they are unrepresentable here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceReviewArtifactOutcome {
+    Passed,
+    Blocking,
+}
+
+impl std::fmt::Display for AgentWorkspaceReviewArtifactOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Passed => write!(f, "passed"),
+            Self::Blocking => write!(f, "blocking"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspaceReviewArtifactOutcome {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "passed" => Ok(Self::Passed),
+            "blocking" => Ok(Self::Blocking),
+            _ => Err(format!(
+                "unknown workspace review artifact outcome: '{value}'"
+            )),
+        }
+    }
+}
+
+impl From<AgentWorkspaceReviewArtifactOutcome> for AgentWorkspaceReviewOutcome {
+    fn from(value: AgentWorkspaceReviewArtifactOutcome) -> Self {
+        match value {
+            AgentWorkspaceReviewArtifactOutcome::Passed => Self::Passed,
+            AgentWorkspaceReviewArtifactOutcome::Blocking => Self::Blocking,
+        }
+    }
+}
+
+/// How the review gate reached its settled value.
+///
+/// `Typed` is the reviewer calling `complete_workspace_review_run`. `ArtifactDegraded` is the
+/// backend settling from a current artifact pair carrying a recorded outcome after the reviewer
+/// wrapper timed out; it deliberately withholds auto-merge arming and fixer routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceReviewSettlementSource {
+    Typed,
+    ArtifactDegraded,
+}
+
+impl std::fmt::Display for AgentWorkspaceReviewSettlementSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Typed => write!(f, "typed"),
+            Self::ArtifactDegraded => write!(f, "artifact_degraded"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspaceReviewSettlementSource {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "typed" => Ok(Self::Typed),
+            "artifact_degraded" => Ok(Self::ArtifactDegraded),
+            _ => Err(format!(
+                "unknown workspace review settlement source: '{value}'"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentWorkspaceReviewGateStatus {
@@ -358,6 +450,13 @@ pub struct AgentWorkspaceReviewHunkAnnotation {
     pub title: Option<String>,
     pub message: String,
     pub level: String,
+    /// Hash of this file's patch-vs-base at the time the annotation was written.
+    ///
+    /// Hunk anchors are per-file: `@@ -a,b +c,d @@` offsets are relative to that file's own diff,
+    /// so a file whose patch text is byte-identical between review cycles has byte-identical
+    /// anchors. That is what lets an annotation carry forward verbatim instead of being
+    /// regenerated. `None` means "unknown", which fails carry-forward closed.
+    pub file_patch_hash: Option<String>,
     pub created_by_run_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }
@@ -594,6 +693,34 @@ pub struct AgentWorkspaceReviewMonitor {
     pub review_fixer_attempt_id: Option<String>,
     /// Number of automatic or manual workspace Review fixer attempts since the last clean gate.
     pub review_fixer_cycle_count: i64,
+    /// Typed disposition recorded on the reviewer's final Review artifact write.
+    ///
+    /// Never parsed from artifact markdown. Consumed only by degraded settlement, and only
+    /// together with `review_artifact_recorded_outcome_run_id`.
+    pub review_artifact_recorded_outcome: Option<AgentWorkspaceReviewArtifactOutcome>,
+    /// The run that recorded `review_artifact_recorded_outcome`.
+    ///
+    /// Load-bearing: `apply_current_target_to_monitor` does not clear artifact identity on an
+    /// unchanged target, so a re-review of the same delta would otherwise inherit the previous
+    /// run's recorded outcome. Degraded settlement requires this to equal the settling run.
+    /// Deliberately NOT `last_run_id`, which the artifact-write path can populate from a prior run.
+    pub review_artifact_recorded_outcome_run_id: Option<String>,
+    /// Blocking summary captured at the final artifact write.
+    ///
+    /// Required for degraded `blocking` settlement: the artifact write itself clears live blocking
+    /// state, and the fixer-start path fails closed without a summary and fingerprint.
+    pub review_artifact_recorded_blocking_summary: Option<String>,
+    /// How the current gate value was settled. Presentation + diagnostics only.
+    pub review_settlement_source: Option<AgentWorkspaceReviewSettlementSource>,
+    /// Run registered by the backend as the post-settlement hunk annotator for the reviewed target.
+    pub annotation_run_id: Option<String>,
+    /// Snapshot of the previously settled review, captured once when a new review run starts.
+    ///
+    /// Must be a snapshot, not a live read of `reviewed_*`/`review_artifact_*`: the current run's
+    /// artifact write overwrites those fields before it completes, so serving `previous_review`
+    /// from them would make a later context fetch return the run's own review as its "previous"
+    /// one. `None` until a review has settled at least once.
+    pub previous_review: Option<AgentWorkspacePreviousReviewSnapshot>,
     pub last_run_id: Option<String>,
     pub last_error: Option<String>,
     pub auto_merge_guard: Option<AgentWorkspaceReviewAutoMergeGuard>,
@@ -647,6 +774,12 @@ impl AgentWorkspaceReviewMonitor {
             review_fixer_status: None,
             review_fixer_attempt_id: None,
             review_fixer_cycle_count: 0,
+            review_artifact_recorded_outcome: None,
+            review_artifact_recorded_outcome_run_id: None,
+            review_artifact_recorded_blocking_summary: None,
+            review_settlement_source: None,
+            annotation_run_id: None,
+            previous_review: None,
             last_run_id: None,
             last_error: None,
             auto_merge_guard: None,
@@ -729,6 +862,46 @@ impl AgentWorkspaceReviewMonitor {
         self.review_gate_bypassed_diff_fingerprint = None;
         self.review_gate_bypassed_artifact_id = None;
         self.review_gate_bypassed_artifact_version = None;
+    }
+
+    /// Drops every piece of durable evidence a degraded settlement or annotator write could
+    /// authorize itself from.
+    ///
+    /// Called on target refresh and on any artifact write that carries no typed outcome, so
+    /// stale evidence can never authorize a later run. The three recorded fields and
+    /// `annotation_run_id` must always clear together.
+    pub fn clear_recorded_review_evidence(&mut self) {
+        self.review_artifact_recorded_outcome = None;
+        self.review_artifact_recorded_outcome_run_id = None;
+        self.review_artifact_recorded_blocking_summary = None;
+        self.annotation_run_id = None;
+    }
+
+    /// Freezes the currently settled review so the next run can triage against it.
+    ///
+    /// Call exactly once, at review start, before the run touches `reviewed_*`. Returns `false`
+    /// and changes nothing when there is no settled prior review to capture.
+    pub fn capture_previous_review_snapshot(&mut self) -> bool {
+        let Some(overview_artifact_id) = self.review_artifact_id.clone() else {
+            return false;
+        };
+        self.previous_review = Some(AgentWorkspacePreviousReviewSnapshot {
+            overview_artifact_id,
+            requested_changes_artifact_id: self.review_requested_changes_artifact_id.clone(),
+            artifact_version: self.review_artifact_version,
+            reviewed_diff_fingerprint: self.reviewed_diff_fingerprint.clone(),
+            reviewed_head_sha: self.reviewed_head_sha.clone(),
+            outcome: self.review_outcome,
+        });
+        true
+    }
+
+    /// True when `run_id` is the exact run that recorded a typed outcome on the current artifact.
+    ///
+    /// Fails closed on a missing outcome, a missing run id, or any mismatch.
+    pub fn has_recorded_outcome_for_run(&self, run_id: &str) -> bool {
+        self.review_artifact_recorded_outcome.is_some()
+            && self.review_artifact_recorded_outcome_run_id.as_deref() == Some(run_id)
     }
 }
 

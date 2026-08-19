@@ -32,6 +32,7 @@ pub const SHORT_AGENT_WORKSPACE_REPAIR: &str = "ralphx-agent-workspace-repair";
 pub const SHORT_AGENT_WORKSPACE_PR_FIXER: &str = "ralphx-agent-workspace-pr-fixer";
 pub const SHORT_PR_REVIEWER: &str = "ralphx-pr-reviewer";
 pub const SHORT_WORKSPACE_REVIEWER: &str = "ralphx-workspace-reviewer";
+pub const SHORT_WORKSPACE_ANNOTATOR: &str = "ralphx-workspace-annotator";
 pub const SHORT_AUTOMATION_SETUP: &str = "ralphx-automation-setup";
 pub const SHORT_AUTOMATION_JUDGE: &str = "ralphx-automation-judge";
 pub const SHORT_AUTOMATION_PLAN_JUDGE: &str = "ralphx-automation-plan-judge";
@@ -102,6 +103,9 @@ pub const AGENT_AUTOMATION_DECOMPOSITION_VERIFIER: &str =
 
 /// Agent-workspace Review artifact writer
 pub const AGENT_WORKSPACE_REVIEWER: &str = "ralphx:ralphx-workspace-reviewer";
+
+/// Background hunk annotator dispatched after a Workspace Review settles
+pub const AGENT_WORKSPACE_ANNOTATOR: &str = "ralphx:ralphx-workspace-annotator";
 
 /// Worker execution agent (ChatContextType::TaskExecution)
 pub const AGENT_WORKER: &str = "ralphx:ralphx-execution-worker";

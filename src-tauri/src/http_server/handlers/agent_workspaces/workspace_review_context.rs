@@ -16,6 +16,7 @@ use crate::application::agent_workspace_review::{
 use crate::application::agent_workspace_review_context::{
     load_agent_workspace_review_presentation_context, AgentWorkspaceReviewContextReadMode,
 };
+use crate::application::AppState;
 
 /// GET /api/agent-workspaces/{conversation_id}/workspace-review-context
 pub async fn get_agent_workspace_review_context(
@@ -38,8 +39,11 @@ pub async fn get_agent_workspace_review_context(
     )
     .await
     .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
-    let events =
-        load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
+    let events = if query.include_events.unwrap_or(true) {
+        load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?
+    } else {
+        Vec::new()
+    };
     let include_review_packet = query.include_review_packet.unwrap_or(false);
     let read_mode = if include_review_packet {
         AgentWorkspaceReviewContextReadMode::FullPacket
@@ -92,6 +96,44 @@ pub async fn get_agent_workspace_review_context(
         "Served workspace Review context"
     );
 
+    // Incremental triage is reviewer-facing, so it rides the full-packet path only. Everything
+    // here is served from the start-of-run snapshot, never from the live `reviewed_*` fields.
+    let previous_review_snapshot = include_review_packet
+        .then(|| context.monitor.previous_review.clone())
+        .flatten();
+    let (previous_review, files_changed_since_previous_review, previous_review_delta_complete) =
+        match (previous_review_snapshot.as_ref(), context.target.as_ref()) {
+            (Some(snapshot), Some(target)) => {
+                let delta = crate::application::agent_workspace_review_incremental::
+                    previous_review_delta(
+                        target,
+                        snapshot,
+                        &changed_file_statuses_for_delta(target),
+                    );
+                (
+                    Some(AgentWorkspacePreviousReviewResponse::from(snapshot)),
+                    delta.as_ref().map(|delta| delta.files.clone()),
+                    delta.as_ref().map(|delta| delta.complete),
+                )
+            }
+            (Some(snapshot), None) => (
+                Some(AgentWorkspacePreviousReviewResponse::from(snapshot)),
+                None,
+                None,
+            ),
+            _ => (None, None, None),
+        };
+
+    let review_fixer_cycle_count = context.monitor.review_fixer_cycle_count;
+    let mut monitor = AgentWorkspaceReviewMonitorResponse::from(context.monitor);
+    apply_automation_attempt_count(
+        state.app_state.as_ref(),
+        &conversation_id,
+        &mut monitor,
+        review_fixer_cycle_count,
+    )
+    .await?;
+
     Ok(Json(AgentWorkspaceReviewContextResponse {
         success: true,
         workspace: workspace_response,
@@ -99,7 +141,7 @@ pub async fn get_agent_workspace_review_context(
         target: context.target.map(|target| {
             AgentWorkspaceReviewTargetResponse::from_target(target, include_review_packet)
         }),
-        monitor: AgentWorkspaceReviewMonitorResponse::from(context.monitor),
+        monitor,
         goal_context: context.goal_context,
         is_current: context.is_current,
         is_outdated: context.is_outdated,
@@ -108,7 +150,46 @@ pub async fn get_agent_workspace_review_context(
         can_mutate_review_state: context.can_mutate_review_state,
         review_runtime_state: context.review_runtime_state.to_string(),
         should_show_tab: context.should_show_tab,
+        previous_review,
+        files_changed_since_previous_review,
+        previous_review_delta_complete,
     }))
+}
+
+/// Populates `monitor.automation_attempt_count` with the total number of automation cycles that
+/// have touched this workspace: fixer review cycles plus durable repair-attempt generations.
+///
+/// The repair count is read from the durable repo because it includes publish-repair attempts that
+/// the in-memory `review_fixer_cycle_count` counter cannot see.
+async fn apply_automation_attempt_count(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    monitor: &mut AgentWorkspaceReviewMonitorResponse,
+    review_fixer_cycle_count: i64,
+) -> Result<(), JsonError> {
+    let repair_attempts = state
+        .agent_workspace_repair_repo
+        .list_repair_attempts_for_conversation(conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    monitor.automation_attempt_count =
+        Some(review_fixer_cycle_count + repair_attempts.len() as i64);
+    Ok(())
+}
+
+/// Current changed-file statuses from the already-materialized packet.
+///
+/// Reuses the packet's inventory rather than re-shelling git: it is the same data the reviewer is
+/// about to read, and the delta only needs to know which uncommitted files exist.
+fn changed_file_statuses_for_delta(
+    target: &crate::application::agent_workspace_review::AgentWorkspaceReviewTarget,
+) -> std::collections::BTreeMap<String, String> {
+    target
+        .review_packet
+        .changed_files
+        .iter()
+        .map(|file| (file.path.clone(), file.status.clone()))
+        .collect()
 }
 
 pub(super) fn workspace_review_runtime_header(

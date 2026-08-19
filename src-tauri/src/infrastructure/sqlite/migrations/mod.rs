@@ -593,6 +593,7 @@ mod v20260806154753_add_agent_workspace_stale_base_detected_at;
 mod v20260810142632_agent_workspace_repair_narrative_fields;
 mod v20260811015146_data_retention_settings;
 mod v20260811023943_agent_runs_routing_role_and_project;
+mod v20260811194643_workspace_review_settlement_evidence;
 mod v20260813175745_agent_workspace_pr_autofix_base_update_evidence;
 #[cfg(test)]
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
@@ -633,6 +634,8 @@ mod v20260810142632_agent_workspace_repair_narrative_fields_tests;
 mod v20260811015146_data_retention_settings_tests;
 #[cfg(test)]
 mod v20260811023943_agent_runs_routing_role_and_project_tests;
+#[cfg(test)]
+mod v20260811194643_workspace_review_settlement_evidence_tests;
 #[cfg(test)]
 mod v20260813175745_agent_workspace_pr_autofix_base_update_evidence_tests;
 #[cfg(test)]
@@ -1994,6 +1997,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260811023943,
         name: "agent_runs_routing_role_and_project",
         migrate: v20260811023943_agent_runs_routing_role_and_project::migrate,
+    },
+    Migration {
+        version: 20260811194643,
+        name: "workspace_review_settlement_evidence",
+        migrate: v20260811194643_workspace_review_settlement_evidence::migrate,
     },
     Migration {
         version: 20260813175745,

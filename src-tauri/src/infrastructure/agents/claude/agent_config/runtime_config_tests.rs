@@ -1454,3 +1454,44 @@ step_0b_kill_timeout_secs: 30
         "serde default should apply when the key is absent"
     );
 }
+
+// ── Workspace Review durations ───────────────────────────────────────────
+
+/// The reviewer wrapper deadlines are runtime config, not Rust consts.
+#[test]
+fn test_workspace_review_timeout_defaults() {
+    let cfg = WorkspaceReviewRuntimeConfig::default();
+    assert_eq!(cfg.reviewer_idle_timeout_secs, 600);
+    assert_eq!(cfg.reviewer_max_wall_clock_secs, 3600);
+    assert_eq!(cfg.reviewer_completion_grace_secs, 120);
+}
+
+#[test]
+fn test_workspace_review_timeout_env_overrides() {
+    let mut cfg = AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+        database_maintenance: DatabaseMaintenanceConfig::default(),
+        delegation: DelegationConfig::default(),
+        workspace_review: WorkspaceReviewRuntimeConfig::default(),
+    };
+
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_IDLE_TIMEOUT_SECS" => Some("300".to_string()),
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_MAX_WALL_CLOCK_SECS" => Some("1800".to_string()),
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_COMPLETION_GRACE_SECS" => Some("60".to_string()),
+        _ => None,
+    });
+
+    assert_eq!(cfg.workspace_review.reviewer_idle_timeout_secs, 300);
+    assert_eq!(cfg.workspace_review.reviewer_max_wall_clock_secs, 1800);
+    assert_eq!(cfg.workspace_review.reviewer_completion_grace_secs, 60);
+}

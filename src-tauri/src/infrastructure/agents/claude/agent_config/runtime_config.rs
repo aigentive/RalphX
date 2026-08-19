@@ -1769,6 +1769,20 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         "RALPHX_DELEGATION_PARK_WAKE_RETRY_BACKOFF_SECS"
     );
 
+    // Workspace Review
+    env_u64!(
+        cfg.workspace_review.reviewer_idle_timeout_secs,
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_IDLE_TIMEOUT_SECS"
+    );
+    env_u64!(
+        cfg.workspace_review.reviewer_max_wall_clock_secs,
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_MAX_WALL_CLOCK_SECS"
+    );
+    env_u64!(
+        cfg.workspace_review.reviewer_completion_grace_secs,
+        "RALPHX_WORKSPACE_REVIEW_REVIEWER_COMPLETION_GRACE_SECS"
+    );
+
     // Ideation
     if let Some(v) = lookup("RALPHX_IDEATION_ACTIVITY_THRESHOLD_SECS") {
         if let Ok(n) = v.parse::<u64>() {
