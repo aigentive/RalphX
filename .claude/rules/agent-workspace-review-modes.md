@@ -26,8 +26,8 @@ RalphX has two distinct review workflows. A local checkout exists in both, but i
 | User surface | Review action/tab on an Agent Workspace | Start mode `Review PR` |
 | Target | Local workspace delta or selected local source against its base | One linked remote GitHub pull request at its current head, inspected through the agent-workspace checkout |
 | Source of truth | Backend-injected review target, diff fingerprint, applicable head, and review-run authority | Linked PR identity plus live GitHub head/lifecycle state; the checkout is the inspection substrate |
-| Agent | `ralphx-workspace-reviewer` | `ralphx-pr-reviewer` |
-| Durable artifact | Versioned local Overview + Requested Changes artifact pair and Overview hunk annotations | Versioned PR Review artifact for the reviewed GitHub head |
+| Agent | `ralphx-workspace-reviewer`, plus `ralphx-workspace-annotator` after settlement | `ralphx-pr-reviewer` |
+| Durable artifact | Versioned local Overview + Requested Changes artifact pair, written exactly once per run with a typed `outcome`; Overview hunk annotations are written separately by the annotator | Versioned PR Review artifact for the reviewed GitHub head |
 | Side effects | Completes the local publish/review gate; may route a local fixer | May propose Request Changes, Approve, or Comment; GitHub submission requires explicit user approval |
 | Freshness | Scope + diff fingerprint + applicable head | Exact PR number + current remote head SHA |
 | Pause | Not applicable | Pauses new-head re-review dispatch only; remote PR lifecycle monitoring continues |
@@ -44,14 +44,18 @@ RalphX has two distinct review workflows. A local checkout exists in both, but i
 - Review PR mutations fail closed when live PR health cannot be confirmed. Late proposals/submissions use repository guards/CAS and cannot resurrect actions after terminal settlement.
 - Durable state is authoritative. UI projections suppress stale action controls when either workspace publication or monitor state is terminal and keep polling every nonterminal Review PR context.
 - Workspace Review reviewer/repair confirmations use the exact per-conversation role runtime override for provider, model, effort, and speed; approval and sandbox remain backend-resolved role defaults, while the backend alone owns target receipts and repair attempt identity.
+- The reviewer writes its artifact pair exactly once, at the end, always carrying a typed `outcome` (and `blocking_summary` when blocking), then completes immediately. There is no provisional early write: a reviewer that dies mid-review leaves no durable artifact and the gate fails, by design.
+- Gate settlement has two sources, recorded in `review_settlement_source`. `typed` is `complete_workspace_review_run` and always wins. `artifact_degraded` is the backend settling a timed-out run from the outcome it recorded on its artifact, and requires a current artifact pair, a recorded outcome whose run id is the settling run, and an unchanged plan context. A degraded settlement withholds auto-merge arming and fixer routing but restores the blocking summary and fingerprint the artifact write cleared, so the manual fixer action stays actionable. UI treats a degraded gate exactly like a typed one; the settlement source is presentation only.
+- Hunk annotations belong to `ralphx-workspace-annotator`, dispatched after settlement. Its write authority is the exact run the backend registered in `annotation_run_id` at the exact reviewed target; both clear on target refresh. Dispatch is best effort and can never change a settled gate. Annotations carry forward across cycles for files whose per-file patch hash is unchanged — never keyed off a head-delta, which a base move would falsify.
+- The review packet omits low-signal files (lockfiles, generated output, snapshots, assets, binaries) from its inline patch excerpt, flags them with `low_signal` in the changed-file inventory, and still serves their full diffs through `get_workspace_review_diff_page`. The classifier is generic path/extension matching and encodes no repository-specific risk judgment.
 - Review findings carry a disposition (Blocking | Fold In | Backlog | Informational) and a stated cost of doing nothing; Blocking and Fold In are both requested work and both drive outcome `blocking`, while Backlog and Informational never affect the gate. Fold In demotes to Backlog once an automated fixer has already run against the delta, so the review → fix → review loop terminates.
 
 ## Ownership And Debugging
 
 | Concern | Workspace Review owner | Review PR owner |
 |---|---|---|
-| Agent contract | `agents/ralphx-workspace-reviewer/` | `agents/ralphx-pr-reviewer/` |
-| Application/runtime | `src-tauri/src/application/agent_workspace_review*.rs` | `src-tauri/src/application/services/pr_merge_poller.rs`, `src-tauri/src/application/pr_startup_recovery.rs`, `src-tauri/src/application/agent_workspace_terminal_cleanup.rs` |
+| Agent contract | `agents/ralphx-workspace-reviewer/`, `agents/ralphx-workspace-annotator/` | `agents/ralphx-pr-reviewer/` |
+| Application/runtime | `src-tauri/src/application/agent_workspace_review*.rs` (settlement in `agent_workspace_review.rs`, annotator dispatch and carry-forward in `agent_workspace_review_annotator.rs`, packet compaction in `agent_workspace_review_low_signal.rs`) | `src-tauri/src/application/services/pr_merge_poller.rs`, `src-tauri/src/application/pr_startup_recovery.rs`, `src-tauri/src/application/agent_workspace_terminal_cleanup.rs` |
 | HTTP/tool transitions | `src-tauri/src/http_server/handlers/agent_workspaces/workspace_review_context.rs` + workspace-review handlers in `mod.rs` | `src-tauri/src/http_server/handlers/agent_workspaces/pr_review/` |
 | Persistence | Workspace-review monitor/artifact repositories | `AgentConversationWorkspaceRepository` PR monitor/action/terminal-settlement methods; SQLite and memory implementations |
 | Frontend | Workspace Review artifact/gate surfaces | `AgentWorkspacePrReviewCard.tsx`, presentation helper, sidebar publication polling |
