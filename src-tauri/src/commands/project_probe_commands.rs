@@ -239,7 +239,7 @@ async fn inspect_candidate_path_inner(
     }
 
     let Some(repository_root) = repository_top_level(&safe_path).await? else {
-        return Ok(non_repository_verdict(&safe_path).await?);
+        return non_repository_verdict(&safe_path).await;
     };
 
     let canonical_path = safe_path.canonicalize().map_err(|error| {

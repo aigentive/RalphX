@@ -5,7 +5,7 @@
 //! deliver a terminal outcome (see `clone_job_registry`).
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -294,7 +294,7 @@ pub(crate) async fn build_clone_target_plan(
     plan
 }
 
-async fn destination_problem(destination: &PathBuf, state: &AppState) -> Option<String> {
+async fn destination_problem(destination: &Path, state: &AppState) -> Option<String> {
     if state.clone_jobs.has_live_job_for(destination) {
         return Some("That folder is already being cloned into".to_string());
     }
