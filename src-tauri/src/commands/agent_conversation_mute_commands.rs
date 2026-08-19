@@ -9,6 +9,9 @@ use crate::commands::agent_sidebar_commands::{
     attention_state_fingerprint, managed_team_activity_for_conversation,
     normalized_supervision_status, publication_state_for_workspace,
 };
+use crate::commands::agent_sidebar_review_state::{
+    lifecycle_monitor_for_sidebar, pr_review_state_for_row, SidebarPrReviewState,
+};
 use crate::commands::unified_chat_commands::agent_workspace_response_with_pr_supervision_for_state;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{AgentConversationMute, ChatConversationId};
@@ -54,12 +57,17 @@ pub async fn set_agent_conversation_muted_for_app_state(
     // path uses. A linked plan branch can overlay the workspace's publication
     // status there, so deriving from the raw entity here would fingerprint a
     // state the sidebar never computes and the mute would never apply.
-    let workspace = match state
+    // The raw entity is kept alongside the projection: the Review PR lifecycle
+    // gate reads the raw `publication_pr_status` column, exactly as the
+    // sidebar's SQL listing does, while the projection may carry an overlaid
+    // one. Gating on the overlaid value would admit or exclude a monitor the
+    // listing decided differently.
+    let workspace_entity = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
         .await
-        .map_err(|error| error.to_string())?
-    {
+        .map_err(|error| error.to_string())?;
+    let workspace = match workspace_entity.clone() {
         Some(workspace) => Some(
             agent_workspace_response_with_pr_supervision_for_state(
                 state,
@@ -80,6 +88,18 @@ pub async fn set_agent_conversation_muted_for_app_state(
     // component here would produce a fingerprint the sidebar never computes.
     let managed_team_activity =
         managed_team_activity_for_conversation(state, &conversation_id).await?;
+    // Same Review PR derivation, through the same lifecycle gate, as the
+    // sidebar read path.
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let review_state = workspace_entity
+        .as_ref()
+        .zip(monitor.as_ref())
+        .and_then(|(workspace, monitor)| lifecycle_monitor_for_sidebar(workspace, monitor))
+        .and_then(|monitor| pr_review_state_for_row(Some(monitor), latest_run_status));
     let fingerprint = attention_state_fingerprint(
         conversation.is_archived(),
         publication_state_for_workspace(workspace.as_ref(), latest_run_status),
@@ -90,6 +110,7 @@ pub async fn set_agent_conversation_muted_for_app_state(
         managed_team_activity
             .as_ref()
             .map(|activity| activity.fingerprint.as_str()),
+        review_state.map(SidebarPrReviewState::key),
     );
     state
         .agent_conversation_mute_repo

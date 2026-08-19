@@ -345,6 +345,7 @@ const DEFAULT_SIDEBAR_GROUP_BY: AgentSidebarGroupBy = "inbox";
 const DEFAULT_SIDEBAR_INBOX_ACTIVE_LANE: AgentSidebarInboxFilter = "recent";
 const SIDEBAR_INBOX_LANES: readonly AgentSidebarInboxFilter[] = [
   "recent",
+  "reviews",
   "stale",
   "done",
 ];

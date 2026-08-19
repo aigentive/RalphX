@@ -2118,6 +2118,7 @@ describe("chat api", () => {
               attention_lane: "done",
               parked_delegate_count: 2,
               action_verb: "Merged",
+              review_state: null,
               is_muted: false,
             },
           ],
@@ -2165,6 +2166,7 @@ describe("chat api", () => {
           attentionLane: "done",
           parkedDelegateCount: 2,
           actionVerb: "Merged",
+          reviewState: null,
           isMuted: false,
           workspace: {
             maintenanceOperation: {
