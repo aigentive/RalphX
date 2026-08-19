@@ -36,10 +36,12 @@ describe("useAgentSidebarPublicationPolling", () => {
       "conv-merged": {
         publication_state: "merged",
         publication_label: "merged",
+        review_state: null,
       },
       "conv-active": {
         publication_state: "active",
         publication_label: null,
+        review_state: null,
       },
     });
 
@@ -49,8 +51,8 @@ describe("useAgentSidebarPublicationPolling", () => {
           [conversation("conv-merged"), conversation("conv-active")],
           true,
           new Map([
-            ["conv-merged", workspacePublicationFingerprint("draft", null)],
-            ["conv-active", workspacePublicationFingerprint("active", null)],
+            ["conv-merged", workspacePublicationFingerprint("draft", null, null)],
+            ["conv-active", workspacePublicationFingerprint("active", null, null)],
           ]),
         ),
       { wrapper: createWrapper(queryClient) },
@@ -86,6 +88,7 @@ describe("useAgentSidebarPublicationPolling", () => {
       "conv-label": {
         publication_state: "active",
         publication_label: "merged",
+        review_state: null,
       },
     });
 
@@ -97,7 +100,7 @@ describe("useAgentSidebarPublicationPolling", () => {
           new Map([
             [
               "conv-label",
-              workspacePublicationFingerprint("active", "blocked"),
+              workspacePublicationFingerprint("active", "blocked", null),
             ],
           ]),
         ),
@@ -111,6 +114,78 @@ describe("useAgentSidebarPublicationPolling", () => {
     );
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ["agents", "workspace-pr-review", "conv-label"],
+    });
+  });
+
+  it("invalidates the sidebar when only the Review PR state changes", async () => {
+    const queryClient = createTestQueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    // Submitting an approval moves the monitor from awaiting_user to watching
+    // without touching publication state or label.
+    getBulkWorkspacePublicationStatesMock.mockResolvedValueOnce({
+      "conv-review": {
+        publication_state: "active",
+        publication_label: null,
+        review_state: "approved",
+      },
+    });
+
+    renderHook(
+      () =>
+        useAgentSidebarPublicationPolling(
+          [conversation("conv-review")],
+          true,
+          new Map([
+            [
+              "conv-review",
+              workspacePublicationFingerprint("active", null, "needs_approval"),
+            ],
+          ]),
+        ),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["agents", "sidebar-conversations"],
+      }),
+    );
+  });
+
+  it("leaves the sidebar alone when an unchanged review row is polled", async () => {
+    const queryClient = createTestQueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    getBulkWorkspacePublicationStatesMock.mockResolvedValueOnce({
+      "conv-review": {
+        publication_state: "active",
+        publication_label: null,
+        review_state: "approved",
+      },
+    });
+
+    // Guards the two-producer drift in AgentsSidebar: a cached fingerprint
+    // built from the same row must equal the polled one, or every 5s tick
+    // would invalidate the whole sidebar query.
+    renderHook(
+      () =>
+        useAgentSidebarPublicationPolling(
+          [conversation("conv-review")],
+          true,
+          new Map([
+            [
+              "conv-review",
+              workspacePublicationFingerprint("active", null, "approved"),
+            ],
+          ]),
+        ),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    await waitFor(() =>
+      expect(getBulkWorkspacePublicationStatesMock).toHaveBeenCalled(),
+    );
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
+      queryKey: ["agents", "sidebar-conversations"],
     });
   });
 });
