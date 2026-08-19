@@ -33,7 +33,8 @@ pub use runtime_config::{
     validate_external_mcp_config, AllRuntimeConfig, AutomationsRuntimeConfig,
     DatabaseMaintenanceConfig, DelegationConfig, ExternalMcpConfig, GitRuntimeConfig, LimitsConfig,
     ReconciliationConfig, SchedulerConfig, ShutdownConfig, SpecialistEntry, StreamTimeoutsConfig,
-    SupervisorRuntimeConfig, VerificationConfig, MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS,
+    SupervisorRuntimeConfig, VerificationConfig, WorkspaceReviewRuntimeConfig,
+    MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS,
 };
 
 const VALID_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];

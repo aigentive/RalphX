@@ -31,6 +31,7 @@ use axum::{
 
 use super::*;
 use crate::application::agent_conversation_workspace::AgentConversationWorkspaceBaseSelection;
+use crate::application::agent_workspace_review_incremental::AgentWorkspaceReviewPreviousDeltaFile;
 use crate::application::app_state::ApplicationExecutionState;
 use crate::application::agent_workspace_local_commit::{
     commit_agent_workspace_locally, AgentWorkspaceLocalCommitRequest,
@@ -66,6 +67,9 @@ use crate::application::agent_workspace_review::{
     start_agent_workspace_review_blocking_fixer_with_override, workspace_review_mode_is_eligible,
     AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewTarget,
     WorkspaceReviewFixerConfirmation,
+};
+use crate::application::agent_workspace_review_annotator::{
+    merge_workspace_review_hunk_annotations, missing_workspace_review_hunk_anchors,
 };
 #[cfg(test)]
 use crate::application::agent_workspace_review_auto_merge::start_guarded_agent_workspace_review;
@@ -117,8 +121,9 @@ use crate::domain::entities::{
     AgentWorkspacePrMetadataDecision,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspacePreviousReviewSnapshot, AgentWorkspacePrReviewMonitorStatus,
+    AgentWorkspaceReviewArtifactOutcome,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewTargetScope, Artifact, ArtifactId, ArtifactType, ChatConversationId,
     IdeationAnalysisBaseRefKind, NewNotification, NotificationCategory, NotificationSeverity,
     NotificationTarget, NotificationTargetKind, ProjectId,
@@ -691,6 +696,20 @@ pub struct AgentWorkspaceReviewMonitorResponse {
     pub status: String,
     pub review_outcome: String,
     pub review_gate_status: String,
+    /// Fixer cycles plus durable publish-repair attempts for this workspace.
+    ///
+    /// One number for "has automation already had a go at this delta", which is what the
+    /// reviewer's Fold-In demotion rule actually needs — the fixer counter alone is blind to
+    /// publish-repair churn. `None` on paths that do not load repair state; the reviewer falls
+    /// back to the individual fields there. Never silently `Some(fixer_cycles)`, which would read
+    /// as "no repair attempts" when the repair read actually failed.
+    pub automation_attempt_count: Option<i64>,
+    /// How the current gate was settled: `typed` | `artifact_degraded`.
+    ///
+    /// Presentation only. A degraded gate authorizes exactly what a typed one does; the UI uses
+    /// this solely to explain that the reviewer timed out and the gate was settled from its
+    /// recorded artifact outcome.
+    pub review_settlement_source: Option<String>,
     pub current_target_scope: Option<String>,
     pub reviewed_target_scope: Option<String>,
     pub review_conversation_id: Option<String>,
@@ -746,6 +765,12 @@ impl From<AgentWorkspaceReviewMonitor> for AgentWorkspaceReviewMonitorResponse {
             status: value.status.to_string(),
             review_outcome: value.review_outcome.to_string(),
             review_gate_status: value.review_gate_status.to_string(),
+            // Requires a repair-repo read, so it is populated by the context path rather than
+            // guessed here. See `apply_automation_attempt_count`.
+            automation_attempt_count: None,
+            review_settlement_source: value
+                .review_settlement_source
+                .map(|source| source.to_string()),
             current_target_scope: value.current_target_scope.map(|scope| scope.to_string()),
             reviewed_target_scope: value.reviewed_target_scope.map(|scope| scope.to_string()),
             review_conversation_id: value
@@ -854,12 +879,58 @@ pub struct AgentWorkspaceReviewContextResponse {
     pub can_mutate_review_state: bool,
     pub review_runtime_state: String,
     pub should_show_tab: bool,
+    /// The last settled review, served from a start-of-run snapshot.
+    ///
+    /// Never derived from the live `reviewed_*` fields: the current run's artifact write
+    /// overwrites those before it completes, so a live read would eventually return the run's own
+    /// review as its "previous" one. Present only on the full-packet (reviewer) path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_review: Option<AgentWorkspacePreviousReviewResponse>,
+    /// Files changed since `previous_review.reviewed_head_sha`, when that head is reachable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_changed_since_previous_review: Option<Vec<AgentWorkspaceReviewPreviousDeltaFile>>,
+    /// `false` when the previous head is unreachable (rebase, base update) and the delta above is
+    /// therefore not trustworthy. The reviewer must fall back to a full review.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_review_delta_complete: Option<bool>,
+}
+
+/// The last settled review, for incremental triage.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentWorkspacePreviousReviewResponse {
+    pub overview_artifact_id: String,
+    pub requested_changes_artifact_id: Option<String>,
+    pub artifact_version: Option<u32>,
+    pub reviewed_diff_fingerprint: Option<String>,
+    pub reviewed_head_sha: Option<String>,
+    pub outcome: String,
+}
+
+impl From<&AgentWorkspacePreviousReviewSnapshot> for AgentWorkspacePreviousReviewResponse {
+    fn from(value: &AgentWorkspacePreviousReviewSnapshot) -> Self {
+        Self {
+            overview_artifact_id: value.overview_artifact_id.as_str().to_string(),
+            requested_changes_artifact_id: value
+                .requested_changes_artifact_id
+                .as_ref()
+                .map(|artifact_id| artifact_id.as_str().to_string()),
+            artifact_version: value.artifact_version,
+            reviewed_diff_fingerprint: value.reviewed_diff_fingerprint.clone(),
+            reviewed_head_sha: value.reviewed_head_sha.clone(),
+            outcome: value.outcome.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct AgentWorkspaceReviewContextQuery {
     pub include_review_packet: Option<bool>,
     pub refresh_target: Option<bool>,
+    /// Whether to load publication events. Defaults to `true` so the UI is unaffected.
+    ///
+    /// The MCP model path passes `false`: reviewers never act on publication history, and every
+    /// event serializes seven fields into a payload that is already over budget.
+    pub include_events: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1049,6 +1120,14 @@ pub struct WriteAgentWorkspaceReviewArtifactRequest {
     pub head_sha: Option<String>,
     pub diff_fingerprint: Option<String>,
     pub created_by_run_id: Option<String>,
+    /// Typed disposition for this artifact pair: `passed` | `blocking`.
+    ///
+    /// Recorded on the monitor so the backend can settle the gate from durable evidence if the
+    /// reviewer's wrapper times out before it calls `complete_workspace_review_run`. Never parsed
+    /// out of the artifact markdown.
+    pub outcome: Option<String>,
+    /// Required when `outcome` is `blocking`: the fixer-start path fails closed without it.
+    pub blocking_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1861,6 +1940,8 @@ pub async fn write_agent_workspace_review_artifact(
     )?;
     let requested_changes_content =
         non_empty_string(req.requested_changes_content, "requested_changes_content")?;
+    let (recorded_outcome, recorded_blocking_summary) =
+        parse_review_artifact_outcome(req.outcome.as_deref(), req.blocking_summary)?;
     let content_bytes = content.len();
     let requested_changes_content_bytes = requested_changes_content.len();
     let conversation_id = ChatConversationId::from_string(conversation_id);
@@ -2046,6 +2127,14 @@ pub async fn write_agent_workspace_review_artifact(
         created_requested_changes.metadata.created_at,
         previous_requested_changes_artifact_entity_id,
     );
+    if let Some(outcome) = recorded_outcome {
+        crate::application::agent_workspace_review::record_review_artifact_outcome(
+            &mut monitor,
+            outcome,
+            recorded_blocking_summary,
+            created_by_run_id.clone(),
+        );
+    }
     let monitor = state
         .app_state
         .agent_conversation_workspace_repo
@@ -2186,9 +2275,10 @@ pub async fn write_agent_workspace_review_hunk_annotations(
             None,
         )
     })?;
-    let created_by_run_id = validate_workspace_review_tool_run_id(
+    let created_by_run_id = validate_workspace_review_annotation_run_id(
         &monitor,
         created_by_run_id.as_deref(),
+        target,
         "workspace Review hunk annotations write",
     )?;
     let (target_scope, target_head_sha, target_diff_fingerprint) =
@@ -2234,6 +2324,11 @@ pub async fn write_agent_workspace_review_hunk_annotations(
             head_sha: target_head_sha.clone(),
             diff_fingerprint: &target_diff_fingerprint,
             created_by_run_id,
+            file_patch_hashes:
+                crate::application::agent_workspace_review_diff::workspace_review_file_patch_hashes(
+                    &validation_target,
+                    &hunk_selections,
+                ),
         },
     );
 
@@ -4495,6 +4590,28 @@ fn validate_workspace_review_tool_run_id(
     Ok(created_by_run_id)
 }
 
+/// Annotation writes accept either the active reviewer run or the backend-registered annotator
+/// run for the exact reviewed target. See `ensure_workspace_review_annotation_authority`.
+fn validate_workspace_review_annotation_run_id(
+    monitor: &AgentWorkspaceReviewMonitor,
+    created_by_run_id: Option<&str>,
+    target: &AgentWorkspaceReviewTarget,
+    operation: &str,
+) -> Result<Option<String>, JsonError> {
+    let created_by_run_id = created_by_run_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    crate::application::agent_workspace_review::ensure_workspace_review_annotation_authority(
+        monitor,
+        created_by_run_id.as_deref(),
+        target,
+        operation,
+    )
+    .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string(), None))?;
+    Ok(created_by_run_id)
+}
+
 fn validate_workspace_review_tool_target_metadata(
     target: &AgentWorkspaceReviewTarget,
     target_scope: Option<&str>,
@@ -4796,6 +4913,9 @@ struct WorkspaceReviewHunkAnnotationEntityContext<'a> {
     head_sha: Option<String>,
     diff_fingerprint: &'a str,
     created_by_run_id: Option<String>,
+    /// Per-file patch hashes keyed by `(path, diff_source)`. A file missing from this map gets a
+    /// `None` hash, which fails its carry-forward closed on the next cycle.
+    file_patch_hashes: BTreeMap<(String, String), String>,
 }
 
 fn build_workspace_review_hunk_annotation_entities(
@@ -4805,7 +4925,12 @@ fn build_workspace_review_hunk_annotation_entities(
     let created_at = chrono::Utc::now();
     annotations
         .into_iter()
-        .map(|annotation| AgentWorkspaceReviewHunkAnnotation {
+        .map(|annotation| {
+            let file_patch_hash = context
+                .file_patch_hashes
+                .get(&(annotation.path.clone(), annotation.source.clone()))
+                .cloned();
+            AgentWorkspaceReviewHunkAnnotation {
             id: uuid::Uuid::new_v4().to_string(),
             conversation_id: context.conversation_id.clone(),
             project_id: context.project_id.clone(),
@@ -4824,85 +4949,11 @@ fn build_workspace_review_hunk_annotation_entities(
             title: annotation.title,
             message: annotation.message,
             level: annotation.level,
+            file_patch_hash,
             created_by_run_id: context.created_by_run_id.clone(),
             created_at,
+        }
         })
-        .collect()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct WorkspaceReviewHunkAnnotationKey {
-    path: String,
-    source: String,
-    hunk_header: String,
-    old_start: u32,
-    old_lines: u32,
-    new_start: u32,
-    new_lines: u32,
-}
-
-impl From<&AgentWorkspaceReviewHunkAnnotation> for WorkspaceReviewHunkAnnotationKey {
-    fn from(value: &AgentWorkspaceReviewHunkAnnotation) -> Self {
-        Self {
-            path: value.path.clone(),
-            source: value.diff_source.clone(),
-            hunk_header: value.hunk_header.clone(),
-            old_start: value.old_start,
-            old_lines: value.old_lines,
-            new_start: value.new_start,
-            new_lines: value.new_lines,
-        }
-    }
-}
-
-impl From<&AgentWorkspaceReviewHunkAnchor> for WorkspaceReviewHunkAnnotationKey {
-    fn from(value: &AgentWorkspaceReviewHunkAnchor) -> Self {
-        Self {
-            path: value.path.clone(),
-            source: value.source.clone(),
-            hunk_header: value.hunk_header.clone(),
-            old_start: value.old_start,
-            old_lines: value.old_lines,
-            new_start: value.new_start,
-            new_lines: value.new_lines,
-        }
-    }
-}
-
-fn merge_workspace_review_hunk_annotations(
-    existing: Vec<AgentWorkspaceReviewHunkAnnotation>,
-    updates: Vec<AgentWorkspaceReviewHunkAnnotation>,
-) -> Vec<AgentWorkspaceReviewHunkAnnotation> {
-    let mut merged = BTreeMap::new();
-    for annotation in existing {
-        merged.insert(
-            WorkspaceReviewHunkAnnotationKey::from(&annotation),
-            annotation,
-        );
-    }
-    for annotation in updates {
-        merged.insert(
-            WorkspaceReviewHunkAnnotationKey::from(&annotation),
-            annotation,
-        );
-    }
-    merged.into_values().collect()
-}
-
-fn missing_workspace_review_hunk_anchors(
-    target: &AgentWorkspaceReviewTarget,
-    annotations: &[AgentWorkspaceReviewHunkAnnotation],
-) -> Vec<AgentWorkspaceReviewHunkAnchor> {
-    let covered = annotations
-        .iter()
-        .map(WorkspaceReviewHunkAnnotationKey::from)
-        .collect::<BTreeSet<_>>();
-    target
-        .review_packet
-        .hunk_anchors
-        .iter()
-        .filter(|anchor| !covered.contains(&WorkspaceReviewHunkAnnotationKey::from(*anchor)))
-        .cloned()
         .collect()
 }
 
@@ -5070,6 +5121,44 @@ fn non_empty_string(value: String, field: &str) -> Result<String, JsonError> {
         ));
     }
     Ok(value)
+}
+
+/// Parses the optional typed disposition on a Review artifact write.
+///
+/// Shape errors are `400`, matching this module's `non_empty_string` convention. The completion
+/// path's `AppError::Validation` maps to a `500` here, which would hide the actual problem from
+/// the reviewer, so this validates inline instead.
+fn parse_review_artifact_outcome(
+    outcome: Option<&str>,
+    blocking_summary: Option<String>,
+) -> Result<
+    (
+        Option<AgentWorkspaceReviewArtifactOutcome>,
+        Option<String>,
+    ),
+    JsonError,
+> {
+    let blocking_summary = blocking_summary
+        .map(|summary| summary.trim().to_string())
+        .filter(|summary| !summary.is_empty());
+    let Some(outcome) = outcome.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok((None, None));
+    };
+    let outcome = AgentWorkspaceReviewArtifactOutcome::from_str(outcome).map_err(|_| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "outcome must be 'passed' or 'blocking'",
+            None,
+        )
+    })?;
+    if outcome == AgentWorkspaceReviewArtifactOutcome::Blocking && blocking_summary.is_none() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "blocking_summary is required when outcome is 'blocking'",
+            None,
+        ));
+    }
+    Ok((Some(outcome), blocking_summary))
 }
 
 fn parse_update_base_kind(

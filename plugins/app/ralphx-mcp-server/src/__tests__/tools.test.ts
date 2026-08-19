@@ -61,6 +61,7 @@ import {
   AGENT_WORKSPACE_REPAIR,
   AGENT_WORKSPACE_PR_FIXER,
   PLAN_COMPLEXITY_ASSESSOR,
+  WORKSPACE_ANNOTATOR,
   WORKSPACE_REVIEWER,
   AUTOMATION_SETUP,
   WORKER,
@@ -1028,11 +1029,26 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
     expect(tools).toContain('list_workspace_review_files');
     expect(tools).toContain('get_workspace_review_diff_page');
     expect(tools).toContain('write_workspace_review_artifact');
-    expect(tools).toContain('write_workspace_review_hunk_annotations');
     expect(tools).toContain('complete_workspace_review_run');
     expect(tools).not.toContain('get_agent_task');
     expect(tools).not.toContain('list_agent_tasks');
     expect(tools).not.toContain('search_memories');
+    // Hunk annotations belong to the background annotator now, so the reviewer's run tail no
+    // longer holds work that its wrapper deadline can cut off.
+    expect(tools).not.toContain('write_workspace_review_hunk_annotations');
+  });
+
+  it('workspace annotator allowlist is annotation-only and holds no gate-mutating tool', () => {
+    const tools = toolsByAgent()[WORKSPACE_ANNOTATOR];
+
+    expect(tools).toEqual(loadCanonicalMcpTools(WORKSPACE_ANNOTATOR));
+    expect(tools).toContain('get_workspace_review_context');
+    expect(tools).toContain('list_workspace_review_files');
+    expect(tools).toContain('get_workspace_review_diff_page');
+    expect(tools).toContain('write_workspace_review_hunk_annotations');
+    expect(tools).not.toContain('write_workspace_review_artifact');
+    expect(tools).not.toContain('complete_workspace_review_run');
+    expect(tools).not.toContain('delegate_start');
   });
 
   it('automation setup allowlist mirrors canonical session-bound automation tools', () => {
@@ -1689,7 +1705,7 @@ describe('agent workspace publish tool transport', () => {
     ).resolves.toEqual({ success: true });
 
     expect(callTauriGet).toHaveBeenCalledWith(
-      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true',
+      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true&include_events=false',
       {
         headers: {
           'x-ralphx-agent-run-id': 'run-from-runtime',
@@ -2170,7 +2186,7 @@ describe('agent workspace publish tool transport', () => {
       'agent-workspaces/conversation-from-runtime/pr-review-context'
     );
     expect(callTauriGet).toHaveBeenCalledWith(
-      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true'
+      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true&include_events=false'
     );
     expect(callTauri).toHaveBeenCalledWith(
       'agent-workspaces/conversation-from-runtime/pr-review-actions',
@@ -2403,7 +2419,7 @@ describe('agent workspace publish tool transport', () => {
     [
       'get_workspace_review_context',
       'get',
-      'agent-workspaces/conversation-1/workspace-review-context?include_review_packet=true',
+      'agent-workspaces/conversation-1/workspace-review-context?include_review_packet=true&include_events=false',
       undefined,
     ],
     [
@@ -2418,6 +2434,8 @@ describe('agent workspace publish tool transport', () => {
         target_scope: 'workspace_delta',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
+        outcome: 'passed',
+        blocking_summary: undefined,
         created_by_run_id: 'run-from-runtime',
       },
     ],
