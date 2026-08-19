@@ -1930,9 +1930,14 @@ fn pr_merge_state_status_evidence_token(status: Option<&PrMergeStateStatus>) -> 
 
 /// Stable identity of what the PR looked like when a continuation escalated. Any change here is
 /// new input for unattended repair; an unchanged identity must never buy another budget.
+///
+/// `local_retarget_target` is the current repair attempt's targeted base — the local half of the
+/// evidence. Remote base movement is already tracked independently through
+/// `health.sync_state.base_ref_oid`, so this component only reflects the base RalphX has reserved
+/// for the attempt itself, never the workspace's diff baseline.
 fn agent_workspace_pr_evidence_identity(
     health: &PrHealth,
-    workspace: &AgentConversationWorkspace,
+    local_retarget_target: Option<&str>,
     pr_number: i64,
 ) -> String {
     let head_oid = health
@@ -1950,10 +1955,7 @@ fn agent_workspace_pr_evidence_identity(
     let autofix_classification = classify_agent_workspace_pr_autofix_issue(pr_number, health)
         .map(|issue| issue.classification)
         .unwrap_or_else(|| "absent-autofix-classification".to_string());
-    let workspace_base_commit = workspace
-        .base_commit
-        .as_deref()
-        .unwrap_or("absent-workspace-base-commit");
+    let local_retarget_target = local_retarget_target.unwrap_or("absent-workspace-base-commit");
 
     let mut hasher = Sha256::new();
     hasher.update(head_oid);
@@ -1964,7 +1966,7 @@ fn agent_workspace_pr_evidence_identity(
     hasher.update(b"\0");
     hasher.update(autofix_classification.as_str());
     hasher.update(b"\0");
-    hasher.update(workspace_base_commit);
+    hasher.update(local_retarget_target);
     let digest = format!("{:x}", hasher.finalize());
     digest[..16].to_string()
 }
@@ -2005,7 +2007,11 @@ async fn re_arm_escalated_open_effect_continuation(
                 conversation_id
             ))
         })?;
-    let identity = agent_workspace_pr_evidence_identity(health, &workspace, pr_number);
+    let identity = agent_workspace_pr_evidence_identity(
+        health,
+        attempt.target_base_commit.as_deref(),
+        pr_number,
+    );
     let evidence_marker = format!("{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity}");
     if attempt
         .pending_reasons
@@ -4224,7 +4230,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
     github: Arc<dyn GithubServiceTrait>,
     working_dir: &Path,
     target: AgentWorkspacePrAutofixTarget,
-    mut workspace: AgentConversationWorkspace,
+    workspace: AgentConversationWorkspace,
     conversation_id: &ChatConversationId,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
@@ -4273,7 +4279,12 @@ async fn route_agent_workspace_pr_autofix_for_target(
     let health =
         resolve_polled_pr_health(&github, working_dir, target.pr_number, polled_health).await?;
     let mut current_issue = classify_agent_workspace_pr_autofix_issue(target.pr_number, &health);
-    let mut superseding_base_commit = None;
+    // The base a repair attempt created on this tick must target. This is deliberately NOT written
+    // back to `workspace.base_commit`: on these routes no git work merged the observed base into
+    // the branch, so persisting it would make the Changes panel diff the worktree against a commit
+    // ahead of its own history and render base progress as inverted workspace changes. Only the
+    // `Updated` route (which merged and pushed) and repair settlement may move that baseline.
+    let mut retargeted_base_commit = None;
     // A durable completion may have already reserved a rerun or classified this exact state as
     // pre-existing on base. Neither outcome authorizes a new fixer until GitHub changes health.
     // Do not launch a new fixer generation until GitHub reports a different conclusion.
@@ -4510,7 +4521,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
                                 &reason,
                             )
                             .await?;
-                            superseding_base_commit = Some(observed_base_oid);
+                            retargeted_base_commit = Some(observed_base_oid);
                             add_base_update_assignment(&mut current_issue, &reason);
                             attempt_already_settled = true;
                         }
@@ -4586,7 +4597,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
                     }
                 }
                 if (health_suppressed || ci_held) && !attempt_already_settled {
-                    superseding_base_commit = match disposition {
+                    retargeted_base_commit = match disposition {
                         HealthHoldDisposition::SupersedeForNewEvidence { observed_base_oid }
                         | HealthHoldDisposition::SupersedeForBaseUpdate { observed_base_oid } => {
                             Some(observed_base_oid)
@@ -4617,14 +4628,6 @@ async fn route_agent_workspace_pr_autofix_for_target(
                 }
             }
         }
-    }
-    if let Some(base_commit) = superseding_base_commit {
-        workspace = persist_agent_workspace_observed_base(
-            workspace_repo.as_ref(),
-            conversation_id,
-            base_commit,
-        )
-        .await?;
     }
     import_agent_workspace_pr_comment_evidence(
         Arc::clone(&workspace_repo),
@@ -4778,6 +4781,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
                     repair_repo.clone(),
                     conversation_id,
                     &workspace,
+                    retargeted_base_commit.as_deref(),
                     &issue.classification,
                     &health,
                     notification_service.as_ref(),
@@ -4855,6 +4859,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
         working_dir,
         conversation_id,
         &workspace_for_options,
+        retargeted_base_commit.as_deref(),
         &target,
         target.pr_number,
         &issue.classification,
@@ -4996,11 +5001,13 @@ async fn record_pre_existing_on_base_detection(
 /// already-recorded event would leave the workspace with neither a hold nor a dispatch forever
 /// after the first consumption — gate only the once-per-classification side effects, never the
 /// reservation itself.
+#[allow(clippy::too_many_arguments)]
 async fn record_base_parity_transient_detection(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     repair_repo: Option<Arc<dyn AgentWorkspaceRepairRepository>>,
     conversation_id: &ChatConversationId,
     workspace: &AgentConversationWorkspace,
+    retargeted_base_commit: Option<&str>,
     classification: &str,
     health: &PrHealth,
     notification_service: Option<&Arc<NotificationService>>,
@@ -5037,7 +5044,11 @@ async fn record_base_parity_transient_detection(
             source: AgentWorkspaceRepairSource::PrAutofix,
             continuation: AgentWorkspaceRepairContinuation::ResumePrSupervision,
             target_base_ref: health.sync_state.base_ref_name.clone(),
-            target_base_commit: workspace.base_commit.clone(),
+            // The retarget reserved by this tick is authoritative for the attempt; it is threaded
+            // explicitly because it is deliberately absent from `workspace.base_commit`.
+            target_base_commit: retargeted_base_commit
+                .map(str::to_string)
+                .or_else(|| workspace.base_commit.clone()),
             verified_newer_base: false,
             // Contribute no pending reason here. `reason` is appended to `pending_reasons` on
             // BOTH the started and joined paths, before this call knows whether the generation
@@ -5432,6 +5443,7 @@ async fn dispatch_agent_workspace_pr_autofix(
     working_dir: &Path,
     conversation_id: &ChatConversationId,
     workspace: &AgentConversationWorkspace,
+    retargeted_base_commit: Option<&str>,
     _target: &AgentWorkspacePrAutofixTarget,
     pr_number: i64,
     classification: &str,
@@ -5478,7 +5490,11 @@ async fn dispatch_agent_workspace_pr_autofix(
             source: AgentWorkspaceRepairSource::PrAutofix,
             continuation: AgentWorkspaceRepairContinuation::ResumePrSupervision,
             target_base_ref: workspace.base_ref.clone(),
-            target_base_commit: workspace.base_commit.clone(),
+            // The retarget reserved by this tick is authoritative for the attempt; it is threaded
+            // explicitly because it is deliberately absent from `workspace.base_commit`.
+            target_base_commit: retargeted_base_commit
+                .map(str::to_string)
+                .or_else(|| workspace.base_commit.clone()),
             verified_newer_base: false,
             reason: dispatch.repair_summary.to_string(),
             summary: dispatch.repair_summary.to_string(),
@@ -6921,6 +6937,9 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
         working_dir,
         conversation_id,
         &workspace_for_dispatch,
+        // The review-feedback route never reserves a base retarget, so the attempt keeps taking
+        // its target from the workspace snapshot exactly as before.
+        None,
         &target,
         pr_number,
         &issue.classification,

@@ -7711,7 +7711,8 @@ async fn live_pr_autofix_new_base_evidence_supersedes_same_fingerprint_health_ho
     assert_eq!(current.generation, targeted.generation + 1);
     assert_eq!(
         current.target_base_commit.as_deref(),
-        Some("base-after-hold")
+        Some("base-after-hold"),
+        "the successor fixer must target the observed base even though nothing was persisted"
     );
     let updated_workspace = workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -7720,7 +7721,9 @@ async fn live_pr_autofix_new_base_evidence_supersedes_same_fingerprint_health_ho
         .expect("workspace exists");
     assert_eq!(
         updated_workspace.base_commit.as_deref(),
-        Some("base-after-hold")
+        Some("base-before-hold"),
+        "superseding a hold reserves a retarget for the next attempt only; the branch still does \
+         not contain the observed base, so the diff baseline must stay at the branch point"
     );
 }
 
@@ -8111,6 +8114,8 @@ async fn live_pr_autofix_ci_rerun_hold_behind_base_dirty_worktree_defers_without
         worktree.path(),
     );
     init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    // The branch point the worktree actually contains. GitHub reports the PR `Behind` because the
+    // base moved past it, so the observed base is deliberately a different commit.
     workspace.base_commit = Some("base-behind-dirty".to_string());
     let conversation_id = workspace.conversation_id.clone();
     let mut project = Project::new(
@@ -8124,12 +8129,13 @@ async fn live_pr_autofix_ci_rerun_hold_behind_base_dirty_worktree_defers_without
         .create_or_update(workspace.clone())
         .await
         .expect("workspace should persist");
+    let assert_workspace_repo = Arc::clone(&workspace_repo);
     let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
     let branch_update_repo: Arc<dyn BranchUpdateRepository> =
         Arc::new(MemoryBranchUpdateRepository::new());
     let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
     let mut health = open_pr_health("behind-base-dirty-head");
-    health.sync_state.base_ref_oid = Some("base-behind-dirty".to_string());
+    health.sync_state.base_ref_oid = Some("base-behind-dirty-advanced".to_string());
     health.sync_state.merge_state_status = Some(PrMergeStateStatus::Behind);
     let ci_fingerprint = "ci-hold:v1:behind-base-dirty-head:923";
     health.checks.push(PrHealthCheck {
@@ -8254,6 +8260,23 @@ async fn live_pr_autofix_ci_rerun_hold_behind_base_dirty_worktree_defers_without
         current.base_update_target_commit, None,
         "a defer must not transfer an automatic-update marker to the fixer generation"
     );
+    assert_eq!(
+        current.target_base_commit.as_deref(),
+        Some("base-behind-dirty-advanced"),
+        "the deferred fixer generation must still target the observed base it has to integrate"
+    );
+    let unchanged_workspace = assert_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("reload workspace after the defer route")
+        .expect("workspace exists");
+    assert_eq!(
+        unchanged_workspace.base_commit.as_deref(),
+        Some("base-behind-dirty"),
+        "deferring the base update performs no git work, so the branch still does not contain the \
+         observed base; retargeting the diff baseline here would render base progress as inverted \
+         workspace changes"
+    );
 }
 
 #[tokio::test]
@@ -8289,7 +8312,8 @@ async fn live_pr_autofix_advanced_base_and_behind_updates_advanced_tip_first() {
     let observed_base_oid = git_stdout(&worktree, &["rev-parse", "main"]);
     run_git(&worktree, &["checkout", &workspace.branch_name]);
 
-    workspace.base_commit = Some(observed_base_oid.clone());
+    // The branch point the worktree contains before RalphX merges the advanced base into it.
+    workspace.base_commit = Some(attempt_base_oid.clone());
     let conversation_id = workspace.conversation_id.clone();
     let mut project = Project::new(
         "Behind base direct update".to_string(),
@@ -8326,7 +8350,7 @@ async fn live_pr_autofix_advanced_base_and_behind_updates_advanced_tip_first() {
     )
     .await;
     let mut targeted = held.clone();
-    targeted.target_base_commit = Some(attempt_base_oid);
+    targeted.target_base_commit = Some(attempt_base_oid.clone());
     targeted.updated_at += chrono::Duration::microseconds(1);
     let targeted = match repair_repo
         .transition_repair_attempt(
@@ -8430,6 +8454,22 @@ async fn live_pr_autofix_advanced_base_and_behind_updates_advanced_tip_first() {
         Some(observed_base_oid.as_str())
     );
     assert_eq!(current.phase, AgentWorkspaceRepairPhase::Ready);
+    // The `Updated` route is the one place the observed base legitimately becomes the diff
+    // baseline: RalphX merged it into the branch and pushed, so the branch now contains it.
+    let updated_workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("reload workspace after the update route")
+        .expect("workspace exists");
+    assert_eq!(
+        updated_workspace.base_commit.as_deref(),
+        Some(observed_base_oid.as_str()),
+        "a completed base update must retarget the diff baseline to the merged base"
+    );
+    assert_ne!(
+        updated_workspace.base_commit.as_deref(),
+        Some(attempt_base_oid.as_str())
+    );
     assert_eq!(
         workspace_repo
             .list_publication_events(&conversation_id)
@@ -11588,10 +11628,8 @@ async fn escalated_continuation_rearms_when_pr_head_changes() {
         vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()],
     )
     .await;
-    let identity_before =
-        super::agent_workspace_pr_evidence_identity(&health_before, &workspace, 101);
-    let identity_after =
-        super::agent_workspace_pr_evidence_identity(&health_after, &workspace, 101);
+    let identity_before = super::agent_workspace_pr_evidence_identity(&health_before, None, 101);
+    let identity_after = super::agent_workspace_pr_evidence_identity(&health_after, None, 101);
     assert_ne!(identity_before, identity_after);
     let mut seeded = attempt.clone();
     seeded.pending_reasons.push(format!(
@@ -11708,7 +11746,7 @@ async fn escalated_continuation_rearm_is_idempotent_for_unchanged_evidence() {
         vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()],
     )
     .await;
-    let identity = super::agent_workspace_pr_evidence_identity(&health, &workspace, 101);
+    let identity = super::agent_workspace_pr_evidence_identity(&health, None, 101);
     let mut seeded = attempt;
     seeded.pending_reasons.push(format!(
         "{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity}"
@@ -11785,10 +11823,8 @@ async fn escalated_continuation_rearms_when_merge_state_changes_with_head_unchan
         vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()],
     )
     .await;
-    let identity_before =
-        super::agent_workspace_pr_evidence_identity(&health_before, &workspace, 101);
-    let identity_after =
-        super::agent_workspace_pr_evidence_identity(&health_after, &workspace, 101);
+    let identity_before = super::agent_workspace_pr_evidence_identity(&health_before, None, 101);
+    let identity_after = super::agent_workspace_pr_evidence_identity(&health_after, None, 101);
     assert_ne!(identity_before, identity_after);
     let mut seeded = attempt;
     seeded.pending_reasons.push(format!(
@@ -11841,19 +11877,27 @@ async fn escalated_continuation_rearms_when_merge_state_changes_with_head_unchan
         == &format!("{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity_after}")));
 }
 
+/// The local component of the evidence identity is the current attempt's targeted base, not the
+/// workspace snapshot: the workspace column is a diff baseline and is deliberately left alone while
+/// a retarget is only reserved for a repair generation.
 #[tokio::test]
-async fn escalated_continuation_rearms_when_workspace_base_commit_advances() {
+async fn escalated_continuation_rearms_when_attempt_target_base_commit_advances() {
     let health = evidence_health("head-base-advance", "base-before-escalation", None);
     let (state, workspace, attempt) = seed_poller_escalated_open_effect_continuation(
         "base-advance",
         vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()],
     )
     .await;
-    let identity_before = super::agent_workspace_pr_evidence_identity(&health, &workspace, 101);
+    let identity_before = super::agent_workspace_pr_evidence_identity(&health, None, 101);
+    let identity_after =
+        super::agent_workspace_pr_evidence_identity(&health, Some("base-after-advance"), 101);
+    assert_ne!(identity_before, identity_after);
+
     let mut seeded = attempt;
     seeded.pending_reasons.push(format!(
         "{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity_before}"
     ));
+    seeded.target_base_commit = Some("base-after-advance".to_string());
     let expected_updated_at = seeded.updated_at;
     seeded.updated_at += chrono::Duration::microseconds(1);
     match state
@@ -11873,17 +11917,6 @@ async fn escalated_continuation_rearms_when_workspace_base_commit_advances() {
         outcome => panic!("seeding base-commit evidence marker must apply, got {outcome:?}"),
     }
 
-    let mut advanced_workspace = workspace.clone();
-    advanced_workspace.base_commit = Some("base-after-advance".to_string());
-    state
-        .agent_conversation_workspace_repo
-        .create_or_update(advanced_workspace.clone())
-        .await
-        .expect("advance workspace base_commit");
-    let identity_after =
-        super::agent_workspace_pr_evidence_identity(&health, &advanced_workspace, 101);
-    assert_ne!(identity_before, identity_after);
-
     let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
     let _busy_guard =
         try_acquire_agent_workspace_repair_publish_continuation_guard(&workspace.conversation_id)
@@ -11896,10 +11929,22 @@ async fn escalated_continuation_rearms_when_workspace_base_commit_advances() {
         &health,
     )
     .await
-    .expect("re-arm on workspace base_commit advance must not fail");
+    .expect("re-arm on attempt target_base_commit advance must not fail");
     assert!(
         rearmed,
-        "an advanced workspace base_commit must count as new evidence even with unchanged PR health"
+        "an advanced attempt target_base_commit must count as new evidence even with unchanged PR health"
+    );
+
+    let unchanged_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .expect("reload workspace after re-arm")
+        .expect("workspace exists");
+    assert_eq!(
+        unchanged_workspace.base_commit.as_deref(),
+        Some("base-before-escalation"),
+        "re-arming on attempt evidence must never rewrite the workspace diff baseline"
     );
 
     let current = state
@@ -11994,8 +12039,7 @@ async fn escalated_continuation_rearm_cas_loser_makes_no_write() {
         vec![CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string()],
     )
     .await;
-    let identity_before =
-        super::agent_workspace_pr_evidence_identity(&health_before, &workspace, 101);
+    let identity_before = super::agent_workspace_pr_evidence_identity(&health_before, None, 101);
     let mut seeded = attempt;
     seeded.pending_reasons.push(format!(
         "{CONTINUATION_OPEN_EFFECT_EVIDENCE_REASON_PREFIX}{identity_before}"
@@ -12974,6 +13018,106 @@ async fn base_parity_transient_shape_reholds_after_base_advances_settles_it() {
             .count(),
         1,
         "the once-per-classification event gate must stay intact across the re-hold"
+    );
+}
+
+/// The anti-runaway guard for retargeting a superseded hold without persisting the observed base.
+///
+/// `classify_health_hold_disposition` answers `SupersedeForNewEvidence` whenever the held attempt's
+/// `target_base_commit` differs from the observed base. If the attempt created by the supersede did
+/// not itself carry the observed base, every later poll on *identical* evidence would settle and
+/// re-create another generation forever. Exactly one supersede may happen for one base advance.
+#[tokio::test]
+async fn supersede_for_new_evidence_converges_after_one_dispatch() {
+    let (worktree, workspace_repo, conversation_id, health_a) =
+        seed_timed_out_check_workspace("supersede-convergence", "Rust tests").await;
+    let base_check = PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("timed_out".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/1".to_string()),
+    };
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+
+    let (routed_first, chat_first) = route_with_base_conclusions(
+        &worktree,
+        workspace_repo.clone(),
+        &conversation_id,
+        health_a.clone(),
+        Ok(Some(vec![base_check.clone()])),
+    )
+    .await;
+    assert!(!routed_first, "the first transient-shape poll must hold");
+    assert!(chat_first.get_sent_messages().await.is_empty());
+    let first_hold = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load first hold")
+        .expect("first hold exists");
+
+    // The base advances; the PR's own checks are byte-identical from here on.
+    let mut health_b = health_a.clone();
+    health_b.sync_state.base_ref_oid = Some("base-advanced".to_string());
+
+    let (routed_second, chat_second) = route_with_base_conclusions(
+        &worktree,
+        workspace_repo.clone(),
+        &conversation_id,
+        health_b.clone(),
+        Ok(Some(vec![base_check.clone()])),
+    )
+    .await;
+    assert!(!routed_second);
+    assert!(chat_second.get_sent_messages().await.is_empty());
+    let second_hold = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load re-hold")
+        .expect("re-hold exists");
+    assert_ne!(
+        second_hold.id, first_hold.id,
+        "the base advance must supersede the first hold exactly once"
+    );
+    assert_eq!(
+        second_hold.target_base_commit.as_deref(),
+        Some("base-advanced"),
+        "the attempt created by the supersede must carry the observed base, or the next poll \
+         re-answers SupersedeForNewEvidence on unchanged evidence"
+    );
+
+    let (routed_third, chat_third) = route_with_base_conclusions(
+        &worktree,
+        workspace_repo.clone(),
+        &conversation_id,
+        health_b,
+        Ok(Some(vec![base_check])),
+    )
+    .await;
+    assert!(!routed_third);
+    assert!(
+        chat_third.get_sent_messages().await.is_empty(),
+        "unchanged evidence must dispatch nothing"
+    );
+    let third_hold = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load retained hold")
+        .expect("retained hold exists");
+    assert_eq!(
+        third_hold.id, second_hold.id,
+        "a third poll on identical evidence must retain the hold, not settle and re-create it"
+    );
+    assert_eq!(third_hold.generation, second_hold.generation);
+
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("reload workspace after three polls")
+        .expect("workspace exists");
+    assert_eq!(
+        workspace.base_commit.as_deref(),
+        Some("base"),
+        "no poll in this sequence merged anything, so the diff baseline must never move"
     );
 }
 
