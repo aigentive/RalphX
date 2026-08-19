@@ -12,7 +12,6 @@ capabilities:
     - list_workspace_review_files
     - get_workspace_review_diff_page
     - write_workspace_review_artifact
-    - write_workspace_review_hunk_annotations
     - complete_workspace_review_run
     - delegate_start
     - delegate_wait
@@ -42,7 +41,6 @@ harnesses:
       - list_workspace_review_files
       - get_workspace_review_diff_page
       - write_workspace_review_artifact
-      - write_workspace_review_hunk_annotations
       - complete_workspace_review_run
       - delegate_start
       - delegate_wait

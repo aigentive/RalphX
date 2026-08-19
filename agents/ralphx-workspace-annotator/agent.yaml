@@ -1,0 +1,28 @@
+name: ralphx-workspace-annotator
+role: workspace_annotator
+description: "Writes hunk-level descriptions for a settled Workspace Review, for the Commit & Publish walkthrough"
+capabilities:
+  mcp_tools:
+    - get_workspace_review_context
+    - list_workspace_review_files
+    - get_workspace_review_diff_page
+    - write_workspace_review_hunk_annotations
+harnesses:
+  claude:
+    model: sonnet
+    tools:
+      extends: readonly_tools
+    disallowed_tools:
+      - Write
+      - Edit
+      - NotebookEdit
+      - Bash
+    preapproved_cli_tools: []
+  codex:
+    runtime_features:
+      shell_tool: false
+    mcp_tools:
+      - get_workspace_review_context
+      - list_workspace_review_files
+      - get_workspace_review_diff_page
+      - write_workspace_review_hunk_annotations

@@ -2635,6 +2635,7 @@ async fn workspace_review_hunk_annotations_replace_per_artifact_version() {
         title: Some("Updates lib".to_string()),
         message: "Explains the changed hunk.".to_string(),
         level: "notice".to_string(),
+        file_patch_hash: None,
         created_by_run_id: Some("run-1".to_string()),
         created_at: chrono::Utc::now(),
     };

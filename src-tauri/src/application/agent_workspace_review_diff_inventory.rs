@@ -43,6 +43,10 @@ pub(super) fn full_changed_file_inventory(
         .into_iter()
         .map(
             |(path, (status, sources))| AgentWorkspaceReviewChangedFile {
+                low_signal:
+                    crate::application::agent_workspace_review_low_signal::low_signal_class(
+                        &path, false,
+                    ),
                 path,
                 status,
                 sources: sources.into_iter().collect(),

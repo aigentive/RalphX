@@ -2424,6 +2424,8 @@ export type AgentWorkspaceReviewOutcome =
 export type AgentWorkspaceReviewGateStatus =
   "not_required" | "required" | "reviewing" | "passed" | "blocking" | "failed";
 
+export type AgentWorkspaceReviewSettlementSource = "typed" | "artifact_degraded";
+
 export type AgentWorkspaceReviewTargetScope =
   "selected_source" | "workspace_delta";
 
@@ -2523,6 +2525,10 @@ export interface AgentWorkspaceReviewMonitor {
   status: AgentWorkspaceReviewMonitorStatus;
   reviewOutcome: AgentWorkspaceReviewOutcome;
   reviewGateStatus: AgentWorkspaceReviewGateStatus;
+  /// How the gate was settled. `artifact_degraded` means the reviewer timed out and the backend
+  /// settled from the outcome it recorded on its artifact. Presentation only — a degraded gate
+  /// authorizes exactly what a typed one does.
+  reviewSettlementSource: AgentWorkspaceReviewSettlementSource | null;
   currentTargetScope: AgentWorkspaceReviewTargetScope | null;
   reviewedTargetScope: AgentWorkspaceReviewTargetScope | null;
   reviewConversationId: string | null;
@@ -3029,6 +3035,10 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
     ])
     .optional()
     .default("not_required"),
+  review_settlement_source: z
+    .enum(["typed", "artifact_degraded"])
+    .nullable()
+    .optional(),
   current_target_scope: z
     .enum(["selected_source", "workspace_delta"])
     .nullable(),
@@ -3789,6 +3799,7 @@ function transformAgentWorkspaceReviewMonitor(
     status: raw.status,
     reviewOutcome: raw.review_outcome,
     reviewGateStatus: raw.review_gate_status,
+    reviewSettlementSource: raw.review_settlement_source ?? null,
     currentTargetScope: raw.current_target_scope,
     reviewedTargetScope: raw.reviewed_target_scope,
     reviewConversationId: raw.review_conversation_id ?? null,

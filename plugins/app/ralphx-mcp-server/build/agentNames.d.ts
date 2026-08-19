@@ -20,6 +20,7 @@ export declare const SESSION_NAMER = "ralphx-utility-session-namer";
 export declare const PERSONA_EXTRACTOR = "ralphx-persona-extractor";
 export declare const PR_DESCRIBER = "ralphx-utility-pr-describer";
 export declare const WORKSPACE_REVIEWER = "ralphx-workspace-reviewer";
+export declare const WORKSPACE_ANNOTATOR = "ralphx-workspace-annotator";
 export declare const AUTOMATION_SETUP = "ralphx-automation-setup";
 export declare const AUTOMATION_JUDGE = "ralphx-automation-judge";
 export declare const PLAN_COMPLEXITY_ASSESSOR = "ralphx-utility-plan-complexity";
