@@ -1040,7 +1040,7 @@ async fn startup_recovery_blocks_unprovable_validation_and_manual_continuation()
             AgentWorkspaceRepairPhase::ContinuationPending,
             AgentWorkspaceRepairContinuation::Manual,
             3,
-            "failed 3 times",
+            "tried 3 times",
         ),
     ] {
         let conversation_id = conversation_id(suffix);
@@ -7172,7 +7172,7 @@ async fn generic_continuation_error_escalates_to_blocked_within_the_recovery_cap
     assert!(current
         .blocker
         .as_deref()
-        .is_some_and(|blocker| blocker.contains("failed 3 times")));
+        .is_some_and(|blocker| blocker.contains("tried 3 times")));
     assert!(state
         .agent_workspace_repair_repo
         .get_open_repair_effect(&current.id)
@@ -7602,7 +7602,21 @@ enum ReconciliationRemoteShape {
     /// A third party advanced the remote to a state that matches neither the recorded
     /// pre-push precondition nor the (never pushed) intended post-push head.
     Unrelated,
+    /// The production wedged shape: the effect was reserved but its preconditions were never
+    /// written, so no push was ever authorized for it. Aged past the quiescence bound.
+    Uninitialized,
+    /// Structurally identical to [`Self::Uninitialized`] but created just now, so the quiescence
+    /// window has not elapsed and the effect must stay fenced.
+    UninitializedTooYoung,
+    /// Like [`Self::Unrelated`] — permanently ambiguous, so reconciliation always returns
+    /// `Pending` — but with the effect created `age` ago. Models a future dead-effect shape the
+    /// inert predicate does not recognize, which is what the terminal watchdog exists for.
+    UnrelatedAged(chrono::Duration),
 }
+
+/// How far in the past an [`OpenPushEffectReconciliationFixture`] effect is created. The
+/// uninitialized shapes need to sit outside the quiescence window (default 300s) to be classified.
+const RECONCILIATION_FIXTURE_INERT_AGE: chrono::Duration = chrono::Duration::hours(6);
 
 /// Builds a `Continuing` repair attempt with a lost target-lease authority and one durable,
 /// still-open `InFlight` push effect whose exact-OID proof and observable remote state are
@@ -7662,7 +7676,10 @@ async fn seed_open_push_effect_reconciliation_fixture(
         &["commit", "--allow-empty", "-m", "repair head"],
     );
     let intended_head = recovery_git(worktree_path, &["rev-parse", "HEAD"]);
-    if matches!(shape, ReconciliationRemoteShape::Unrelated) {
+    if matches!(
+        shape,
+        ReconciliationRemoteShape::Unrelated | ReconciliationRemoteShape::UnrelatedAged(_)
+    ) {
         let concurrent = tempfile::tempdir().expect("create concurrent reconciliation clone");
         recovery_git(
             concurrent.path(),
@@ -7723,19 +7740,36 @@ async fn seed_open_push_effect_reconciliation_fixture(
     };
 
     let idempotency_key = format!("reconciliation-fixture-{suffix}");
+    let created_at = match shape {
+        ReconciliationRemoteShape::Uninitialized => {
+            chrono::Utc::now() - RECONCILIATION_FIXTURE_INERT_AGE
+        }
+        ReconciliationRemoteShape::UnrelatedAged(age) => chrono::Utc::now() - age,
+        _ => chrono::Utc::now(),
+    };
     let mut effect = AgentWorkspaceRepairEffect::new(
         attempt.id.clone(),
         AgentWorkspaceRepairEffectKind::PushBranch,
         idempotency_key,
-        chrono::Utc::now(),
+        created_at,
     );
     effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
-    effect.intended_head_oid = Some(intended_head);
     match shape {
-        ReconciliationRemoteShape::Absent => effect.expected_remote_absent = true,
-        ReconciliationRemoteShape::MatchesPrecondition | ReconciliationRemoteShape::Unrelated => {
+        ReconciliationRemoteShape::Absent => {
+            effect.intended_head_oid = Some(intended_head);
+            effect.expected_remote_absent = true;
+        }
+        ReconciliationRemoteShape::MatchesPrecondition
+        | ReconciliationRemoteShape::Unrelated
+        | ReconciliationRemoteShape::UnrelatedAged(_) => {
+            effect.intended_head_oid = Some(intended_head);
             effect.expected_remote_oid = pre_push_oid;
         }
+        // Deliberately leaves every precondition unset. This is the exact shape a crash between
+        // effect reservation and push-preflight initialization leaves behind, and it is what
+        // wedged the reported production workspace.
+        ReconciliationRemoteShape::Uninitialized
+        | ReconciliationRemoteShape::UninitializedTooYoung => {}
     }
     let effect = match state
         .agent_workspace_repair_repo
@@ -8260,7 +8294,7 @@ async fn continuation_recovery_failure_streak_stays_independent_of_the_open_effe
     assert!(blocked
         .blocker
         .as_deref()
-        .is_some_and(|blocker| blocker.contains("failed 3 times")));
+        .is_some_and(|blocker| blocker.contains("tried 3 times")));
     assert!(blocked
         .pending_reasons
         .iter()
@@ -10167,7 +10201,10 @@ async fn base_advanced_successor_targets_the_observed_base() {
         .await
         .expect("load successor")
         .expect("successor exists");
-    assert_ne!(successor.id, blocked.id, "a new generation must have been started");
+    assert_ne!(
+        successor.id, blocked.id,
+        "a new generation must have been started"
+    );
     assert_eq!(
         successor.target_base_commit.as_deref(),
         Some("observed-base-b"),
@@ -10217,5 +10254,658 @@ async fn base_advance_authorizes_exactly_one_successor() {
         evaluate_pr_autofix_successor(&state, &successor, &workspace).await,
         PrAutofixSuccessorDecision::HoldUnchanged,
         "identical health with a matching target must park, not authorize another successor"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Inert push-effect classification (steps 1-3)
+//
+// An effect whose intended/expected OIDs were never written is proof that no push was authorized
+// for it, because initialization persists those preconditions strictly before `git push` runs.
+// Terminating it releases the one-open-effect fence that otherwise wedges the continuation
+// permanently: claim recovery deliberately releases the mutation claim without settling the
+// effect, and the continuation gate refuses to reacquire the target lease while an effect is open.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn quiescent_inert_push_effect_is_classified_never_authorized_and_clears_the_fence() {
+    let fixture =
+        seed_open_push_effect_reconciliation_fixture(105, ReconciliationRemoteShape::Uninitialized)
+            .await;
+    let (state, attempt, effect) = (fixture.state, fixture.attempt, fixture.effect);
+
+    assert_eq!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect.clone())
+            .await
+            .expect("classify inert push effect"),
+        crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied(
+            crate::application::publish_resilience::AgentWorkspaceRepairPushEffectNotAppliedReason::NeverAuthorized
+        ),
+        "an uninitialized effect proves no push was authorized, not that the remote is unchanged"
+    );
+
+    let settled = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&effect.idempotency_key)
+        .await
+        .expect("reload settled inert effect")
+        .expect("settled inert effect exists");
+    assert_eq!(settled.status, AgentWorkspaceRepairEffectStatus::Failed);
+    assert!(
+        settled.completed_at.is_some(),
+        "completed_at is what actually releases the one-open-effect fence"
+    );
+    assert!(settled
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("never initialized")));
+    assert!(
+        state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&attempt.id)
+            .await
+            .expect("query open effect after settlement")
+            .is_none(),
+        "the fence must actually be clear, or the continuation still cannot reacquire"
+    );
+}
+
+#[tokio::test]
+async fn inert_push_effect_younger_than_the_quiescence_window_stays_pending() {
+    // A preflight reserved seconds ago may simply be mid-flight right now. Only age makes the
+    // "never initialized" reading safe.
+    let fixture = seed_open_push_effect_reconciliation_fixture(
+        106,
+        ReconciliationRemoteShape::UninitializedTooYoung,
+    )
+    .await;
+    let (state, attempt, effect) = (fixture.state, fixture.attempt, fixture.effect);
+
+    assert_eq!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect.clone())
+            .await
+            .expect("young inert effect must not error"),
+        crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::Pending
+    );
+
+    let unchanged = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&effect.idempotency_key)
+        .await
+        .expect("reload young inert effect")
+        .expect("young inert effect exists");
+    assert_eq!(unchanged.status, AgentWorkspaceRepairEffectStatus::InFlight);
+    assert!(unchanged.completed_at.is_none());
+}
+
+#[tokio::test]
+async fn inert_push_effect_settlement_fails_closed_when_the_attempt_moved_on() {
+    // CAS loser: a concurrent sweep advanced the attempt, so this pass must write nothing.
+    let fixture =
+        seed_open_push_effect_reconciliation_fixture(107, ReconciliationRemoteShape::Uninitialized)
+            .await;
+    let (state, mut attempt, effect) = (fixture.state, fixture.attempt, fixture.effect);
+    attempt.updated_at += chrono::Duration::seconds(30);
+
+    assert!(matches!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect.clone()).await,
+        Err(crate::error::AppError::Conflict(_))
+    ));
+
+    let unchanged = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(&effect.idempotency_key)
+        .await
+        .expect("reload effect after a lost CAS")
+        .expect("effect after a lost CAS exists");
+    assert_eq!(unchanged.status, AgentWorkspaceRepairEffectStatus::InFlight);
+    assert!(unchanged.completed_at.is_none());
+}
+
+#[tokio::test]
+async fn inert_push_effect_with_a_live_repair_claim_stays_pending() {
+    // ORDERING REGRESSION GUARD. The live-mutation-claim check must run before the inert
+    // classification. If it is ever moved back below the OID-shape branches, this attempt's push
+    // — which may be in flight right now — would be declared "never authorized" and its effect
+    // terminated underneath a running `git push`.
+    let (state, conversation_id, _worktree_parent, _project_dir, identity, owner, real_epoch) =
+        seed_publish_continuation_with_lease(108).await;
+
+    let mut attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load live-claim inert continuation")
+        .expect("live-claim inert continuation exists");
+    let expected_updated_at = attempt.updated_at;
+    attempt.phase = AgentWorkspaceRepairPhase::Continuing;
+    // A durable epoch that no longer matches the still-valid, still-owned real lease, so the
+    // reconciliation branch is entered without disturbing the real lease or its claim.
+    attempt.target_lease_epoch = Some(real_epoch + 1);
+    attempt.updated_at += chrono::Duration::microseconds(1);
+    let attempt = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase: AgentWorkspaceRepairPhase::ContinuationPending,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Continuing,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("checkpoint live-claim inert continuation")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("live-claim inert continuation must apply, got {outcome:?}"),
+    };
+
+    let idempotency_key = "live-claim-inert-effect";
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        attempt.id.clone(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        idempotency_key,
+        chrono::Utc::now() - RECONCILIATION_FIXTURE_INERT_AGE,
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    let effect = match state
+        .agent_workspace_repair_repo
+        .create_repair_effect(CreateAgentWorkspaceRepairEffect {
+            attempt_id: attempt.id.clone(),
+            generation: attempt.generation,
+            expected_phase: attempt.phase,
+            expected_attempt_updated_at: attempt.updated_at,
+            effect,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist live-claim inert effect")
+    {
+        CreateAgentWorkspaceRepairEffectOutcome::Created(effect) => effect,
+        outcome => panic!("expected live-claim inert effect to persist, got {outcome:?}"),
+    };
+
+    state
+        .branch_update_repo
+        .begin_git_mutation(BeginGitMutation {
+            identity,
+            owner,
+            fencing_epoch: real_epoch,
+            claim_id: format!("{}:push", effect.id),
+            kind: GitMutationKind::Push,
+        })
+        .await
+        .expect("reserve live push claim");
+
+    assert_eq!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect.clone())
+            .await
+            .expect("live claim must not error"),
+        crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::Pending
+    );
+
+    let unchanged = state
+        .agent_workspace_repair_repo
+        .get_repair_effect_by_idempotency_key(idempotency_key)
+        .await
+        .expect("reload effect held by a live claim")
+        .expect("effect held by a live claim exists");
+    assert_eq!(unchanged.status, AgentWorkspaceRepairEffectStatus::InFlight);
+    assert!(unchanged.completed_at.is_none());
+}
+
+#[tokio::test]
+async fn initialized_push_effect_keeps_its_remote_unchanged_reason() {
+    // The pre-existing NotApplied path must keep asserting the remote-based proof, which is the
+    // only one that ever performed a remote read.
+    let fixture = seed_open_push_effect_reconciliation_fixture(
+        109,
+        ReconciliationRemoteShape::MatchesPrecondition,
+    )
+    .await;
+    let (state, attempt, effect) = (fixture.state, fixture.attempt, fixture.effect);
+
+    assert_eq!(
+        reconcile_open_agent_workspace_repair_push_effect(&state, &attempt, effect)
+            .await
+            .expect("classify initialized effect"),
+        crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied(
+            crate::application::publish_resilience::AgentWorkspaceRepairPushEffectNotAppliedReason::RemoteUnchanged
+        )
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Step 4 — the heal chain, end to end (the load-bearing gate)
+//
+// Reproduces the reported production shape and drives it through the ordinary periodic sweep with
+// no migration, no DB surgery, and no per-conversation repair.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn wedged_inert_effect_continuation_heals_itself_through_the_ordinary_sweep() {
+    let fixture =
+        seed_open_push_effect_reconciliation_fixture(110, ReconciliationRemoteShape::Uninitialized)
+            .await;
+    let (state, conversation_id, attempt) =
+        (fixture.state, fixture.conversation_id, fixture.attempt);
+
+    // Escalate exactly as production did: the attempt already carries the open-effect attention
+    // reason after three failed recovery checks.
+    let mut escalated = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load attempt to escalate")
+        .expect("attempt exists to escalate");
+    let expected_phase = escalated.phase;
+    let expected_updated_at = escalated.updated_at;
+    escalated
+        .pending_reasons
+        .push(CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string());
+    escalated.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: escalated,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("escalate wedged attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("escalation must apply, got {outcome:?}"),
+    }
+
+    // Obligation 7: existing wedged conversations are reachable by a plain scan tick, with no
+    // migration and no backfill. `settled_at IS NULL` is the only selector.
+    assert!(
+        state
+            .agent_workspace_repair_repo
+            .list_recoverable_repair_attempts()
+            .await
+            .expect("list recoverable attempts")
+            .iter()
+            .any(|candidate| candidate.id == attempt.id),
+        "the wedged attempt must be picked up by the ordinary periodic scan"
+    );
+
+    let epoch_before = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load epoch before heal")
+        .expect("attempt exists before heal")
+        .target_lease_epoch;
+
+    // ---- Sweep 1: settles the inert effect and clears the fence, nothing else. ----
+    {
+        let _busy_guard =
+            try_acquire_agent_workspace_repair_publish_continuation_guard(&conversation_id)
+                .expect("hold continuation guard for the fence-clearing sweep");
+        assert_eq!(
+            recover_agent_workspace_repair_attempts_for_state(&state)
+                .await
+                .expect("fence-clearing sweep"),
+            0
+        );
+    }
+
+    assert!(
+        state
+            .agent_workspace_repair_repo
+            .get_open_repair_effect(&attempt.id)
+            .await
+            .expect("query fence after sweep 1")
+            .is_none(),
+        "obligation 5: the fence must actually be released"
+    );
+    let after_first = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload after sweep 1")
+        .expect("attempt remains after sweep 1");
+    assert_eq!(
+        after_first.phase,
+        AgentWorkspaceRepairPhase::Continuing,
+        "settling the effect must not move the attempt's phase"
+    );
+    assert!(
+        !after_first
+            .pending_reasons
+            .iter()
+            .any(|reason| reason.starts_with("continuation_open_effect_recovery:")),
+        "the not-applied arm must not spend an open-effect recovery credit: {after_first:#?}"
+    );
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list events after sweep 1");
+    let not_applied = events
+        .iter()
+        .find(|event| event.step == "continuation_effect_not_applied")
+        .expect("the not-applied event must be recorded");
+    assert!(
+        not_applied.summary.contains("never started"),
+        "an effect that was never initialized must not claim a remote was checked: {:?}",
+        not_applied.summary
+    );
+
+    // ---- Sweep 2: with the fence gone, the continuation reacquires its target lease. ----
+    // This is the hop the fence made unreachable: `reacquire_..._for_continuation` sits *after*
+    // the open-effect gate, so before this fix it could never run.
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("lease-reacquiring sweep"),
+        1,
+        "obligation 6: the sweep must report a recovery, meaning the continuation actually \
+         resumed rather than staying fenced"
+    );
+    let after_second = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload after sweep 2")
+        .expect("attempt remains after sweep 2");
+    // Obligation 5/6. Two outcomes are legitimate here and both prove the fence stopped blocking:
+    // the continuation reacquires a newer epoch, or it runs through and releases target authority
+    // at a settled boundary (`release_repair_lease_if_settled_boundary`, which can only run once
+    // `get_open_repair_effect` returns `None`). Still holding the *original* epoch is the only
+    // failure, because that is the wedged state: fenced, untouched, going nowhere.
+    assert_ne!(
+        after_second.target_lease_epoch, epoch_before,
+        "the continuation must act on its target authority once unfenced, not sit on the epoch \
+         it was wedged with"
+    );
+
+    // Obligation 11: a third sweep over the already-settled effect is a no-op and raises no
+    // duplicate not-applied event.
+    let _ = recover_agent_workspace_repair_attempts_for_state(&state).await;
+    let final_events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list events after the idempotence sweep");
+    assert_eq!(
+        final_events
+            .iter()
+            .filter(|event| event.step == "continuation_effect_not_applied")
+            .count(),
+        1,
+        "settling an already-settled effect must not re-emit its event"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Step 5 — terminal watchdog
+//
+// Defense in depth for a future dead-effect shape the primary fix does not recognize. Rather than
+// inventing supersession semantics for `Continuing`, force-settle to `Blocked`, which already has
+// both a working supersession path and an admitted user Retry action.
+// ---------------------------------------------------------------------------
+
+/// Seeds an already-escalated `Continuing` attempt whose open effect stays `Pending` under
+/// reconciliation (an unrelated remote), with the effect aged by `effect_age`.
+async fn seed_escalated_wedged_attempt(
+    suffix: u8,
+    effect_age: chrono::Duration,
+) -> (
+    AppState,
+    ChatConversationId,
+    crate::domain::entities::AgentWorkspaceRepairAttemptId,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
+    // `UnrelatedAged` keeps reconciliation permanently `Pending` (a third party advanced the
+    // remote), which is what an unrecognized future dead-effect shape looks like, and ages the
+    // effect's `created_at` — the watchdog's clock.
+    let fixture = seed_open_push_effect_reconciliation_fixture(
+        suffix,
+        ReconciliationRemoteShape::UnrelatedAged(effect_age),
+    )
+    .await;
+    let (state, conversation_id, attempt_id) = (
+        fixture.state,
+        fixture.conversation_id,
+        fixture.attempt.id.clone(),
+    );
+
+    let mut escalated = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load attempt to escalate")
+        .expect("attempt exists to escalate");
+    let expected_phase = escalated.phase;
+    let expected_updated_at = escalated.updated_at;
+    escalated
+        .pending_reasons
+        .push(CONTINUATION_OPEN_EFFECT_ATTENTION_REASON.to_string());
+    escalated.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: escalated,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("escalate wedged attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("escalation must apply, got {outcome:?}"),
+    }
+
+    // The workspace's `origin` points into these temp dirs, so they must outlive the caller's
+    // recovery sweeps.
+    (
+        state,
+        conversation_id,
+        attempt_id,
+        fixture._worktree_parent,
+        fixture._project_dir,
+        fixture._remote,
+    )
+}
+
+#[tokio::test]
+async fn escalated_attempt_within_the_wedged_bound_is_left_alone() {
+    let (state, conversation_id, _attempt_id, _worktree_parent, _project_dir, _remote) =
+        seed_escalated_wedged_attempt(111, chrono::Duration::hours(1)).await;
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("sweep a recently-wedged attempt"),
+        0
+    );
+
+    let current = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload recently-wedged attempt")
+        .expect("recently-wedged attempt exists");
+    assert_eq!(
+        current.phase,
+        AgentWorkspaceRepairPhase::Continuing,
+        "the watchdog must not pre-empt ordinary recovery"
+    );
+}
+
+#[tokio::test]
+async fn escalated_attempt_past_the_wedged_bound_is_blocked_with_a_usable_retry() {
+    let (state, conversation_id, attempt_id, _worktree_parent, _project_dir, _remote) =
+        seed_escalated_wedged_attempt(112, chrono::Duration::days(3)).await;
+
+    // A scheduled dispatch before the block: `Blocked` only admits Retry while `next_dispatch_at`
+    // is unset, and blocking does not clear it. If the watchdog forgets, the escape hatch produces
+    // a blocked workspace with no action at all — worse than the treadmill it replaces.
+    let mut scheduled = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load attempt to schedule")
+        .expect("attempt exists to schedule");
+    let expected_phase = scheduled.phase;
+    let expected_updated_at = scheduled.updated_at;
+    scheduled.next_dispatch_at = Some(chrono::Utc::now() + chrono::Duration::hours(1));
+    scheduled.updated_at += chrono::Duration::microseconds(1);
+    match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: scheduled,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("schedule a dispatch before blocking")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("scheduling must apply, got {outcome:?}"),
+    }
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("sweep a long-wedged attempt"),
+        1,
+        "the watchdog settles the attempt, which counts as a recovery"
+    );
+
+    let blocked = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload long-wedged attempt")
+        .expect("long-wedged attempt exists");
+    assert_eq!(
+        blocked.phase,
+        AgentWorkspaceRepairPhase::Blocked,
+        "obligation 8: a bounded escape hatch must exist"
+    );
+    assert!(
+        blocked
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON),
+        "the attention reason must survive the block; Retry admission requires it"
+    );
+    assert!(
+        blocked.next_dispatch_at.is_none(),
+        "obligation 13: a scheduled dispatch would suppress the Retry action entirely"
+    );
+    assert!(
+        blocked
+            .summary
+            .as_deref()
+            .is_some_and(|summary| !summary.contains("effect fence")),
+        "the block summary must be plain language: {:?}",
+        blocked.summary
+    );
+
+    // Obligation 13: the user is actually offered an action.
+    assert_eq!(
+        crate::application::agent_workspace_publish_repair_state::load_agent_workspace_repair_operation_recovery_action(
+            state.agent_workspace_repair_repo.as_ref(),
+            &blocked,
+        )
+        .await
+        .expect("project the recovery action for the blocked attempt"),
+        crate::domain::entities::AgentWorkspaceRepairOperationRecoveryAction::RetryRepair
+    );
+
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list events after the watchdog block");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.step == "continuation_wedged_attempt_blocked"),
+        "a time-based auto-block must be visible in the timeline, never silent: {events:#?}"
+    );
+    assert_eq!(
+        blocked.id, attempt_id,
+        "the watchdog must not start a successor"
+    );
+}
+
+#[tokio::test]
+async fn wedged_watchdog_clock_is_not_reset_by_joined_pr_evidence() {
+    // REGRESSION GUARD for the wrong-clock trap. `start_or_join_repair_attempt` takes its `Joined`
+    // branch for any unsettled attempt on the same base ref and unconditionally assigns
+    // `current.updated_at = attempt.updated_at`. A wedged workspace is exactly the one that keeps
+    // receiving fresh PR evidence, so an `attempt.updated_at`-based bound would be refreshed
+    // forever and the watchdog would be dead code on the only shape it exists to catch.
+    let (state, conversation_id, _attempt_id, _worktree_parent, _project_dir, _remote) =
+        seed_escalated_wedged_attempt(113, chrono::Duration::days(3)).await;
+
+    // Arrive with fresh PR evidence three times, exactly as the poller does.
+    for round in 0..3 {
+        let outcome = state
+            .agent_workspace_repair_repo
+            .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+                attempt: AgentWorkspaceRepairAttempt::new(
+                    conversation_id.clone(),
+                    AgentWorkspaceRepairSource::Publish,
+                    AgentWorkspaceRepairContinuation::Publish,
+                    "main",
+                    false,
+                    true,
+                    false,
+                    None,
+                    chrono::Utc::now(),
+                ),
+                reason: format!("fresh conflict PR evidence {round}"),
+                verified_newer_base: false,
+                compatibility_projection: None,
+                events: Vec::new(),
+            })
+            .await
+            .expect("deliver fresh PR evidence");
+        assert!(
+            matches!(
+                outcome,
+                StartOrJoinAgentWorkspaceRepairAttemptOutcome::Joined(_)
+            ),
+            "fresh evidence against an unsettled same-base attempt must join, got {outcome:?}"
+        );
+    }
+
+    assert_eq!(
+        recover_agent_workspace_repair_attempts_for_state(&state)
+            .await
+            .expect("sweep after repeated joins"),
+        1,
+        "repeated joins must not have deferred the watchdog"
+    );
+
+    let blocked = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("reload after repeated joins")
+        .expect("attempt exists after repeated joins");
+    assert_eq!(
+        blocked.phase,
+        AgentWorkspaceRepairPhase::Blocked,
+        "obligation 12: the bound must elapse on the effect's clock, not the attempt's"
     );
 }

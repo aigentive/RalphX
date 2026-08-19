@@ -225,7 +225,7 @@ describe("AgentsPublishHoldCard", () => {
     [
       "publication_effect_attention",
       "Repair paused — publish not confirmed",
-      "RalphX pushed a repair but could not confirm it reached GitHub. Retry publication to make RalphX try again.",
+      "RalphX can't confirm whether an earlier publish step reached GitHub. It stopped rather than risk pushing twice. Retry publication to have it check again and continue.",
     ],
     [
       "pr_autofix_base_parity_transient",
@@ -358,6 +358,68 @@ describe("AgentsPublishHoldCard", () => {
     await user.click(screen.getByTestId("agents-publish-hold-details-trigger"));
     await user.click(screen.getByTestId("agents-publish-hold-details-trigger"));
     expect(listAgentConversationWorkspacePublicationEventsMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not render the Technical details block when technicalDetails is null", async () => {
+    listAgentConversationWorkspacePublicationEventsMock.mockReset();
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderCard(workspaceWithHoldReason("publication_effect_attention"));
+
+    expect(
+      screen.queryByTestId("agents-publish-hold-technical-details"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("agents-publish-hold-details-trigger"));
+
+    expect(
+      screen.queryByTestId("agents-publish-hold-technical-details"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not render the Technical details block when collapsed", () => {
+    listAgentConversationWorkspacePublicationEventsMock.mockReset();
+    const workspaceWithTechDetails: AgentConversationWorkspace = {
+      ...workspaceWithHoldReason("publication_effect_attention"),
+      maintenanceOperation: {
+        ...baseWorkspace.maintenanceOperation!,
+        holdReason: "publication_effect_attention",
+        summary: "RalphX retained the effect fence and did not reacquire or release Git authority.",
+      },
+    };
+    renderCard(workspaceWithTechDetails);
+
+    expect(
+      screen.queryByTestId("agents-publish-hold-technical-details"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows Technical details inside the Details disclosure once expanded", async () => {
+    listAgentConversationWorkspacePublicationEventsMock.mockReset();
+    listAgentConversationWorkspacePublicationEventsMock.mockResolvedValue([]);
+    const user = userEvent.setup();
+    const workspaceWithTechDetails: AgentConversationWorkspace = {
+      ...workspaceWithHoldReason("publication_effect_attention"),
+      maintenanceOperation: {
+        ...baseWorkspace.maintenanceOperation!,
+        holdReason: "publication_effect_attention",
+        summary: "RalphX retained the effect fence and did not reacquire or release Git authority.",
+      },
+    };
+    renderCard(workspaceWithTechDetails);
+
+    expect(
+      screen.queryByTestId("agents-publish-hold-technical-details"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("agents-publish-hold-details-trigger"));
+
+    const techDetails = await screen.findByTestId("agents-publish-hold-technical-details");
+    expect(techDetails).toBeVisible();
+    expect(techDetails).toHaveTextContent(
+      "RalphX retained the effect fence and did not reacquire or release Git authority.",
+    );
+    expect(techDetails).toHaveTextContent("Technical details");
   });
 
   it("renders release conditions and the auto-repair explainer once expanded", async () => {

@@ -786,6 +786,16 @@ pub struct GitRuntimeConfig {
     /// existing recovery/reconciler seams and their claim/dedupe TTL).
     #[serde(default = "default_agent_workspace_repair_reconciliation_scan_interval_secs")]
     pub agent_workspace_repair_reconciliation_scan_interval_secs: u64,
+    /// Minimum age an uninitialized repair push effect must reach before reconciliation may
+    /// conclude it is inert. The quiescence window keeps a push preflight that is merely mid-flight
+    /// from being mistaken for one that was never authorized.
+    #[serde(default = "default_agent_workspace_repair_inert_effect_min_age_secs")]
+    pub agent_workspace_repair_inert_effect_min_age_secs: u64,
+    /// Maximum age an open repair effect may reach on an already-escalated continuation before the
+    /// terminal watchdog force-settles the attempt to `Blocked`, so a novel dead-effect shape can
+    /// never wedge a workspace indefinitely.
+    #[serde(default = "default_agent_workspace_repair_wedged_attempt_max_age_secs")]
+    pub agent_workspace_repair_wedged_attempt_max_age_secs: u64,
     /// Seconds between background terminal PR local artifact cleanup passes.
     #[serde(default = "default_terminal_pr_local_cleanup_interval_secs")]
     pub terminal_pr_local_cleanup_interval_secs: u64,
@@ -866,6 +876,8 @@ impl Default for GitRuntimeConfig {
             agent_workspace_publish_lease_heartbeat_interval_secs: 30,
             agent_workspace_publish_recovery_interval_secs: 120,
             agent_workspace_repair_reconciliation_scan_interval_secs: 60,
+            agent_workspace_repair_inert_effect_min_age_secs: 300,
+            agent_workspace_repair_wedged_attempt_max_age_secs: 86_400,
             terminal_pr_local_cleanup_interval_secs: 900,
             terminal_pr_local_cleanup_retry_secs: 3_600,
             orphan_worktree_cleanup_marker_retry_secs: 86_400,
@@ -930,6 +942,14 @@ fn default_pr_snapshot_hub_ttl_secs() -> u64 {
 
 fn default_agent_workspace_repair_reconciliation_scan_interval_secs() -> u64 {
     60
+}
+
+fn default_agent_workspace_repair_inert_effect_min_age_secs() -> u64 {
+    300
+}
+
+fn default_agent_workspace_repair_wedged_attempt_max_age_secs() -> u64 {
+    86_400
 }
 
 fn default_terminal_pr_local_cleanup_interval_secs() -> u64 {
@@ -1556,6 +1576,14 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         cfg.git
             .agent_workspace_repair_reconciliation_scan_interval_secs,
         "RALPHX_GIT_AGENT_WORKSPACE_REPAIR_RECONCILIATION_SCAN_INTERVAL_SECS"
+    );
+    env_u64!(
+        cfg.git.agent_workspace_repair_inert_effect_min_age_secs,
+        "RALPHX_GIT_AGENT_WORKSPACE_REPAIR_INERT_EFFECT_MIN_AGE_SECS"
+    );
+    env_u64!(
+        cfg.git.agent_workspace_repair_wedged_attempt_max_age_secs,
+        "RALPHX_GIT_AGENT_WORKSPACE_REPAIR_WEDGED_ATTEMPT_MAX_AGE_SECS"
     );
     env_u64!(
         cfg.git.terminal_pr_local_cleanup_interval_secs,
