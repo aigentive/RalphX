@@ -5,7 +5,7 @@ use ralphx_lib::commands::unified_chat_commands::AgentConversationWorkspaceRespo
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewArtifactOutcome, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
     AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ArtifactContent, ArtifactId,
     ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
 };
@@ -460,6 +460,8 @@ async fn workspace_review_artifact_write_versions_pair_and_keeps_second_content(
             head_sha: target.head_sha.clone(),
             diff_fingerprint: Some(target.diff_fingerprint.clone()),
             created_by_run_id: Some(run_id.to_string()),
+            outcome: None,
+            blocking_summary: None,
         }),
     )
     .await
@@ -480,6 +482,8 @@ async fn workspace_review_artifact_write_versions_pair_and_keeps_second_content(
             head_sha: target.head_sha,
             diff_fingerprint: Some(target.diff_fingerprint),
             created_by_run_id: Some(run_id.to_string()),
+            outcome: None,
+            blocking_summary: None,
         }),
     )
     .await
@@ -625,4 +629,431 @@ async fn presentation_context_get_does_not_create_a_review_monitor() {
         .await
         .expect("read monitor")
         .is_none());
+}
+
+// ── Recorded artifact outcome (degraded-settlement evidence) ─────────────
+
+/// Owns the temp dirs for the lifetime of a fixture so the worktree stays valid.
+struct ActiveReviewFixture {
+    _repo: tempfile::TempDir,
+    _worktrees: tempfile::TempDir,
+    state: HttpServerState,
+    conversation_id: ChatConversationId,
+    target_scope: String,
+    head_sha: Option<String>,
+    diff_fingerprint: String,
+    run_id: String,
+}
+
+/// Seeds a project + workspace with an uncommitted change and binds an active reviewer run,
+/// which is the precondition for every artifact-write authority path.
+async fn setup_active_review(slug: &str) -> ActiveReviewFixture {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
+    git(repo.path(), &["init", "-b", "main"]);
+    git(repo.path(), &["config", "user.email", "test@example.com"]);
+    git(repo.path(), &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
+    git(repo.path(), &["add", "README.md"]);
+    git(repo.path(), &["commit", "-m", "base"]);
+    let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+
+    let state = test_state();
+    let conversation_id = ChatConversationId::new();
+    let mut project = Project::new(
+        format!("Recorded Outcome {slug}"),
+        repo.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("seed project");
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = conversation_id;
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed conversation");
+
+    let workspace_path = worktrees.path().join("workspace");
+    let branch_name = format!("ralphx/test/{slug}");
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &branch_name,
+            workspace_path.to_str().expect("workspace path"),
+            "main",
+        ],
+    );
+    std::fs::write(workspace_path.join("implementation.txt"), "change\n")
+        .expect("write workspace change");
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some(base_sha),
+        branch_name,
+        workspace_path.to_string_lossy().to_string(),
+    );
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+
+    let axum::Json(initial) = get_agent_workspace_review_context(
+        State(state.clone()),
+        Path(conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery::default()),
+    )
+    .await
+    .expect("load initial context");
+    let target = initial.target.expect("review target");
+    let target_scope: AgentWorkspaceReviewTargetScope =
+        target.scope.parse().expect("valid target scope");
+
+    let review_conversation_id = ChatConversationId::new();
+    let run = AgentRun::new(review_conversation_id);
+    let run_id = run.id.to_string();
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id, project.id.clone());
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::None;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    monitor.current_target_scope = Some(target_scope);
+    monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());
+    monitor.workspace_base_ref = Some(target.base_ref.clone());
+    monitor.workspace_base_sha = target.base_sha.clone();
+    monitor.workspace_head_ref = Some(target.head_ref.clone());
+    monitor.workspace_head_sha = target.head_sha.clone();
+    monitor.review_conversation_id = Some(review_conversation_id);
+    monitor.last_run_id = Some(run_id.clone());
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("bind active review");
+    state
+        .app_state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("seed active run");
+
+    ActiveReviewFixture {
+        _repo: repo,
+        _worktrees: worktrees,
+        state,
+        conversation_id,
+        target_scope: target.scope,
+        head_sha: target.head_sha,
+        diff_fingerprint: target.diff_fingerprint,
+        run_id,
+    }
+}
+
+impl ActiveReviewFixture {
+    fn write_request(
+        &self,
+        outcome: Option<&str>,
+        blocking_summary: Option<&str>,
+    ) -> WriteAgentWorkspaceReviewArtifactRequest {
+        WriteAgentWorkspaceReviewArtifactRequest {
+            title: Some("Workspace Review".to_string()),
+            content: "Overview".to_string(),
+            requested_changes_title: None,
+            requested_changes_content: "Requested changes".to_string(),
+            target_scope: Some(self.target_scope.clone()),
+            head_sha: self.head_sha.clone(),
+            diff_fingerprint: Some(self.diff_fingerprint.clone()),
+            created_by_run_id: Some(self.run_id.clone()),
+            outcome: outcome.map(str::to_string),
+            blocking_summary: blocking_summary.map(str::to_string),
+        }
+    }
+
+    async fn monitor(&self) -> AgentWorkspaceReviewMonitor {
+        self.state
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&self.conversation_id)
+            .await
+            .expect("read monitor")
+            .expect("persisted monitor")
+    }
+}
+
+#[tokio::test]
+async fn artifact_write_records_typed_outcome_scoped_to_the_writing_run() {
+    let fixture = setup_active_review("records-typed-outcome").await;
+
+    let _written = write_agent_workspace_review_artifact(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        Json(fixture.write_request(Some("blocking"), Some("Missing rollback path"))),
+    )
+    .await
+    .expect("write artifact pair with recorded outcome");
+
+    let monitor = fixture.monitor().await;
+    assert_eq!(
+        monitor.review_artifact_recorded_outcome,
+        Some(AgentWorkspaceReviewArtifactOutcome::Blocking)
+    );
+    assert_eq!(
+        monitor.review_artifact_recorded_outcome_run_id.as_deref(),
+        Some(fixture.run_id.as_str())
+    );
+    assert_eq!(
+        monitor.review_artifact_recorded_blocking_summary.as_deref(),
+        Some("Missing rollback path")
+    );
+    assert!(monitor.has_recorded_outcome_for_run(&fixture.run_id));
+    assert!(!monitor.has_recorded_outcome_for_run("some-other-run"));
+}
+
+/// A write that carries no outcome must not leave the previous write's evidence behind, or a
+/// later run could degrade-settle from an artifact it did not produce.
+#[tokio::test]
+async fn artifact_write_without_outcome_clears_previously_recorded_evidence() {
+    let fixture = setup_active_review("clears-recorded-evidence").await;
+
+    let _written = write_agent_workspace_review_artifact(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        Json(fixture.write_request(Some("passed"), None)),
+    )
+    .await
+    .expect("write artifact pair with recorded outcome");
+    assert!(fixture
+        .monitor()
+        .await
+        .review_artifact_recorded_outcome
+        .is_some());
+
+    let _rewritten = write_agent_workspace_review_artifact(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        Json(fixture.write_request(None, None)),
+    )
+    .await
+    .expect("write artifact pair without recorded outcome");
+
+    let monitor = fixture.monitor().await;
+    assert!(monitor.review_artifact_recorded_outcome.is_none());
+    assert!(monitor.review_artifact_recorded_outcome_run_id.is_none());
+    assert!(monitor.review_artifact_recorded_blocking_summary.is_none());
+}
+
+#[tokio::test]
+async fn artifact_write_rejects_unknown_outcome_with_bad_request() {
+    let fixture = setup_active_review("rejects-unknown-outcome").await;
+
+    let error = write_agent_workspace_review_artifact(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        Json(fixture.write_request(Some("run_failed"), None)),
+    )
+    .await
+    .expect_err("unknown outcome should be rejected");
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(fixture
+        .monitor()
+        .await
+        .review_artifact_recorded_outcome
+        .is_none());
+}
+
+/// Mirrors the typed-completion rule: a blocking gate the user cannot act on is worse than none,
+/// and the fixer-start path fails closed without a summary.
+#[tokio::test]
+async fn artifact_write_rejects_blocking_outcome_without_summary() {
+    let fixture = setup_active_review("rejects-blocking-without-summary").await;
+
+    let error = write_agent_workspace_review_artifact(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        Json(fixture.write_request(Some("blocking"), Some("   "))),
+    )
+    .await
+    .expect_err("blocking outcome without summary should be rejected");
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(fixture
+        .monitor()
+        .await
+        .review_artifact_recorded_outcome
+        .is_none());
+}
+
+/// Target metadata mismatch is already a 409; it must run before anything is recorded.
+#[tokio::test]
+async fn artifact_write_with_mismatched_target_records_nothing() {
+    let fixture = setup_active_review("mismatched-target").await;
+
+    let mut request = fixture.write_request(Some("passed"), None);
+    request.diff_fingerprint = Some("fingerprint-from-another-target".to_string());
+    let error = write_agent_workspace_review_artifact(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        Json(request),
+    )
+    .await
+    .expect_err("stale fingerprint should be rejected");
+
+    assert_eq!(error.0, StatusCode::CONFLICT);
+    assert!(fixture
+        .monitor()
+        .await
+        .review_artifact_recorded_outcome
+        .is_none());
+}
+
+// ── Context payload compaction ───────────────────────────────────────────
+
+/// The model path drops publication events; the UI path (default) keeps them.
+#[tokio::test]
+async fn context_include_events_false_omits_publication_events_and_default_keeps_them() {
+    let fixture = setup_active_review("include-events").await;
+    fixture
+        .state
+        .app_state
+        .agent_conversation_workspace_repo
+        .append_publication_event(
+            ralphx_lib::domain::entities::AgentConversationWorkspacePublicationEvent::new(
+                fixture.conversation_id,
+                "workspace_review",
+                "reviewing",
+                "Review started".to_string(),
+                None,
+            ),
+        )
+        .await
+        .expect("publication event should persist");
+
+    let axum::Json(default_context) = get_agent_workspace_review_context(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery::default()),
+    )
+    .await
+    .expect("default context should load");
+    assert!(
+        !default_context.events.is_empty(),
+        "the UI path must keep publication events"
+    );
+
+    let axum::Json(model_context) = get_agent_workspace_review_context(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery {
+            include_events: Some(false),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("model context should load");
+    assert!(
+        model_context.events.is_empty(),
+        "the model path must not carry publication events"
+    );
+    // Everything else the reviewer acts on is unchanged.
+    assert_eq!(model_context.is_current, default_context.is_current);
+    assert_eq!(
+        model_context.can_mutate_review_state,
+        default_context.can_mutate_review_state
+    );
+}
+
+// ── Unified automation attempt count ─────────────────────────────────────
+
+/// One number for "has automation already had a go at this delta". The fixer counter alone is
+/// blind to publish-repair churn, which is the case the reviewer's Fold-In demotion rule misses.
+#[tokio::test]
+async fn context_reports_fixer_cycles_plus_repair_attempts_as_one_automation_count() {
+    use ralphx_lib::domain::entities::{
+        AgentWorkspaceRepairAttempt, AgentWorkspaceRepairContinuation, AgentWorkspaceRepairSource,
+    };
+    use ralphx_lib::domain::repositories::StartOrJoinAgentWorkspaceRepairAttempt;
+
+    let fixture = setup_active_review("automation-count").await;
+
+    let axum::Json(zero_context) = get_agent_workspace_review_context(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery::default()),
+    )
+    .await
+    .expect("context should load");
+    assert_eq!(
+        zero_context.monitor.automation_attempt_count,
+        Some(0),
+        "a workspace no automation has touched reports zero, not absent"
+    );
+
+    let mut monitor = fixture.monitor().await;
+    monitor.review_fixer_cycle_count = 2;
+    fixture
+        .state
+        .app_state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("fixer cycles should persist");
+    fixture
+        .state
+        .app_state
+        .agent_workspace_repair_repo
+        .start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+            attempt: AgentWorkspaceRepairAttempt::new(
+                fixture.conversation_id,
+                AgentWorkspaceRepairSource::Publish,
+                AgentWorkspaceRepairContinuation::Publish,
+                "main",
+                false,
+                true,
+                false,
+                None,
+                chrono::Utc::now(),
+            ),
+            reason: "publish repair".to_string(),
+            verified_newer_base: false,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("repair attempt should start");
+
+    let axum::Json(context) = get_agent_workspace_review_context(
+        State(fixture.state.clone()),
+        Path(fixture.conversation_id.to_string()),
+        HeaderMap::new(),
+        Query(AgentWorkspaceReviewContextQuery::default()),
+    )
+    .await
+    .expect("context should load");
+
+    assert_eq!(context.monitor.review_fixer_cycle_count, 2);
+    assert_eq!(
+        context.monitor.automation_attempt_count,
+        Some(3),
+        "the count must include the publish repair the fixer counter cannot see"
+    );
 }

@@ -48,7 +48,7 @@ pub use agent_config::{
     GitRuntimeConfig,
     LimitsConfig, ReconciliationConfig, SchedulerConfig, ShutdownConfig, SpecialistEntry,
     StreamTimeoutsConfig,
-    SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig,
+    SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig, WorkspaceReviewRuntimeConfig,
     MAX_EXTERNAL_MCP_SHUTDOWN_GRACE_MS,
 };
 pub use claude_code_client::kill_all_tracked_processes;
