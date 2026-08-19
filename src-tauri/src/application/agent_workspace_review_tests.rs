@@ -7737,7 +7737,6 @@ fn selected_source_review_packet_includes_hunk_anchors() {
     assert_eq!(anchor.new_start, 1);
     assert_eq!(anchor.new_lines, 3);
 }
-}
 
 // ── Degraded settlement from recorded artifact evidence ──────────────────
 
