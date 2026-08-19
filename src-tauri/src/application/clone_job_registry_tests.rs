@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,7 +12,7 @@ fn destination(name: &str) -> PathBuf {
     PathBuf::from(format!("/tmp/ralphx-clone-tests/{name}"))
 }
 
-fn completed(destination: &PathBuf) -> CloneJobStatus {
+fn completed(destination: &Path) -> CloneJobStatus {
     CloneJobStatus::Completed {
         destination: destination.display().to_string(),
         default_branch: Some("main".to_string()),
