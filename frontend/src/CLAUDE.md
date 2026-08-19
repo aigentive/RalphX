@@ -135,6 +135,7 @@ Example: "View Registry Pattern" — see `.claude/rules/task-detail-views.md`
 - **Shared Persona Menu** — `src/components/personas/PersonaMenuList.tsx` is the single writer for persona choose-menus (picker + chip); it owns the scoped `globalAndProject` query, grouping, and inspect preview. ❌ New flat/unscoped persona lists.
 - **StatusPill** — `src/components/ui/status-pill.tsx` is the single pill surface for status/stage/judge badges (tone-based, WKWebView-safe longhands). ❌ New ad-hoc `rounded-full px-2 py-0.5` status spans; automation run-card badge dedupe lives in `automations/automationRunBadges.ts`.
 - **Plan Bundle Tabs** — Agents Plan uses `PlanBundleTabs` for persistent Overview/Blueprint selection and conditional Proposals; lifecycle controls remain bundle-level while edit/history/export operate on the selected document.
+- **Backend-Owned Inbox Lanes** — sidebar attention lanes (including the `review_*` Review PR lanes) and each row's `reviewState` are derived by `agent_sidebar_commands.rs`; the frontend maps keys to copy/tone in `agentSidebarInboxLanes.ts` and never infers review state from mode + run status. A composite inbox filter renders several lane queries through `CompositeInboxLane`, but each filter component declares its own fixed hooks — ❌ driving lane queries from a `.map()`.
 - **Freshness Gate Parity** — freshness verdicts render only under the predicate that enables their query (fetch-gate = render-gate).
 
 ### Composition Over Props

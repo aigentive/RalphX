@@ -17,6 +17,9 @@ pub mod agent_plan_commands;
 mod agent_plan_commands_tests;
 pub mod agent_profile_commands;
 pub mod agent_sidebar_commands;
+pub(crate) mod agent_sidebar_review_state;
+#[cfg(test)]
+mod agent_sidebar_review_state_tests;
 pub mod agent_terminal_commands;
 pub(crate) mod agent_workspace_completion_dispatch;
 #[cfg(test)]

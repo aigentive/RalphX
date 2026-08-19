@@ -405,6 +405,7 @@ export async function mockListAgentSidebarConversations(
               isMuted && attentionLane === "needs" ? "stale" : attentionLane,
             parkedDelegateCount: 0,
             actionVerb: getMockInboxActionVerb(workspace, publicationState),
+            reviewState: null,
             isMuted,
           };
         })
@@ -580,13 +581,17 @@ function getMockInboxAttentionLane(
 function getMockInboxGroupLabel(lane: AgentSidebarAttentionLane): string {
   switch (lane) {
     case "needs":
+    case "review_needs":
       return "Needs you";
     case "working":
+    case "review_working":
       return "Working";
     case "stale":
       return "Stale";
     case "done":
       return "Done";
+    case "review_watching":
+      return "Watching";
   }
 }
 
@@ -1402,9 +1407,21 @@ export async function mockGetAgentConversationRuntimeStatuses(
 
 export async function mockGetBulkWorkspacePublicationStates(
   conversationIds: string[]
-): Promise<Record<string, { publication_state: string; publication_label: string | null }>> {
+): Promise<
+  Record<
+    string,
+    {
+      publication_state: string;
+      publication_label: string | null;
+      review_state: string | null;
+    }
+  >
+> {
   return Object.fromEntries(
-    conversationIds.map((id) => [id, { publication_state: "active", publication_label: null }])
+    conversationIds.map((id) => [
+      id,
+      { publication_state: "active", publication_label: null, review_state: null },
+    ])
   );
 }
 
