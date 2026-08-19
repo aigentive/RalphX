@@ -11,6 +11,9 @@
 mod branch;
 mod bootstrap;
 pub mod checkout_free;
+pub mod clone;
+mod clone_progress;
+pub(crate) mod clone_url;
 mod commit;
 pub(crate) mod git_cmd;
 mod identity;
@@ -23,6 +26,9 @@ mod worktree;
 
 pub(crate) use rebase::FetchOriginOutcome;
 pub use bootstrap::{GitBootstrapRequest, ProjectGitBootstrap};
+/// Read-only repository shape helpers shared by bootstrap and the
+/// project-candidate probe.
+pub(crate) use bootstrap::{repository_top_level, symbolic_branch_opt};
 
 #[cfg(test)]
 mod tests;

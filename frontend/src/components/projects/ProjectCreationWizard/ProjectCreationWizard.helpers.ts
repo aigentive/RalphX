@@ -2,8 +2,6 @@
  * ProjectCreationWizard helpers - validation and utility functions
  */
 
-import type { GitMode } from "@/types/project";
-
 // ============================================================================
 // Form State Interface
 // ============================================================================
@@ -11,7 +9,6 @@ import type { GitMode } from "@/types/project";
 export interface FormState {
   name: string;
   workingDirectory: string;
-  gitMode: GitMode;
   baseBranch: string;
   worktreeParentDirectory: string;
 }
@@ -43,6 +40,19 @@ export function generateWorktreePath(workingDirectory: string, parentDirectory?:
 export function extractFolderName(path: string): string {
   const folderName = path.split("/").pop() || "";
   return folderName;
+}
+
+/**
+ * Derive a filesystem-safe folder name from a project name.
+ * Used by the Create New Repository step to suggest a destination folder
+ * before the user types one explicitly.
+ */
+export function deriveFolderName(projectName: string): string {
+  return projectName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 /**

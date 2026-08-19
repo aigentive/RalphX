@@ -25,6 +25,22 @@ import {
   type CreateWorkflowInput,
   type UpdateWorkflowInput,
 } from "@/lib/api/workflows";
+import {
+  ProjectCandidateResponseSchema,
+  transformProjectCandidate,
+  type ProjectCandidate,
+} from "@/types/project-candidate";
+import {
+  CloneJobStatusResponseSchema,
+  transformCloneJobStatus,
+  type CloneJobStatus,
+} from "@/types/clone";
+import {
+  WorktreeParentVerdictResponseSchema,
+  transformWorktreeParentVerdict,
+  type WorktreeParentVerdict,
+} from "@/types/worktree-parent";
+import { GitHubRepoSummarySchema, type GitHubRepoSummary } from "@/types/github-repo";
 
 /**
  * Project list schema for array responses (snake_case from backend)
@@ -105,10 +121,61 @@ export type GithubPullRequestSearchResult = z.infer<
   typeof GithubPullRequestSearchResultSchema
 >;
 
+const PreparedProjectDirectoryResponseSchema = z.object({
+  path: z.string(),
+  created: z.boolean(),
+});
+
+export type PreparedProjectDirectory = z.infer<
+  typeof PreparedProjectDirectoryResponseSchema
+>;
+
+export interface PrepareNewProjectDirectoryInput {
+  parentDirectory: string;
+  folderName: string;
+}
+
 export interface SearchGithubPullRequestsInput {
   projectId: string;
   query?: string;
   limit?: number;
+}
+
+const CloneTargetPlanResponseSchema = z.object({
+  normalizedUrl: z.string().nullable(),
+  folderName: z.string().nullable(),
+  branch: z.string().nullable(),
+  suggestedSshUrl: z.string().nullable(),
+  destination: z.string().nullable(),
+  ready: z.boolean(),
+  problem: z.string().nullable(),
+});
+
+export type CloneTargetPlan = z.infer<typeof CloneTargetPlanResponseSchema>;
+
+const StartProjectCloneResponseSchema = z.object({ jobId: z.string() });
+
+export type StartProjectCloneResponse = z.infer<typeof StartProjectCloneResponseSchema>;
+
+export interface ValidateCloneTargetInput {
+  url: string;
+  parentDirectory?: string;
+  folderName?: string;
+}
+
+export interface StartProjectCloneInput {
+  url: string;
+  parentDirectory: string;
+  folderName?: string;
+  branch?: string;
+  depth?: number;
+  singleBranch?: boolean;
+  recurseSubmodules?: boolean;
+}
+
+export interface ValidateWorktreeParentInput {
+  path: string;
+  repositoryRoot?: string;
 }
 
 export async function searchGithubPullRequests(
@@ -231,6 +298,103 @@ export const projectsApi = {
    */
   reanalyzeProject: (projectId: string) =>
     invoke("reanalyze_project", { id: projectId }),
+
+  /**
+   * Inspect a candidate project path (read-only) before offering to register it.
+   * @param path Absolute path to inspect
+   * @returns The verdict describing what RalphX found at the path
+   */
+  inspectProjectCandidate: (path: string): Promise<ProjectCandidate> =>
+    typedInvokeWithTransform(
+      "inspect_project_candidate",
+      { path },
+      ProjectCandidateResponseSchema,
+      transformProjectCandidate
+    ),
+
+  /**
+   * Create (or accept) the destination directory for a brand-new project.
+   * @param input Parent directory + folder name
+   * @returns The resolved destination path and whether RalphX created it
+   */
+  prepareNewProjectDirectory: (
+    input: PrepareNewProjectDirectoryInput
+  ): Promise<PreparedProjectDirectory> =>
+    typedInvoke(
+      "prepare_new_project_directory",
+      { input },
+      PreparedProjectDirectoryResponseSchema
+    ),
+
+  /**
+   * Roll back a directory created by `prepareNewProjectDirectory` when the
+   * subsequent project creation failed.
+   * @param path The prepared directory to remove
+   */
+  discardPreparedProjectDirectory: (path: string): Promise<void> =>
+    typedInvoke("discard_prepared_project_directory", { path }, TauriVoidSchema).then(
+      () => undefined
+    ),
+
+  /**
+   * Check a clone target without touching the network or the filesystem.
+   * @param input URL, and optionally a parent directory / folder name override
+   * @returns The plan describing whether the target is ready to clone
+   */
+  validateCloneTarget: (input: ValidateCloneTargetInput): Promise<CloneTargetPlan> =>
+    typedInvoke("validate_clone_target", { input }, CloneTargetPlanResponseSchema),
+
+  /**
+   * Start cloning a repository into a new project directory.
+   * @param input Clone target + optional advanced options
+   * @returns The id of the started (or joined, if already running) clone job
+   */
+  startProjectClone: (input: StartProjectCloneInput): Promise<StartProjectCloneResponse> =>
+    typedInvoke("start_project_clone", { input }, StartProjectCloneResponseSchema),
+
+  /**
+   * Stop a running clone.
+   * @param jobId The job to cancel
+   * @returns `false` when the job had already finished
+   */
+  cancelProjectClone: (jobId: string): Promise<boolean> =>
+    typedInvoke("cancel_project_clone", { jobId }, z.boolean()),
+
+  /**
+   * Read a clone job's live or retained status.
+   * @param jobId The job to check
+   * @returns The current status, or `{ state: "unknown" }` for an expired/unknown id
+   */
+  getCloneJobStatus: (jobId: string): Promise<CloneJobStatus> =>
+    typedInvokeWithTransform(
+      "get_clone_job_status",
+      { jobId },
+      CloneJobStatusResponseSchema,
+      transformCloneJobStatus
+    ),
+
+  /**
+   * Read-only check of a worktree-parent directory candidate.
+   * @param input The candidate path, and optionally the repository root it must stay outside of
+   * @returns The verdict describing whether the path is safe to use
+   */
+  validateWorktreeParent: (input: ValidateWorktreeParentInput): Promise<WorktreeParentVerdict> =>
+    typedInvokeWithTransform(
+      "validate_worktree_parent",
+      {
+        path: input.path,
+        ...(input.repositoryRoot !== undefined && { repositoryRoot: input.repositoryRoot }),
+      },
+      WorktreeParentVerdictResponseSchema,
+      transformWorktreeParentVerdict
+    ),
+
+  /**
+   * List the authenticated user's GitHub repositories, for the clone-time picker.
+   * @returns Repository summaries (most-recently-updated first, per `gh`)
+   */
+  listGithubRepositories: (): Promise<GitHubRepoSummary[]> =>
+    typedInvoke("list_github_repositories", {}, z.array(GitHubRepoSummarySchema)),
 } as const;
 
 /**

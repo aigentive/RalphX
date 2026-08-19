@@ -408,3 +408,121 @@ describe("ticketing command mocks", () => {
     });
   });
 });
+
+/**
+ * Regression guard for web-mode command mock parity (proof obligation 17,
+ * `.claude/rules/visual-testing.md`): an unregistered Tauri command throws
+ * "No mock handler" and breaks every Playwright spec that runs through
+ * `setupApp(page)`. Each row here asserts a command key resolves through a
+ * mock handler instead of falling through to the "no handler" warning.
+ */
+describe("project clone / worktree-parent / GitHub-repo command mocks", () => {
+  interface CloneJobStatus {
+    state: "running" | "completed" | "failed" | "cancelled" | "unknown";
+    phase?: string | null;
+    percent?: number | null;
+    code?: string;
+    message?: string;
+  }
+
+  const CLONE_INPUT = {
+    url: "https://github.com/acme/demo",
+    parentDirectory: "/Users/test/projects",
+  };
+
+  const NEW_COMMAND_INVOCATIONS: Array<{ cmd: string; args: Record<string, unknown> }> = [
+    { cmd: "validate_clone_target", args: { input: CLONE_INPUT } },
+    { cmd: "start_project_clone", args: { input: CLONE_INPUT } },
+    { cmd: "cancel_project_clone", args: { jobId: "mock-job-id" } },
+    { cmd: "get_clone_job_status", args: { jobId: "mock-job-id" } },
+    { cmd: "validate_worktree_parent", args: { path: "/Users/test/worktrees" } },
+    { cmd: "list_github_repositories", args: {} },
+  ];
+
+  async function pollUntilTerminal(jobId: string): Promise<CloneJobStatus> {
+    let status: CloneJobStatus = { state: "running" };
+    for (let i = 0; i < 10 && status.state === "running"; i += 1) {
+      status = await invoke<CloneJobStatus>("get_clone_job_status", { jobId });
+    }
+    return status;
+  }
+
+  afterEach(() => {
+    delete (window as Window & { __mockCloneJobOutcome?: string })
+      .__mockCloneJobOutcome;
+  });
+
+  it.each(NEW_COMMAND_INVOCATIONS)(
+    "registers a commandHandlers row for $cmd",
+    async ({ cmd, args }) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await invoke(cmd, args);
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.stringContaining(`No mock handler for "${cmd}"`),
+      );
+      warn.mockRestore();
+    },
+  );
+
+  it("validate_clone_target is total: ready for a plausible URL, a problem for a bad one", async () => {
+    const good = await invoke<{
+      ready: boolean;
+      problem: string | null;
+      folderName: string | null;
+      suggestedSshUrl: string | null;
+    }>("validate_clone_target", { input: CLONE_INPUT });
+    expect(good.ready).toBe(true);
+    expect(good.problem).toBeNull();
+    expect(good.folderName).toBe("demo");
+    expect(good.suggestedSshUrl).toBe("git@github.com:acme/demo.git");
+
+    const bad = await invoke<{ ready: boolean; problem: string | null }>(
+      "validate_clone_target",
+      { input: { url: "/absolute/local/path" } },
+    );
+    expect(bad.ready).toBe(false);
+    expect(typeof bad.problem).toBe("string");
+  });
+
+  it("get_clone_job_status advances phase per call and settles to a terminal state", async () => {
+    const { jobId } = await invoke<{ jobId: string }>("start_project_clone", {
+      input: CLONE_INPUT,
+    });
+
+    const first = await invoke<CloneJobStatus>("get_clone_job_status", { jobId });
+    expect(first.state).toBe("running");
+    const firstPhase = first.phase;
+
+    const second = await invoke<CloneJobStatus>("get_clone_job_status", { jobId });
+    expect(second.state).toBe("running");
+    expect(second.phase).not.toBe(firstPhase);
+
+    const terminal = await pollUntilTerminal(jobId);
+    expect(terminal.state).toBe("completed");
+  });
+
+  it("window.__mockCloneJobOutcome forces an auth-failure terminal frame", async () => {
+    (window as Window & { __mockCloneJobOutcome?: string }).__mockCloneJobOutcome =
+      "auth_failed";
+
+    const { jobId } = await invoke<{ jobId: string }>("start_project_clone", {
+      input: CLONE_INPUT,
+    });
+    const terminal = await pollUntilTerminal(jobId);
+
+    expect(terminal.state).toBe("failed");
+    expect(terminal.code).toBe("CLONE_AUTH_FAILED");
+  });
+
+  it("window.__mockCloneJobOutcome forces an unknown terminal frame", async () => {
+    (window as Window & { __mockCloneJobOutcome?: string }).__mockCloneJobOutcome =
+      "unknown";
+
+    const { jobId } = await invoke<{ jobId: string }>("start_project_clone", {
+      input: CLONE_INPUT,
+    });
+    const status = await invoke<CloneJobStatus>("get_clone_job_status", { jobId });
+
+    expect(status.state).toBe("unknown");
+  });
+});
