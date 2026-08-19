@@ -7,14 +7,19 @@ use tauri::State;
 
 use crate::application::agent_workspace_publish_recovery::is_blocked_and_not_auto_retryable;
 use crate::application::AppState;
+use crate::commands::agent_sidebar_review_state::{
+    lifecycle_monitor_for_sidebar, pr_review_state_for_row, SidebarPrReviewLaneBucket,
+    SidebarPrReviewState,
+};
 use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, agent_workspace_response_with_pr_supervision_for_state,
     AgentConversationResponse, AgentConversationWorkspaceResponse,
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, DelegationPark, Project,
-    ProjectId, TeamMemberStatus, TeamRunBindingStatus, TeamRunTriggerKind,
+    AgentRunStatus, AgentWorkspacePrReviewMonitor, ChatContextType, ChatConversation,
+    ChatConversationId, DelegationPark, Project, ProjectId, TeamMemberStatus, TeamRunBindingStatus,
+    TeamRunTriggerKind,
 };
 
 const DEFAULT_LIMIT_PER_GROUP: u32 = 6;
@@ -80,6 +85,8 @@ pub struct AgentSidebarConversationRowResponse {
     pub parked_delegate_count: usize,
     pub is_muted: bool,
     pub action_verb: String,
+    /// `SidebarPrReviewState::key()` for Review PR rows, `None` otherwise.
+    pub review_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,10 +115,23 @@ enum SidebarAttentionLane {
     Working,
     Stale,
     Done,
+    /// Review PR lanes. A row classified into one of these never reaches the
+    /// plain lanes above, so a resting review is never aged into `Stale`.
+    ReviewNeeds,
+    ReviewWorking,
+    ReviewWatching,
 }
 
 impl SidebarAttentionLane {
-    const ALL: [Self; 4] = [Self::Needs, Self::Working, Self::Stale, Self::Done];
+    const ALL: [Self; 7] = [
+        Self::Needs,
+        Self::Working,
+        Self::Stale,
+        Self::Done,
+        Self::ReviewNeeds,
+        Self::ReviewWorking,
+        Self::ReviewWatching,
+    ];
 
     fn key(self) -> &'static str {
         match self {
@@ -119,15 +139,19 @@ impl SidebarAttentionLane {
             Self::Working => "working",
             Self::Stale => "stale",
             Self::Done => "done",
+            Self::ReviewNeeds => "review_needs",
+            Self::ReviewWorking => "review_working",
+            Self::ReviewWatching => "review_watching",
         }
     }
 
     fn group_label(self) -> &'static str {
         match self {
-            Self::Needs => "Needs you",
-            Self::Working => "Working",
+            Self::Needs | Self::ReviewNeeds => "Needs you",
+            Self::Working | Self::ReviewWorking => "Working",
             Self::Stale => "Stale",
             Self::Done => "Done",
+            Self::ReviewWatching => "Watching",
         }
     }
 }
@@ -233,6 +257,7 @@ struct SidebarConversationRow {
     attention_state_fingerprint: String,
     is_muted: bool,
     action_verb: String,
+    review_state: Option<SidebarPrReviewState>,
 }
 
 #[derive(Debug, Clone)]
@@ -295,6 +320,7 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
         managed_team_activity_by_conversation(state).await?;
     let parked_delegate_counts_by_conversation =
         armed_parked_delegate_counts_by_conversation(state).await?;
+    let pr_review_monitors_by_conversation = pr_review_monitors_by_conversation(state).await?;
 
     let mut project_labels: Vec<(String, String)> = Vec::new();
     let mut automation_labels: HashMap<String, String> = HashMap::new();
@@ -395,6 +421,10 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
                 .get(&conversation.id)
                 .copied()
                 .unwrap_or_default();
+            let review_state = pr_review_state_for_row(
+                pr_review_monitors_by_conversation.get(&conversation.id),
+                latest_run_status,
+            );
             let attention_lane = attention_lane_for_row_with_armed_park(
                 conversation.is_archived(),
                 publication_state,
@@ -406,6 +436,7 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
                     .unwrap_or(conversation.updated_at),
                 managed_team_activity_by_conversation.get(&conversation.id),
                 parked_delegate_counts_by_conversation.contains_key(&conversation.id),
+                review_state,
             );
             let attention_state_fingerprint = attention_state_fingerprint(
                 conversation.is_archived(),
@@ -417,6 +448,7 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
                 managed_team_activity_by_conversation
                     .get(&conversation.id)
                     .map(|activity| activity.fingerprint.as_str()),
+                review_state.map(SidebarPrReviewState::key),
             );
             let action_verb = action_verb_for_row(
                 publication_state,
@@ -455,6 +487,7 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
                 attention_state_fingerprint,
                 is_muted: false,
                 action_verb,
+                review_state,
             });
         }
     }
@@ -519,6 +552,9 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
                 .unwrap_or(conversation.updated_at),
             managed_team_activity_by_conversation.get(&conversation.id),
             parked_delegate_counts_by_conversation.contains_key(&conversation.id),
+            // Standalone conversations never create a workspace, so they can
+            // never carry a Review PR monitor.
+            None,
         );
         let attention_state_fingerprint = attention_state_fingerprint(
             conversation.is_archived(),
@@ -530,6 +566,7 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
             managed_team_activity_by_conversation
                 .get(&conversation.id)
                 .map(|activity| activity.fingerprint.as_str()),
+            None,
         );
         let action_verb = action_verb_for_row(publication_state, latest_run_status, None, ref_kind);
         let sort_at = conversation
@@ -557,6 +594,7 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
             attention_state_fingerprint,
             is_muted: false,
             action_verb,
+            review_state: None,
         });
     }
     if has_no_project_rows {
@@ -760,6 +798,7 @@ fn normalized_supervision_status_value(status: Option<&str>) -> Option<String> {
 }
 
 /// Stable snapshot of the fields that determine whether a muted conversation still needs attention.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn attention_state_fingerprint(
     is_archived: bool,
     publication_state: SidebarPublicationState,
@@ -768,6 +807,7 @@ pub(crate) fn attention_state_fingerprint(
     supervision_status: Option<&str>,
     last_message_at: Option<DateTime<Utc>>,
     managed_team_activity: Option<&str>,
+    review_state: Option<&str>,
 ) -> String {
     [
         format!("archived={is_archived}"),
@@ -779,6 +819,7 @@ pub(crate) fn attention_state_fingerprint(
         ),
         format!("supervision={}", supervision_status.unwrap_or("<none>")),
         format!("managed_team={}", managed_team_activity.unwrap_or("<none>")),
+        format!("review_state={}", review_state.unwrap_or("<none>")),
         format!(
             "last_message_at={}",
             last_message_at.map_or("<none>".to_string(), |at| at.to_rfc3339())
@@ -806,8 +847,14 @@ async fn apply_current_mutes(
         row.is_muted = mute_fingerprints
             .get(&row.conversation_id)
             .is_some_and(|fingerprint| fingerprint == &row.attention_state_fingerprint);
-        if row.is_muted && row.attention_lane == SidebarAttentionLane::Needs {
-            row.attention_lane = SidebarAttentionLane::Stale;
+        if row.is_muted {
+            // A muted review demotes within the review lanes rather than into
+            // Stale, which the Reviews chip does not show.
+            row.attention_lane = match row.attention_lane {
+                SidebarAttentionLane::Needs => SidebarAttentionLane::Stale,
+                SidebarAttentionLane::ReviewNeeds => SidebarAttentionLane::ReviewWatching,
+                lane => lane,
+            };
         }
     }
     Ok(())
@@ -832,9 +879,11 @@ fn attention_lane_for_row(
         last_activity_at,
         managed_team_activity,
         false,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn attention_lane_for_row_with_armed_park(
     is_archived: bool,
     publication_state: SidebarPublicationState,
@@ -844,7 +893,10 @@ fn attention_lane_for_row_with_armed_park(
     last_activity_at: DateTime<Utc>,
     managed_team_activity: Option<&ManagedTeamActivity>,
     has_armed_delegation_park: bool,
+    review_state: Option<SidebarPrReviewState>,
 ) -> SidebarAttentionLane {
+    // Terminal stays terminal. This check keeps first position so terminal
+    // settlement, not the monitor, owns merged/closed/archived rows.
     if is_archived
         || matches!(
             publication_state,
@@ -854,19 +906,38 @@ fn attention_lane_for_row_with_armed_park(
         return SidebarAttentionLane::Done;
     }
 
-    if blocked_exhausted_repair {
-        return SidebarAttentionLane::Needs;
-    }
-
     let supervision_status = normalized_supervision_status(workspace);
-    if is_in_flight_run_status(latest_run_status)
+    let is_working_now = is_in_flight_run_status(latest_run_status)
         || managed_team_activity.is_some_and(|activity| activity.is_working)
         || has_armed_delegation_park
         || matches!(
             supervision_status.as_deref(),
             Some("fixing" | "publishing" | "waiting" | "waiting_for_checks" | "monitoring")
-        )
-    {
+        );
+
+    // A review row resolves entirely inside this branch; it must never fall
+    // through to the plain lanes, or a resting review would age into `Stale`.
+    if let Some(review_state) = review_state {
+        // Repair exhaustion outranks monitor state: the workspace itself is broken.
+        if blocked_exhausted_repair {
+            return SidebarAttentionLane::ReviewNeeds;
+        }
+        // Live runtime outranks a resting monitor status.
+        if is_working_now {
+            return SidebarAttentionLane::ReviewWorking;
+        }
+        return match review_state.lane_bucket() {
+            SidebarPrReviewLaneBucket::Needs => SidebarAttentionLane::ReviewNeeds,
+            SidebarPrReviewLaneBucket::Working => SidebarAttentionLane::ReviewWorking,
+            SidebarPrReviewLaneBucket::Watching => SidebarAttentionLane::ReviewWatching,
+        };
+    }
+
+    if blocked_exhausted_repair {
+        return SidebarAttentionLane::Needs;
+    }
+
+    if is_working_now {
         return SidebarAttentionLane::Working;
     }
 
@@ -875,6 +946,31 @@ fn attention_lane_for_row_with_armed_park(
     }
 
     SidebarAttentionLane::Needs
+}
+
+/// Live Review PR monitors keyed by conversation. The repo listing already
+/// applies the full lifecycle gate (`review_pr` mode, active workspace,
+/// nonterminal publication, nonterminal monitor), so map membership implies
+/// eligibility and no per-row workspace-mode check is needed.
+async fn pr_review_monitors_by_conversation(
+    state: &AppState,
+) -> Result<HashMap<ChatConversationId, AgentWorkspacePrReviewMonitor>, String> {
+    state
+        .agent_conversation_workspace_repo
+        .list_pr_review_lifecycle_monitors()
+        .await
+        .map(|monitors| {
+            monitors
+                .into_iter()
+                .map(|monitor| (monitor.conversation_id, monitor))
+                .collect()
+        })
+        .map_err(|error| {
+            // Fail the request rather than silently reclassifying every review
+            // row back to the legacy lanes.
+            tracing::warn!(error = %error, "failed to load PR review monitors for sidebar");
+            error.to_string()
+        })
 }
 
 async fn armed_parked_delegate_counts_by_conversation(
@@ -1310,6 +1406,9 @@ impl From<SidebarConversationRow> for AgentSidebarConversationRowResponse {
             parked_delegate_count: row.parked_delegate_count,
             is_muted: row.is_muted,
             action_verb: row.action_verb,
+            review_state: row
+                .review_state
+                .map(|review_state| review_state.key().to_string()),
         }
     }
 }
@@ -1318,6 +1417,9 @@ impl From<SidebarConversationRow> for AgentSidebarConversationRowResponse {
 pub struct BulkPublicationStateResponse {
     pub publication_state: String,
     pub publication_label: Option<String>,
+    /// Included so the 5s sidebar poll notices Review PR transitions, which
+    /// leave publication state and label untouched.
+    pub review_state: Option<String>,
 }
 
 #[tauri::command]
@@ -1346,16 +1448,52 @@ async fn get_bulk_workspace_publication_states_inner(
             .await?
             .map(|run| run.status);
         let pub_state = publication_state_from_domain(workspace.as_ref(), latest_run_status);
+        let review_state =
+            bulk_review_state_for_workspace(state, &conv_id, workspace.as_ref(), latest_run_status)
+                .await?;
         result.insert(
             id.clone(),
             BulkPublicationStateResponse {
                 publication_state: pub_state.key().to_string(),
                 publication_label: publication_label_for_domain(workspace.as_ref(), pub_state),
+                review_state,
             },
         );
     }
 
     Ok(result)
+}
+
+/// Per-conversation Review PR state for the bulk poll. Unlike the sidebar
+/// listing, `get_pr_review_monitor` applies no lifecycle filters, so the same
+/// gate the listing encodes in SQL is reproduced here against the raw entity.
+///
+/// A monitor read error propagates. Degrading to `None` would produce a
+/// fingerprint that matches the stale cached one and permanently hide the
+/// transition, whereas a propagated error only suppresses this 5s tick.
+async fn bulk_review_state_for_workspace(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    workspace: Option<&crate::domain::entities::AgentConversationWorkspace>,
+    latest_run_status: Option<AgentRunStatus>,
+) -> Result<Option<String>, crate::error::AppError> {
+    let Some(workspace) = workspace else {
+        return Ok(None);
+    };
+    if workspace.mode != crate::domain::entities::AgentConversationWorkspaceMode::ReviewPr {
+        return Ok(None);
+    }
+    let Some(monitor) = state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(conversation_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+
+    Ok(lifecycle_monitor_for_sidebar(workspace, &monitor)
+        .and_then(|monitor| pr_review_state_for_row(Some(monitor), latest_run_status))
+        .map(|review_state| review_state.key().to_string()))
 }
 
 fn publication_state_from_domain(
@@ -1436,8 +1574,9 @@ mod tests {
     use super::*;
     use crate::domain::entities::{
         AgentConversationMute, AgentConversationWorkspace, AgentConversationWorkspaceMode,
-        AgentRun, Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode,
-        AutomationRunId, AutomationStatus, ChatConversation, IdeationAnalysisBaseRefKind, Project,
+        AgentRun, AgentWorkspacePrReviewMonitorStatus, Automation, AutomationId,
+        AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationRunId, AutomationStatus,
+        ChatConversation, IdeationAnalysisBaseRefKind, Project,
     };
 
     async fn list_agent_sidebar_conversations_for_app_state(
@@ -1695,6 +1834,87 @@ mod tests {
             .unwrap();
     }
 
+    /// A `review_pr` workspace plus its lifecycle monitor — the pair the review
+    /// lanes classify.
+    async fn create_review_pr_workspace_with_monitor(
+        state: &AppState,
+        conversation: &ChatConversation,
+        project_id: &ProjectId,
+        pr_status: Option<&str>,
+        monitor_status: AgentWorkspacePrReviewMonitorStatus,
+        last_review_outcome: Option<&str>,
+    ) {
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation.id,
+            project_id.clone(),
+            AgentConversationWorkspaceMode::ReviewPr,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "develop".to_string(),
+            Some("Current branch (develop)".to_string()),
+            None,
+            format!("agent/{}", conversation.id),
+            format!("/tmp/worktrees/{}", conversation.id),
+        );
+        workspace.publication_pr_number = Some(7);
+        workspace.publication_pr_status = pr_status.map(str::to_string);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        let now = Utc::now();
+        state
+            .agent_conversation_workspace_repo
+            .upsert_pr_review_monitor(AgentWorkspacePrReviewMonitor {
+                conversation_id: conversation.id,
+                project_id: project_id.clone(),
+                pr_number: 7,
+                status: monitor_status,
+                monitor_enabled: true,
+                auto_approve_enabled: false,
+                first_review_completed: true,
+                first_action_resolved: true,
+                last_seen_head_sha: None,
+                last_reviewed_head_sha: None,
+                last_review_run_id: None,
+                last_review_outcome: last_review_outcome.map(str::to_string),
+                last_submitted_review_id: None,
+                review_artifact_id: None,
+                review_artifact_head_sha: None,
+                review_artifact_version: None,
+                review_artifact_updated_at: None,
+                last_error: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn lane_key_for_conversation(
+        state: &AppState,
+        project_id: &ProjectId,
+        conversation_id: &ChatConversationId,
+    ) -> String {
+        let mut input = sidebar_input(project_id);
+        input.group_by = Some("inbox".to_string());
+        let response = list_agent_sidebar_conversations_for_app_state(input, state)
+            .await
+            .unwrap();
+        response
+            .groups
+            .into_iter()
+            .find(|group| {
+                group
+                    .rows
+                    .iter()
+                    .any(|row| row.conversation.id == conversation_id.as_str())
+            })
+            .map(|group| group.key)
+            .unwrap_or_else(|| panic!("conversation {conversation_id} is in no inbox group"))
+    }
+
     async fn create_run_with_status(
         state: &AppState,
         conversation: &ChatConversation,
@@ -1737,6 +1957,7 @@ mod tests {
             Some("blocked"),
             Some(now),
             None,
+            None,
         );
         assert_eq!(
             baseline,
@@ -1747,6 +1968,7 @@ mod tests {
                 Some(AgentRunStatus::Completed),
                 Some("blocked"),
                 Some(now),
+                None,
                 None,
             )
         );
@@ -1760,6 +1982,7 @@ mod tests {
                 Some("blocked"),
                 Some(now),
                 None,
+                None,
             )
         );
         assert_ne!(
@@ -1771,6 +1994,7 @@ mod tests {
                 Some(AgentRunStatus::Completed),
                 Some("blocked"),
                 Some(now),
+                None,
                 None,
             )
         );
@@ -1784,6 +2008,7 @@ mod tests {
                 Some("blocked"),
                 Some(now),
                 None,
+                None,
             )
         );
         assert_ne!(
@@ -1795,6 +2020,7 @@ mod tests {
                 Some(AgentRunStatus::Running),
                 Some("blocked"),
                 Some(now),
+                None,
                 None,
             )
         );
@@ -1808,6 +2034,7 @@ mod tests {
                 Some("fixing"),
                 Some(now),
                 None,
+                None,
             )
         );
         assert_ne!(
@@ -1819,6 +2046,7 @@ mod tests {
                 Some(AgentRunStatus::Completed),
                 Some("blocked"),
                 Some(now + chrono::Duration::seconds(1)),
+                None,
                 None,
             )
         );
@@ -1832,6 +2060,23 @@ mod tests {
                 Some("blocked"),
                 Some(now),
                 Some("members=[worker:Working]"),
+                None,
+            )
+        );
+        // A submitted approval flips the monitor from awaiting_user to
+        // watching without touching any other component, so a saved mute must
+        // stop matching on this alone.
+        assert_ne!(
+            baseline,
+            attention_state_fingerprint(
+                false,
+                SidebarPublicationState::Active,
+                Some("run-a"),
+                Some(AgentRunStatus::Completed),
+                Some("blocked"),
+                Some(now),
+                None,
+                Some("approved"),
             )
         );
     }
@@ -1894,6 +2139,7 @@ mod tests {
         let fingerprint = attention_state_fingerprint(
             false,
             SidebarPublicationState::Active,
+            None,
             None,
             None,
             None,
@@ -2651,7 +2897,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.groups.len(), 4);
+        assert_eq!(response.groups.len(), 7);
         assert_eq!(
             response
                 .groups
@@ -2663,6 +2909,9 @@ mod tests {
                 ("working", "Working", 0),
                 ("stale", "Stale", 0),
                 ("done", "Done", 0),
+                ("review_needs", "Needs you", 0),
+                ("review_working", "Working", 0),
+                ("review_watching", "Watching", 0),
             ]
         );
     }
@@ -3244,5 +3493,341 @@ mod tests {
             publication_state_from_domain(Some(&workspace), Some(AgentRunStatus::Cancelled)),
             SidebarPublicationState::Active
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Review PR lanes.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn review_lane_precedence_resolves_the_three_ambiguous_cases() {
+        let now = Utc::now();
+        let working_team = ManagedTeamActivity {
+            is_working: true,
+            fingerprint: "members=[worker:Working]".to_string(),
+        };
+
+        // Repair exhaustion outranks an approved monitor.
+        assert_eq!(
+            attention_lane_for_row_with_armed_park(
+                false,
+                SidebarPublicationState::Active,
+                None,
+                None,
+                true,
+                now,
+                None,
+                false,
+                Some(SidebarPrReviewState::Approved),
+            ),
+            SidebarAttentionLane::ReviewNeeds
+        );
+        // A live run outranks an approved monitor.
+        assert_eq!(
+            attention_lane_for_row_with_armed_park(
+                false,
+                SidebarPublicationState::Active,
+                Some(AgentRunStatus::Running),
+                None,
+                false,
+                now,
+                None,
+                false,
+                Some(SidebarPrReviewState::Approved),
+            ),
+            SidebarAttentionLane::ReviewWorking
+        );
+        // So does live Team activity or an armed delegation park.
+        assert_eq!(
+            attention_lane_for_row_with_armed_park(
+                false,
+                SidebarPublicationState::Active,
+                None,
+                None,
+                false,
+                now,
+                Some(&working_team),
+                false,
+                Some(SidebarPrReviewState::Approved),
+            ),
+            SidebarAttentionLane::ReviewWorking
+        );
+        // Neither: the derived monitor bucket decides.
+        assert_eq!(
+            attention_lane_for_row_with_armed_park(
+                false,
+                SidebarPublicationState::Active,
+                None,
+                None,
+                false,
+                now,
+                None,
+                false,
+                Some(SidebarPrReviewState::Approved),
+            ),
+            SidebarAttentionLane::ReviewWatching
+        );
+    }
+
+    #[test]
+    fn a_resting_review_never_ages_into_stale() {
+        let long_ago = Utc::now() - chrono::Duration::days(STALE_AFTER_DAYS + 30);
+        assert_eq!(
+            attention_lane_for_row_with_armed_park(
+                false,
+                SidebarPublicationState::Active,
+                None,
+                None,
+                false,
+                long_ago,
+                None,
+                false,
+                Some(SidebarPrReviewState::Watching),
+            ),
+            SidebarAttentionLane::ReviewWatching
+        );
+        // The same row with no review classification still goes Stale.
+        assert_eq!(
+            attention_lane_for_row_with_armed_park(
+                false,
+                SidebarPublicationState::Active,
+                None,
+                None,
+                false,
+                long_ago,
+                None,
+                false,
+                None,
+            ),
+            SidebarAttentionLane::Stale
+        );
+    }
+
+    #[test]
+    fn terminal_publication_outranks_any_review_state() {
+        let now = Utc::now();
+        for publication_state in [
+            SidebarPublicationState::Merged,
+            SidebarPublicationState::Closed,
+        ] {
+            assert_eq!(
+                attention_lane_for_row_with_armed_park(
+                    false,
+                    publication_state,
+                    None,
+                    None,
+                    false,
+                    now,
+                    None,
+                    false,
+                    Some(SidebarPrReviewState::NeedsApproval),
+                ),
+                SidebarAttentionLane::Done,
+                "publication state {publication_state:?}"
+            );
+        }
+        // Archived too.
+        assert_eq!(
+            attention_lane_for_row_with_armed_park(
+                true,
+                SidebarPublicationState::Active,
+                None,
+                None,
+                false,
+                now,
+                None,
+                false,
+                Some(SidebarPrReviewState::NeedsApproval),
+            ),
+            SidebarAttentionLane::Done
+        );
+    }
+
+    #[tokio::test]
+    async fn an_approved_and_submitted_review_rests_in_watching_not_needs() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "review-approved").await;
+        let conversation = create_conversation(&state, &project.id, "Review", Utc::now()).await;
+        create_review_pr_workspace_with_monitor(
+            &state,
+            &conversation,
+            &project.id,
+            Some("open"),
+            AgentWorkspacePrReviewMonitorStatus::Watching,
+            Some("approve"),
+        )
+        .await;
+
+        assert_eq!(
+            lane_key_for_conversation(&state, &project.id, &conversation.id).await,
+            "review_watching"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pending_approval_proposal_lands_in_review_needs() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "review-awaiting").await;
+        let conversation = create_conversation(&state, &project.id, "Review", Utc::now()).await;
+        create_review_pr_workspace_with_monitor(
+            &state,
+            &conversation,
+            &project.id,
+            Some("open"),
+            AgentWorkspacePrReviewMonitorStatus::AwaitingUser,
+            Some("approve"),
+        )
+        .await;
+
+        assert_eq!(
+            lane_key_for_conversation(&state, &project.id, &conversation.id).await,
+            "review_needs"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_merged_review_lands_in_done_not_a_review_lane() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "review-merged").await;
+        let conversation = create_conversation(&state, &project.id, "Review", Utc::now()).await;
+        create_review_pr_workspace_with_monitor(
+            &state,
+            &conversation,
+            &project.id,
+            Some("merged"),
+            AgentWorkspacePrReviewMonitorStatus::AwaitingUser,
+            Some("approve"),
+        )
+        .await;
+
+        assert_eq!(
+            lane_key_for_conversation(&state, &project.id, &conversation.id).await,
+            "done"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_review_pr_row_with_no_monitor_falls_back_to_the_legacy_lanes() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "review-no-monitor").await;
+        let conversation = create_conversation(&state, &project.id, "Review", Utc::now()).await;
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation.id,
+            project.id.clone(),
+            AgentConversationWorkspaceMode::ReviewPr,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "develop".to_string(),
+            Some("Current branch (develop)".to_string()),
+            None,
+            format!("agent/{}", conversation.id),
+            format!("/tmp/worktrees/{}", conversation.id),
+        );
+        workspace.publication_pr_number = Some(7);
+        workspace.publication_pr_status = Some("open".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            lane_key_for_conversation(&state, &project.id, &conversation.id).await,
+            "needs"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_muted_review_needs_row_demotes_to_watching_not_stale() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "review-muted").await;
+        let conversation = create_conversation(&state, &project.id, "Review", Utc::now()).await;
+        create_review_pr_workspace_with_monitor(
+            &state,
+            &conversation,
+            &project.id,
+            Some("open"),
+            AgentWorkspacePrReviewMonitorStatus::AwaitingUser,
+            Some("approve"),
+        )
+        .await;
+        state
+            .agent_conversation_mute_repo
+            .set_muted(AgentConversationMute {
+                conversation_id: conversation.id,
+                muted_at: Utc::now(),
+                state_fingerprint: attention_state_fingerprint(
+                    false,
+                    SidebarPublicationState::Active,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("needs_approval"),
+                ),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            lane_key_for_conversation(&state, &project.id, &conversation.id).await,
+            "review_watching"
+        );
+    }
+
+    #[tokio::test]
+    async fn bulk_publication_states_carry_review_state_only_for_review_pr_workspaces() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "bulk-review-state").await;
+        let review = create_conversation(&state, &project.id, "Review", Utc::now()).await;
+        let edit = create_conversation(&state, &project.id, "Edit", Utc::now()).await;
+        create_review_pr_workspace_with_monitor(
+            &state,
+            &review,
+            &project.id,
+            Some("open"),
+            AgentWorkspacePrReviewMonitorStatus::Watching,
+            Some("request_changes"),
+        )
+        .await;
+        create_workspace(&state, &edit, &project.id, None, None, None).await;
+
+        let states = get_bulk_workspace_publication_states_inner(
+            &[review.id.as_str().to_string(), edit.id.as_str().to_string()],
+            &state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            states[&review.id.as_str().to_string()]
+                .review_state
+                .as_deref(),
+            Some("changes_requested")
+        );
+        assert_eq!(states[&edit.id.as_str().to_string()].review_state, None);
+    }
+
+    #[tokio::test]
+    async fn bulk_publication_states_omit_review_state_for_a_terminal_publication() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "bulk-review-terminal").await;
+        let review = create_conversation(&state, &project.id, "Review", Utc::now()).await;
+        create_review_pr_workspace_with_monitor(
+            &state,
+            &review,
+            &project.id,
+            Some("merged"),
+            AgentWorkspacePrReviewMonitorStatus::Watching,
+            Some("approve"),
+        )
+        .await;
+
+        let states =
+            get_bulk_workspace_publication_states_inner(&[review.id.as_str().to_string()], &state)
+                .await
+                .unwrap();
+
+        assert_eq!(states[&review.id.as_str().to_string()].review_state, None);
     }
 }

@@ -6,7 +6,10 @@ import userEvent from "@testing-library/user-event";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
-import type { AgentConversationWorkspace } from "@/api/chat";
+import type {
+  AgentConversationWorkspace,
+  AgentSidebarAttentionLane,
+} from "@/api/chat";
 import type { Project } from "@/types/project";
 import type { AgentConversation } from "./agentConversations";
 import {
@@ -95,15 +98,16 @@ const { inboxLaneByConversationId } = vi.hoisted(() => ({
   inboxLaneByConversationId: new Map<
     string,
     {
-      lane: "needs" | "working" | "stale" | "done";
+      lane: AgentSidebarAttentionLane;
       actionVerb: string;
       parkedDelegateCount?: number;
+      reviewState?: string | null;
     }
   >(),
 }));
 const { inboxGroupCalls } = vi.hoisted(() => ({
   inboxGroupCalls: [] as Array<{
-    lane: "needs" | "working" | "stale" | "done";
+    lane: AgentSidebarAttentionLane;
     priorityConversationIds?: string[];
   }>,
 }));
@@ -668,6 +672,8 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
           parkedDelegateCount:
             inboxLaneByConversationId.get(row.conversation.id)?.parkedDelegateCount ?? 0,
           actionVerb: inboxLaneByConversationId.get(row.conversation.id)?.actionVerb ?? "",
+          reviewState:
+            inboxLaneByConversationId.get(row.conversation.id)?.reviewState ?? null,
         }));
       return {
         ...result,
@@ -5122,7 +5128,7 @@ describe("AgentsSidebar", () => {
     expect(onRenameConversation).not.toHaveBeenCalled();
   });
 
-  it("selects Inbox and renders Recent, Stale, and Done chips in fixed order", async () => {
+  it("selects Inbox and renders Recent, PR Reviews, Stale, and Done chips in fixed order", async () => {
     const user = userEvent.setup();
     const lanes = ["needs", "working", "stale", "done"] as const;
     const conversations = lanes.map((lane) => {
@@ -5145,10 +5151,126 @@ describe("AgentsSidebar", () => {
         .map((element) => element.dataset.testid)
     ).toEqual([
       "agents-inbox-lane-chip-recent",
+      "agents-inbox-lane-chip-reviews",
       "agents-inbox-lane-chip-stale",
       "agents-inbox-lane-chip-done",
     ]);
     expect(screen.getByTestId("agents-inbox-lane-chip-recent")).toHaveTextContent("2");
+  });
+
+  it("renders the PR Reviews chip with the summed count and a stable filter key", async () => {
+    const needs = conversation({ id: "conversation-review-needs", title: "Needs approval" });
+    const working = conversation({ id: "conversation-review-working", title: "Reviewing" });
+    const watching = conversation({ id: "conversation-review-watching", title: "Approved" });
+    inboxLaneByConversationId.set(needs.id, {
+      lane: "review_needs",
+      actionVerb: "Review",
+      reviewState: "needs_approval",
+    });
+    inboxLaneByConversationId.set(working.id, {
+      lane: "review_working",
+      actionVerb: "Review",
+      reviewState: "reviewing",
+    });
+    inboxLaneByConversationId.set(watching.id, {
+      lane: "review_watching",
+      actionVerb: "Review",
+      reviewState: "approved",
+    });
+    conversationsByProject.set("project-1", {
+      data: [needs, working, watching],
+      isLoading: false,
+    });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+
+    const chip = await screen.findByTestId("agents-inbox-lane-chip-reviews");
+    // Regression guard for the removed `!` on `laneForInboxFilter`: a composite
+    // filter used to render the string "undefined" here.
+    await waitFor(() => expect(chip).toHaveTextContent("3"));
+    expect(chip).not.toHaveTextContent("undefined");
+    // Display copy is "PR Reviews" while the key stays "reviews".
+    expect(chip).toHaveAccessibleName("PR Reviews, 3 conversations");
+    expect(chip).toHaveAttribute("id", "agents-inbox-lane-chip-reviews");
+  });
+
+  it("shows three review groups and keeps review rows out of Recent", async () => {
+    const user = userEvent.setup();
+    const needs = conversation({ id: "conversation-review-needs", title: "Needs approval" });
+    const watching = conversation({ id: "conversation-review-watching", title: "Approved" });
+    inboxLaneByConversationId.set(needs.id, {
+      lane: "review_needs",
+      actionVerb: "Review",
+      reviewState: "needs_approval",
+    });
+    inboxLaneByConversationId.set(watching.id, {
+      lane: "review_watching",
+      actionVerb: "Review",
+      reviewState: "approved",
+    });
+    conversationsByProject.set("project-1", {
+      data: [needs, watching],
+      isLoading: false,
+    });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+
+    // Review rows carry review_* lanes, so Recent never sees them.
+    expect(
+      screen.queryByTestId("agents-sidebar-session-list-inbox-needs")
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("agents-inbox-lane-chip-reviews"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-inbox-lane-panel-reviews")).toBeInTheDocument();
+    });
+    expect(
+      screen.getByTestId("agents-inbox-reviews-group-review_needs")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-inbox-reviews-group-review_working")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-inbox-reviews-group-review_watching")
+    ).toBeInTheDocument();
+    expect(screen.getByText("Watching")).toBeInTheDocument();
+  });
+
+  it("renders the review state in the row meta line instead of the publish verb", async () => {
+    const user = userEvent.setup();
+    const watching = conversation({ id: "conversation-review-watching", title: "Approved PR" });
+    inboxLaneByConversationId.set(watching.id, {
+      lane: "review_watching",
+      actionVerb: "Publish",
+      reviewState: "approved",
+    });
+    conversationsByProject.set("project-1", { data: [watching], isLoading: false });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+    await user.click(screen.getByTestId("agents-inbox-lane-chip-reviews"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Approved")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Publish")).not.toBeInTheDocument();
+  });
+
+  it("shows the reviews empty state when no review conversations exist", async () => {
+    const user = userEvent.setup();
+    conversationsByProject.set("project-1", { data: [], isLoading: false });
+    useAgentSessionStore.setState({ sidebarGroupBy: "inbox" });
+
+    renderSidebar();
+    await user.click(screen.getByTestId("agents-inbox-lane-chip-reviews"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agents-inbox-lane-empty-reviews")).toBeInTheDocument();
+    });
+    expect(screen.getByText("No open reviews")).toBeInTheDocument();
   });
 
   it("renders Recent groups inside one sidebar scroller", async () => {
@@ -5495,7 +5617,7 @@ describe("AgentsSidebar", () => {
     );
 
     needsChip.focus();
-    await user.keyboard("{ArrowRight}");
+    await user.keyboard("{ArrowRight}{ArrowRight}");
 
     await waitFor(() => {
       expect(screen.getByTestId("agents-inbox-lane-chip-stale")).toHaveAttribute(
@@ -5504,7 +5626,7 @@ describe("AgentsSidebar", () => {
       );
     });
 
-    await user.keyboard("{ArrowLeft}{ArrowLeft}");
+    await user.keyboard("{ArrowLeft}{ArrowLeft}{ArrowLeft}");
     await waitFor(() => {
       expect(screen.getByTestId("agents-inbox-lane-chip-done")).toHaveAttribute(
         "aria-selected",

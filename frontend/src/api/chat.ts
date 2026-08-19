@@ -460,7 +460,14 @@ export type AgentSidebarGroupBy =
   | "automation"
   | "inbox";
 export type AgentSidebarSort = "latest" | "az" | "za";
-export type AgentSidebarAttentionLane = "needs" | "working" | "stale" | "done";
+export type AgentSidebarAttentionLane =
+  | "needs"
+  | "working"
+  | "stale"
+  | "done"
+  | "review_needs"
+  | "review_working"
+  | "review_watching";
 
 export interface AgentSidebarConversationsInput {
   projectIds: string[];
@@ -486,6 +493,8 @@ export interface AgentSidebarConversationRow {
   attentionLane: AgentSidebarAttentionLane;
   parkedDelegateCount: number;
   actionVerb: string;
+  // Backend-derived Review PR state key; null for non-review rows.
+  reviewState: string | null;
   isMuted: boolean;
 }
 
@@ -2865,9 +2874,18 @@ const AgentSidebarConversationRowResponseSchema = z.object({
     "unpushed",
   ]),
   publication_label: z.string().nullable(),
-  attention_lane: z.enum(["needs", "working", "stale", "done"]),
+  attention_lane: z.enum([
+    "needs",
+    "working",
+    "stale",
+    "done",
+    "review_needs",
+    "review_working",
+    "review_watching",
+  ]),
   parked_delegate_count: z.number().int().nonnegative(),
   action_verb: z.string(),
+  review_state: z.string().nullable(),
   is_muted: z.boolean(),
 });
 const AgentSidebarConversationGroupResponseSchema = z.object({
@@ -3507,6 +3525,7 @@ function transformAgentSidebarConversationGroups(
         attentionLane: row.attention_lane,
         parkedDelegateCount: row.parked_delegate_count,
         actionVerb: row.action_verb,
+        reviewState: row.review_state,
         isMuted: row.is_muted,
       })),
     })),
@@ -5474,6 +5493,7 @@ export async function getAgentConversationRuntimeIndex(
 export interface BulkPublicationStateResponse {
   publication_state: string;
   publication_label: string | null;
+  review_state: string | null;
 }
 
 export async function getBulkWorkspacePublicationStates(
@@ -5487,6 +5507,7 @@ export async function getBulkWorkspacePublicationStates(
       z.object({
         publication_state: z.string(),
         publication_label: z.string().nullable(),
+        review_state: z.string().nullable(),
       }),
     ),
   );
