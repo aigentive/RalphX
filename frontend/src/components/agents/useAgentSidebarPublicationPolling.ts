@@ -9,11 +9,15 @@ import { agentSidebarConversationKeys } from "./useAgentSidebarPublicationGroup"
 
 const PUBLICATION_POLL_MS = 5_000;
 
+// Review PR transitions leave publication state and label untouched, so the
+// review state is a required third component: without it a proposal appearing
+// or an approval being submitted would never invalidate the sidebar query.
 export function workspacePublicationFingerprint(
   state: string,
   label: string | null | undefined,
+  reviewState: string | null | undefined,
 ): string {
-  return `${state}\u0000${label?.trim().toLowerCase() ?? ""}`;
+  return `${state}\u0000${label?.trim().toLowerCase() ?? ""}\u0000${reviewState ?? ""}`;
 }
 
 export function useAgentSidebarPublicationPolling(
@@ -60,6 +64,7 @@ export function useAgentSidebarPublicationPolling(
             const nextFingerprint = workspacePublicationFingerprint(
               entry.publication_state,
               entry.publication_label,
+              entry.review_state,
             );
             if (cachedState !== undefined && cachedState !== nextFingerprint) {
               changedConversationIds.push(id);

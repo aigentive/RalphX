@@ -2583,6 +2583,7 @@ const commandHandlers: Record<
           attention_lane: row.attentionLane ?? "needs",
           parked_delegate_count: row.parkedDelegateCount ?? 0,
           action_verb: row.actionVerb ?? "",
+          review_state: row.reviewState ?? null,
           is_muted: row.isMuted ?? false,
         })),
       })),
