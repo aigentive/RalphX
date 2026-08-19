@@ -5024,7 +5024,7 @@ fn blocked_workspace_repair_retry_context_carries_blocker_commit_and_base_retarg
             .to_string(),
     ];
 
-    let context = compose_blocked_repair_retry_context(&attempt, "main");
+    let context = compose_blocked_repair_retry_context(&attempt, "main", None);
 
     assert!(context.contains("old base ref was deleted after its PR merged"));
     assert!(context.contains("bba066f"));
@@ -5054,7 +5054,7 @@ fn blocked_workspace_repair_retry_context_uses_summary_when_no_human_reason_exis
     ];
     attempt.summary = Some("repair summary retained for retry".to_string());
 
-    let context = compose_blocked_repair_retry_context(&attempt, "main");
+    let context = compose_blocked_repair_retry_context(&attempt, "main", None);
 
     assert!(context.contains("repair summary retained for retry"));
     assert!(!context.contains(
@@ -5078,7 +5078,7 @@ fn blocked_workspace_repair_retry_context_prefers_human_reason_over_summary() {
     attempt.pending_reasons = vec!["real reason".to_string()];
     attempt.summary = Some("internal delivery message".to_string());
 
-    let context = compose_blocked_repair_retry_context(&attempt, "main");
+    let context = compose_blocked_repair_retry_context(&attempt, "main", None);
 
     assert!(context.contains("real reason"));
     assert!(!context.contains("internal delivery message"));
@@ -5098,7 +5098,7 @@ fn blocked_workspace_repair_retry_context_uses_default_without_human_context() {
         chrono::Utc::now(),
     );
 
-    let context = compose_blocked_repair_retry_context(&attempt, "main");
+    let context = compose_blocked_repair_retry_context(&attempt, "main", None);
 
     assert!(context.contains("Retrying blocked workspace repair."));
 }
@@ -5117,11 +5117,98 @@ fn blocked_workspace_repair_retry_context_omits_retarget_details_for_same_base()
         chrono::Utc::now(),
     );
     attempt.blocker = Some("still needs a repair".to_string());
+    attempt.target_base_commit = Some("aaaaaaa".to_string());
 
-    let context = compose_blocked_repair_retry_context(&attempt, "main");
+    let context = compose_blocked_repair_retry_context(&attempt, "main", Some("aaaaaaa"));
 
     assert!(context.contains("still needs a repair"));
     assert!(!context.contains("The base has since been updated"));
+    assert!(!context.contains("has since moved"));
+}
+
+/// A `main` → `main` retarget where only the commit moved is exactly the incident shape: the ref
+/// name comparison alone reports "same base" and the successor never learns its base is stale.
+#[test]
+fn blocked_workspace_repair_retry_context_reports_a_moved_base_commit_on_the_same_ref() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-moved-commit".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.blocker = Some("CI shard was preempted".to_string());
+    attempt.target_base_commit = Some("1111111".to_string());
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main", Some("2222222"));
+
+    assert!(context.contains("CI shard was preempted"));
+    assert!(context.contains("has since moved"));
+    assert!(context.contains("1111111"));
+    assert!(context.contains("2222222"));
+    assert!(
+        !context.contains("The base has since been updated"),
+        "the ref name did not change, so the retarget wording must not fire"
+    );
+}
+
+/// Unknown commits on either side are not evidence that the base moved.
+#[test]
+fn blocked_workspace_repair_retry_context_omits_moved_base_hint_without_commit_evidence() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-unknown-commit".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "main",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.blocker = Some("still needs a repair".to_string());
+
+    assert!(
+        !compose_blocked_repair_retry_context(&attempt, "main", Some("2222222"))
+            .contains("has since moved")
+    );
+
+    attempt.target_base_commit = Some("1111111".to_string());
+    assert!(
+        !compose_blocked_repair_retry_context(&attempt, "main", None).contains("has since moved")
+    );
+    assert!(
+        !compose_blocked_repair_retry_context(&attempt, "main", Some("   "))
+            .contains("has since moved")
+    );
+}
+
+/// A genuine ref retarget keeps its existing wording and does not additionally emit the
+/// same-ref moved-commit hint.
+#[test]
+fn blocked_workspace_repair_retry_context_prefers_retarget_wording_over_moved_commit() {
+    let mut attempt = AgentWorkspaceRepairAttempt::new(
+        ChatConversationId::from_string("retry-context-retarget-and-move".to_string()),
+        AgentWorkspaceRepairSource::BaseUpdate,
+        AgentWorkspaceRepairContinuation::UpdateOnly,
+        "ralphx/old",
+        false,
+        true,
+        false,
+        None,
+        chrono::Utc::now(),
+    );
+    attempt.blocker = Some("still needs a repair".to_string());
+    attempt.target_base_commit = Some("1111111".to_string());
+
+    let context = compose_blocked_repair_retry_context(&attempt, "main", Some("2222222"));
+
+    assert!(context.contains("The base has since been updated"));
+    assert!(!context.contains("has since moved"));
 }
 
 #[tokio::test]
@@ -5265,11 +5352,83 @@ async fn base_update_retry_returns_successful_repair_started_response() {
     .await
     .expect("explicit retry should return a successful repair-started response");
 
+    // The mechanical merge now runs first and found nothing to do (the branch already contains its
+    // base tip), so the blocked-repair retry is still the useful action here. The reported base is
+    // the one the mechanical path actually resolved — this workspace's persisted
+    // `feature/deleted-base` retargets to `main` — rather than the stale persisted ref.
     assert!(response.repair_started);
-    assert_eq!(response.target_ref, workspace.base_ref);
-    assert_eq!(
-        response.base_commit,
-        workspace.base_commit.unwrap_or_default()
+    assert!(!response.updated);
+    assert_eq!(response.target_ref, "main");
+    assert_ne!(response.target_ref, workspace.base_ref);
+    assert!(!response.base_commit.is_empty());
+}
+
+/// "Update from base" on a repair-blocked workspace whose base genuinely moved must actually update
+/// the branch. Dispatching a repair successor instead is what let a repair-blocked workspace stay
+/// stranded on a stale base: the button restarted the fixer and never merged, so the branch never
+/// moved and CI never reran.
+#[tokio::test]
+async fn base_update_on_a_blocked_repair_updates_the_branch_instead_of_restarting_the_fixer() {
+    let (temp, state, conversation_id, _github) = setup_publish_command_state(
+        "blocked-repair-mechanical-first",
+        true,
+        None,
+        Arc::new(MockGithubService::new()),
+    )
+    .await;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    seed_blocked_command_repair_attempt(&state, &workspace).await;
+
+    let repo_path = temp.path().join("repo");
+    commit_file(
+        &repo_path,
+        "base-change.txt",
+        "base change\n",
+        "advance base branch",
+    );
+    let behind = super::get_agent_conversation_workspace_freshness_for_app_state(
+        &conversation_id,
+        Some("full"),
+        &state,
+    )
+    .await
+    .expect("freshness should load before updating");
+    assert!(behind.is_base_ahead, "fixture must start behind its base");
+
+    let response = update_agent_conversation_workspace_from_base_for_app_state(
+        &state,
+        &Arc::new(ExecutionState::new()),
+        conversation_id.clone(),
+        AgentConversationWorkspaceBaseSelection {
+            kind: None,
+            branch_mode: None,
+            base_ref: None,
+            display_name: None,
+            source_pull_request: None,
+        },
+    )
+    .await
+    .expect("a clean mergeable base must update even while a repair is blocked");
+
+    assert!(
+        response.updated,
+        "the branch must actually update rather than only restarting the fixer"
+    );
+    let current = super::get_agent_conversation_workspace_freshness_for_app_state(
+        &conversation_id,
+        Some("full"),
+        &state,
+    )
+    .await
+    .expect("freshness should load after updating");
+    assert!(
+        !current.is_base_ahead,
+        "the branch must now contain its base"
     );
 }
 

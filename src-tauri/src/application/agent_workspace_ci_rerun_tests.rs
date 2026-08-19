@@ -176,8 +176,7 @@ fn plan_rejects_deterministic_failure_in_a_run_with_no_transient_sibling() {
 #[test]
 fn plan_rejects_deterministic_failure_with_unparseable_run_url() {
     let mut deterministic = check("Rust tests", Some("completed"), Some("failure"), None);
-    deterministic.details_url =
-        Some("https://github.com/acme/ralphx/actions/jobs/99".to_string());
+    deterministic.details_url = Some("https://github.com/acme/ralphx/actions/jobs/99".to_string());
     let health = health(
         Some("head-1"),
         vec![
@@ -300,7 +299,9 @@ fn plan_reruns_only_terminal_runs_when_mixed() {
 }
 
 #[test]
-fn plan_reports_no_observed_failure_for_all_green() {
+fn plan_reports_nothing_to_rerun_for_all_green() {
+    // A healthy head is not a blocked repair. This used to report `NoObservedFailure`, which the
+    // caller settles by *blocking* the attempt — a second dead generation for a passing PR.
     let health = health(
         Some("head-1"),
         vec![check(
@@ -313,7 +314,180 @@ fn plan_reports_no_observed_failure_for_all_green() {
 
     assert_eq!(
         transient_ci_rerun_plan(&health),
+        TransientCiPlan::NoFailuresAtHead
+    );
+}
+
+#[test]
+fn plan_reports_nothing_to_rerun_when_no_checks_exist_at_all() {
+    assert_eq!(
+        transient_ci_rerun_plan(&health(Some("head-1"), Vec::new())),
+        TransientCiPlan::NoFailuresAtHead
+    );
+}
+
+/// The incident shape: a fixer classified `needs_human` with "rerun once the workflow completes"
+/// because an in-progress run carried no conclusion. An in-flight run can never reach
+/// `transient_run_ids` (that classifier requires a conclusion), so this previously fell through to
+/// `NoObservedFailure` and blocked the attempt instead of waiting for the run.
+#[test]
+fn plan_awaits_in_flight_runs_that_have_not_concluded() {
+    for status in ["queued", "in_progress", "pending", "waiting", "requested"] {
+        let health = health(
+            Some("head-1"),
+            vec![check("Rust tests", Some(status), None, Some(77))],
+        );
+
+        assert_eq!(
+            transient_ci_rerun_plan(&health),
+            TransientCiPlan::AwaitRuns(CiHoldIdentity::new("head-1", [77])),
+            "status {status:?} must hold for the run rather than block the attempt"
+        );
+    }
+}
+
+#[test]
+fn plan_awaits_in_flight_runs_alongside_passing_checks() {
+    let health = health(
+        Some("head-1"),
+        vec![
+            check("Lint", Some("completed"), Some("success"), Some(10)),
+            check("Rust tests", Some("in_progress"), None, Some(20)),
+        ],
+    );
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::AwaitRuns(CiHoldIdentity::new("head-1", [20]))
+    );
+}
+
+/// A deterministic failure still vetoes, even while another run is in flight — waiting cannot
+/// clear a real product failure.
+#[test]
+fn plan_still_rejects_deterministic_failures_while_a_run_is_in_flight() {
+    let health = health(
+        Some("head-1"),
+        vec![
+            check("Rust tests", Some("completed"), Some("failure"), Some(10)),
+            check("Lint", Some("in_progress"), None, Some(20)),
+        ],
+    );
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health),
+        TransientCiPlan::DeterministicFailures(vec!["Rust tests (failure)".to_string()])
+    );
+}
+
+/// An in-flight check RalphX cannot name a run for is an unresolved signal, not a quiet head, so
+/// it must stay a blocker rather than claim there is nothing to rerun.
+#[test]
+fn plan_reports_no_observed_failure_for_in_flight_checks_without_a_parsable_run_url() {
+    let mut unparseable = check("Hosted runner", Some("in_progress"), None, None);
+    unparseable.details_url = Some("https://github.com/acme/ralphx/actions/jobs/99".to_string());
+
+    assert_eq!(
+        transient_ci_rerun_plan(&health(Some("head-1"), vec![unparseable])),
         TransientCiPlan::NoObservedFailure
+    );
+}
+
+/// Every health shape must leave the fixer at least one valid classification, or the guards trade
+/// one stuck state for another. `NoFailuresAtHead` and `NoObservedFailure` reject or block
+/// `transient_ci` but leave `fixed` / `needs_human` open; `AwaitRuns` accepts `transient_ci`.
+#[test]
+fn every_health_shape_retains_a_valid_classification() {
+    let shapes = [
+        (
+            "all green",
+            health(
+                Some("head-1"),
+                vec![check("Lint", Some("completed"), Some("success"), Some(1))],
+            ),
+        ),
+        (
+            "in flight",
+            health(
+                Some("head-1"),
+                vec![check("Lint", Some("in_progress"), None, Some(1))],
+            ),
+        ),
+        (
+            "transient failure",
+            health(
+                Some("head-1"),
+                vec![check("Lint", Some("completed"), Some("cancelled"), Some(1))],
+            ),
+        ),
+        (
+            "deterministic failure",
+            health(
+                Some("head-1"),
+                vec![check("Lint", Some("completed"), Some("failure"), Some(1))],
+            ),
+        ),
+    ];
+
+    for (label, health) in shapes {
+        let plan = transient_ci_rerun_plan(&health);
+        let transient_ci_is_accepted = matches!(
+            plan,
+            TransientCiPlan::AwaitRuns(_) | TransientCiPlan::Rerun { .. }
+        );
+        let another_classification_remains = matches!(
+            plan,
+            TransientCiPlan::NoFailuresAtHead
+                | TransientCiPlan::NoObservedFailure
+                | TransientCiPlan::DeterministicFailures(_)
+                | TransientCiPlan::MissingHead
+        );
+        assert!(
+            transient_ci_is_accepted || another_classification_remains,
+            "{label}: no classification path remains for this health shape"
+        );
+    }
+}
+
+/// The hold `AwaitRuns` creates must actually resume: the poller consults
+/// `ci_rerun_hold_still_pending` with the stored fingerprint, waits while the run is in flight,
+/// and stops waiting once it concludes — at which point the concluded transient run is rerunnable.
+#[test]
+fn an_in_flight_hold_resumes_once_the_run_concludes() {
+    let in_flight = health(
+        Some("head-1"),
+        vec![check("Rust tests", Some("in_progress"), None, Some(77))],
+    );
+    let TransientCiPlan::AwaitRuns(hold) = transient_ci_rerun_plan(&in_flight) else {
+        panic!("an in-flight run must produce a hold");
+    };
+    let fingerprint = hold.to_fingerprint();
+
+    assert!(
+        ci_rerun_hold_still_pending(&in_flight, Some(&fingerprint)),
+        "the poller must keep waiting while the held run is in flight"
+    );
+
+    let concluded = health(
+        Some("head-1"),
+        vec![check(
+            "Rust tests",
+            Some("completed"),
+            Some("cancelled"),
+            Some(77),
+        )],
+    );
+    assert!(
+        !ci_rerun_hold_still_pending(&concluded, Some(&fingerprint)),
+        "the poller must stop waiting once the held run concludes"
+    );
+    assert_eq!(
+        transient_ci_rerun_plan(&concluded),
+        TransientCiPlan::Rerun {
+            hold: CiHoldIdentity::new("head-1", [77]),
+            run_ids: vec![77],
+        },
+        "the concluded transient run must then be rerunnable"
     );
 }
 
@@ -444,7 +618,12 @@ fn plan_ignores_transient_check_with_no_details_url() {
     // A transient check with no details_url has no parseable run ID and is silently ignored.
     let health = health(
         Some("head-1"),
-        vec![check("Hosted runner", Some("completed"), Some("cancelled"), None)],
+        vec![check(
+            "Hosted runner",
+            Some("completed"),
+            Some("cancelled"),
+            None,
+        )],
     );
 
     assert_eq!(
@@ -458,7 +637,12 @@ fn plan_rejects_deterministic_failure_with_no_details_url() {
     // A deterministic check with no details_url is still a real failure regardless of URL.
     let health = health(
         Some("head-1"),
-        vec![check("Rust tests", Some("completed"), Some("failure"), None)],
+        vec![check(
+            "Rust tests",
+            Some("completed"),
+            Some("failure"),
+            None,
+        )],
     );
 
     assert_eq!(
