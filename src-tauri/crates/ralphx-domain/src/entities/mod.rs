@@ -141,7 +141,7 @@ pub use agent_conversation_workspace::{
     WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
 };
 pub use agent_workspace_repair::{
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
+    AgentWorkspacePrAutofixIssueKind, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
     AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectId, AgentWorkspaceRepairEffectKind,
     AgentWorkspaceRepairEffectStatus, AgentWorkspaceRepairOperationRecoveryAction,

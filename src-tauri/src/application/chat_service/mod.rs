@@ -61,10 +61,10 @@ mod chat_service_runtime_handoff_tests;
 mod continuation_runtime_tests;
 
 use crate::application::agent_conversation_workspace::{
-    ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
-    resolve_agent_conversation_workspace_path_for_send,
+    classify_agent_conversation_workspace_path, ensure_linked_plan_branch_agent_worktree,
+    is_terminal_agent_conversation_publication_status,
     rollover_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceSetupMode,
-    AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
+    WorkspacePathResolution, AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
 use crate::application::agent_runtime_context::{
     branch_status::BranchStatusCache, compose_agent_runtime_context, AgentRuntimeContextDeps,
@@ -1143,6 +1143,45 @@ fn conversation_spawn_harness_override(
                 None
             }
         })
+}
+
+/// Harness override handed to `resolve_manual_role_spawn_settings` for its legacy-mixing guard.
+///
+/// A complete manual runtime override is an explicit user choice for this send, so it must win
+/// over a harness merely *derived* from the conversation's provider session (which can be a stale
+/// plan session). Only a truly client-provided `harness_override` still counts as a conflicting
+/// legacy override and keeps tripping the guard.
+fn manual_mixing_harness_override(
+    options: &SendMessageOptions,
+    derived_spawn_harness_override: Option<AgentHarnessKind>,
+) -> Option<AgentHarnessKind> {
+    if options.manual_role_runtime_override.is_some() {
+        options.harness_override
+    } else {
+        derived_spawn_harness_override
+    }
+}
+
+/// Which runtime fields this send has already chosen, so the prior session's continuation runtime
+/// cannot clobber them.
+///
+/// Approval policy and sandbox mode stay legacy-only because `resolve_manual_role_spawn_settings`
+/// intentionally sources both from the resolved role default rather than the runtime override.
+fn continuation_override_presence(
+    options: &SendMessageOptions,
+) -> continuation_runtime::RuntimeOverridePresence {
+    let manual = options.manual_role_runtime_override.as_ref();
+    continuation_runtime::RuntimeOverridePresence {
+        model: options.model_override.is_some()
+            || manual.is_some_and(|manual| manual.model.is_some()),
+        logical_effort: options.logical_effort_override.is_some()
+            || manual.is_some_and(|manual| manual.effort.is_some()),
+        // `ManualRoleRuntimeOverride::service_tier` is not optional: a complete runtime override
+        // always carries a tier, so its mere presence is the choice.
+        service_tier: options.service_tier_override.is_some() || manual.is_some(),
+        approval_policy: options.approval_policy_override.is_some(),
+        sandbox_mode: options.sandbox_mode_override.is_some(),
+    }
 }
 
 fn apply_send_message_overrides(
@@ -4065,13 +4104,13 @@ impl AppChatService {
             }
         }
 
-        match resolve_agent_conversation_workspace_path_for_send(&project, workspace) {
+        let resolution = classify_agent_conversation_workspace_path(&project, workspace)
+            .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?;
+        let worktree_missing = matches!(resolution, WorkspacePathResolution::Missing { .. });
+        match resolution.into_valid_path(workspace) {
             Ok(path) => Ok(path),
             Err(error) => {
-                if error
-                    .to_string()
-                    .contains("Agent conversation workspace is missing")
-                {
+                if worktree_missing {
                     self.mark_agent_conversation_workspace_missing(workspace)
                         .await;
                 }
@@ -6753,6 +6792,13 @@ impl ChatService for AppChatService {
         macro_rules! cleanup_and_err {
             ($err:expr) => {{
                 let error: ChatServiceError = $err;
+                tracing::warn!(
+                    error = %error,
+                    context_type = %context_type,
+                    context_id = context_id,
+                    runtime_context_id = %runtime_context_id,
+                    "chat_service.send_message pre-spawn failure"
+                );
                 self.running_agent_registry
                     .unregister(&registry_key, &agent_run_id)
                     .await;
@@ -7427,6 +7473,8 @@ impl ChatService for AppChatService {
                 }
             }
         };
+        let manual_mixing_harness_override =
+            manual_mixing_harness_override(&options, spawn_harness_override);
         let mut resolved_spawn_settings =
             if let Some(defaults) = self.manual_role_default_service.as_ref() {
                 match crate::application::agent_lane_resolution::resolve_manual_role_spawn_settings(
@@ -7435,7 +7483,7 @@ impl ChatService for AppChatService {
                     project_root.as_deref(),
                     routing_role,
                     options.manual_role_runtime_override.as_ref(),
-                    spawn_harness_override,
+                    manual_mixing_harness_override,
                     options.model_override.as_deref(),
                     defaults,
                 )
@@ -7483,13 +7531,7 @@ impl ChatService for AppChatService {
         if let Some(runtime) = continuation_runtime.as_ref() {
             runtime.apply_defaults(
                 &mut resolved_spawn_settings,
-                continuation_runtime::RuntimeOverridePresence {
-                    model: options.model_override.is_some(),
-                    logical_effort: options.logical_effort_override.is_some(),
-                    service_tier: options.service_tier_override.is_some(),
-                    approval_policy: options.approval_policy_override.is_some(),
-                    sandbox_mode: options.sandbox_mode_override.is_some(),
-                },
+                continuation_override_presence(&options),
             );
         }
         apply_send_message_overrides(&mut resolved_spawn_settings, &options);

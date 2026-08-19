@@ -48,6 +48,14 @@ const STARTUP_STAGE_LABELS: Record<string, string> = {
   send_message: "Starting agent",
 };
 
+/**
+ * Trailing debounce for sidebar-wide invalidation. Every terminal lifecycle event invalidates the
+ * same key, and each invalidation re-runs the whole per-workspace sidebar list read, so N
+ * concurrent agent runs otherwise multiply that loop. Bursts collapse to one invalidation once
+ * events go quiet for this long.
+ */
+export const AGENT_SIDEBAR_INVALIDATION_DEBOUNCE_MS = 1000;
+
 const ALLOWED_ACTIVITY_LABELS = new Set([
   "Creating chat",
   "Saving chat",
@@ -106,10 +114,16 @@ export function useGlobalAgentLifecycle() {
       return payload.run_id ?? payload.agent_run_id ?? null;
     }
 
+    let sidebarInvalidationTimer: ReturnType<typeof setTimeout> | null = null;
+
     function invalidateAgentSidebarConversations(contextType: string) {
       if (contextType !== "project" && contextType !== "standalone") return;
 
-      void queryClient.invalidateQueries({ queryKey: agentSidebarConversationKeys.all });
+      if (sidebarInvalidationTimer !== null) clearTimeout(sidebarInvalidationTimer);
+      sidebarInvalidationTimer = setTimeout(() => {
+        sidebarInvalidationTimer = null;
+        void queryClient.invalidateQueries({ queryKey: agentSidebarConversationKeys.all });
+      }, AGENT_SIDEBAR_INVALIDATION_DEBOUNCE_MS);
     }
 
     function shouldIgnoreLifecycleEvent(
@@ -481,6 +495,7 @@ export function useGlobalAgentLifecycle() {
     );
 
     return () => {
+      if (sidebarInvalidationTimer !== null) clearTimeout(sidebarInvalidationTimer);
       unsubscribes.forEach((unsub) => unsub());
     };
   }, [bus, queryClient]);

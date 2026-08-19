@@ -35,14 +35,18 @@ use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_is_base_stale_held, agent_workspace_repair_is_ci_held,
     agent_workspace_repair_is_health_held, classify_agent_workspace_repair_delivery,
     held_repair_has_unpublished_head, mark_agent_workspace_base_update_target,
-    release_agent_workspace_base_stale_hold, release_and_clear_agent_workspace_repair_target_lease,
+    mark_agent_workspace_base_update_target_preserving_phase,
+    release_agent_workspace_base_stale_hold, release_agent_workspace_needs_human_hold_for_new_head,
+    release_and_clear_agent_workspace_repair_target_lease,
     reserve_agent_workspace_base_parity_transient, reserve_agent_workspace_base_stale_hold,
-    reserve_agent_workspace_base_update, reserve_agent_workspace_repair_dispatch,
+    reserve_agent_workspace_base_update, reserve_agent_workspace_base_update_preserving_phase,
+    reserve_agent_workspace_repair_dispatch,
     settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
     start_or_join_agent_workspace_repair_without_projection,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairStartOutcome,
     AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PrAutofixCarryover,
+    NEEDS_HUMAN_REPAIR_REASON,
 };
 #[cfg(test)]
 use crate::application::agent_workspace_publish_repair_state::{
@@ -70,8 +74,9 @@ use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation,
+    AgentWorkspacePrAutofixIssueKind, AgentWorkspacePrCommentEvidenceUpsert,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation,
     AgentWorkspaceRepairOperationStatus, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
     ChatContextType, ChatConversationId, IdeationSessionId, ProjectId,
 };
@@ -3331,16 +3336,9 @@ async fn prepare_agent_workspace_pr_repair_auto_merge_state(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentWorkspacePrAutofixIssueKind {
-    Review,
-    Checks,
-    Mergeability,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentWorkspacePrAutofixIssue {
-    kind: AgentWorkspacePrAutofixIssueKind,
+    pub(crate) kind: AgentWorkspacePrAutofixIssueKind,
     summary: String,
     details: Vec<String>,
     pub(crate) classification: String,
@@ -3763,10 +3761,18 @@ async fn agent_workspace_base_update_unsettled_reason(
     Ok(settled.err())
 }
 
+/// Settles a repair attempt as `Succeeded` after releasing its target lease.
+///
+/// `expected_phase` must be the phase the caller knows the attempt to be in.
+/// The DeferToAgent path passes `attempt.phase` because it legitimately settles
+/// from `Blocked`; the CI/health-hold settlement path passes
+/// `AgentWorkspaceRepairPhase::Ready` explicitly so a stale `Blocked` attempt
+/// cannot slip through that path and discard a human escalation.
 async fn settle_ready_agent_workspace_repair_attempt(
     repair_repo: &dyn AgentWorkspaceRepairRepository,
     branch_update_repo: &dyn BranchUpdateRepository,
     attempt: &AgentWorkspaceRepairAttempt,
+    expected_phase: AgentWorkspaceRepairPhase,
 ) -> crate::AppResult<bool> {
     let attempt = match release_and_clear_agent_workspace_repair_target_lease(
         repair_repo,
@@ -3785,7 +3791,7 @@ async fn settle_ready_agent_workspace_repair_attempt(
         .settle_repair_attempt(SettleAgentWorkspaceRepairAttempt {
             attempt_id: attempt.id.clone(),
             generation: attempt.generation,
-            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_phase,
             expected_updated_at: attempt.updated_at,
             outcome: crate::domain::entities::AgentWorkspaceRepairOutcome::Succeeded,
             settled_at: chrono::Utc::now(),
@@ -3904,6 +3910,7 @@ async fn mark_behind_base_update_route(
     route: BehindBaseUpdateRoute,
     observed_base_oid: &str,
     auto_merge_current: Option<bool>,
+    preserve_phase: bool,
 ) -> crate::AppResult<BehindBaseUpdateRoute> {
     let (attempt, summary) = match &route {
         BehindBaseUpdateRoute::Updated { reserved } => (
@@ -3916,19 +3923,37 @@ async fn mark_behind_base_update_route(
         BehindBaseUpdateRoute::Blocked { reserved, message } => (reserved.clone(), message.clone()),
         BehindBaseUpdateRoute::Rejected => return Ok(route),
     };
-    let marked = match mark_agent_workspace_base_update_target(
-        repair_repo,
-        attempt,
-        observed_base_oid,
-        &summary,
-        auto_merge_current,
-    )
-    .await?
-    {
-        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
-        AgentWorkspaceRepairTransitionOutcome::Stale(_)
-        | AgentWorkspaceRepairTransitionOutcome::Missing => {
-            return Ok(BehindBaseUpdateRoute::Rejected)
+    let marked = if preserve_phase {
+        match mark_agent_workspace_base_update_target_preserving_phase(
+            repair_repo,
+            attempt,
+            observed_base_oid,
+            &summary,
+            auto_merge_current,
+        )
+        .await?
+        {
+            AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+            AgentWorkspaceRepairTransitionOutcome::Stale(_)
+            | AgentWorkspaceRepairTransitionOutcome::Missing => {
+                return Ok(BehindBaseUpdateRoute::Rejected)
+            }
+        }
+    } else {
+        match mark_agent_workspace_base_update_target(
+            repair_repo,
+            attempt,
+            observed_base_oid,
+            &summary,
+            auto_merge_current,
+        )
+        .await?
+        {
+            AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+            AgentWorkspaceRepairTransitionOutcome::Stale(_)
+            | AgentWorkspaceRepairTransitionOutcome::Missing => {
+                return Ok(BehindBaseUpdateRoute::Rejected)
+            }
         }
     };
     Ok(match route {
@@ -3945,6 +3970,86 @@ async fn mark_behind_base_update_route(
     })
 }
 
+/// Releases the `needs_human` hold that a completed base update just made obsolete.
+///
+/// Without this, the branch moves and CI reruns but the workspace still renders "repair blocked"
+/// and `retry_safe_blocked_agent_workspace_repair` still no-ops on the marker — so base staleness
+/// would supersede the branch without superseding the state, which is the whole point.
+///
+/// Best effort by design: a failure to read the pushed head is reported and leaves the hold in
+/// place. The update itself already succeeded and must not be unwound.
+async fn clear_needs_human_hold_after_base_update(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    working_dir: &Path,
+    workspace: &AgentConversationWorkspace,
+    reserved: AgentWorkspaceRepairAttempt,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+) -> crate::AppResult<()> {
+    let pushed_head = match GitService::get_branch_sha(working_dir, &workspace.branch_name).await {
+        Ok(head) => head,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                attempt_id = reserved.id.as_str(),
+                error = %error,
+                "Base update pushed but RalphX could not read the new head, so the needs_human hold stays in place"
+            );
+            return Ok(());
+        }
+    };
+    if let AgentWorkspaceRepairTransitionOutcome::Applied(_) =
+        release_agent_workspace_needs_human_hold_for_new_head(
+            repair_repo,
+            reserved,
+            &pushed_head,
+            "RalphX merged the current base and pushed the PR branch, so the escalated CI evidence no longer describes the current head.",
+        )
+        .await?
+    {
+        tracing::info!(
+            conversation_id = conversation_id.as_str(),
+            pr_number,
+            "Base staleness superseded a needs_human repair hold after the branch head advanced"
+        );
+    }
+    Ok(())
+}
+
+/// Whether this generation may take the base-staleness supersession path.
+///
+/// A `Ready` generation always may — that is the pre-existing behavior and it stays untouched.
+///
+/// A `Blocked` generation additionally qualifies when its hold is a bare `needs_human` escalation
+/// with no local repair work at risk and the PR already exists. Updating the branch from its base
+/// merges and pushes, which restarts CI — and CI evidence is what such a hold is actually waiting
+/// on. It mutates nothing a human would need to review, and it cannot create a PR.
+///
+/// The three conditions are all durable first-class fields. `attempt.blocker` is deliberately not
+/// consulted to decide whether the hold is CI-related: it is free-form agent prose, not evidence.
+fn attempt_admits_base_staleness_supersession(
+    attempt: &AgentWorkspaceRepairAttempt,
+    workspace: &AgentConversationWorkspace,
+) -> bool {
+    if attempt.phase == AgentWorkspaceRepairPhase::Ready {
+        return true;
+    }
+    attempt.phase == AgentWorkspaceRepairPhase::Blocked
+        && attempt
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == NEEDS_HUMAN_REPAIR_REASON)
+        // A recorded repair head means a fixer committed real work before escalating. That work is
+        // what the human was asked to look at, so it is not ours to build on top of.
+        && attempt
+            .repair_head_commit
+            .as_deref()
+            .is_none_or(|commit| commit.trim().is_empty())
+        // Updating an existing PR restarts its CI. Creating one is a different act entirely.
+        && workspace.publication_pr_number.is_some()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn drive_agent_workspace_behind_base_update(
     github: &dyn GithubServiceTrait,
@@ -3955,20 +4060,39 @@ async fn drive_agent_workspace_behind_base_update(
     attempt: AgentWorkspaceRepairAttempt,
     observed_base_oid: &str,
     summary: &str,
+    preserve_blocked_phase: bool,
 ) -> crate::AppResult<BehindBaseUpdateRoute> {
-    let reserved = match reserve_agent_workspace_base_update(
-        Arc::clone(&repair_repo),
-        attempt,
-        observed_base_oid,
-        summary,
-        workspace.pr_auto_merge_current,
-    )
-    .await?
-    {
-        AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
-        AgentWorkspaceRepairTransitionOutcome::Stale(_)
-        | AgentWorkspaceRepairTransitionOutcome::Missing => {
-            return Ok(BehindBaseUpdateRoute::Rejected)
+    let reserved = if preserve_blocked_phase {
+        match reserve_agent_workspace_base_update_preserving_phase(
+            Arc::clone(&repair_repo),
+            attempt,
+            observed_base_oid,
+            summary,
+            workspace.pr_auto_merge_current,
+        )
+        .await?
+        {
+            AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+            AgentWorkspaceRepairTransitionOutcome::Stale(_)
+            | AgentWorkspaceRepairTransitionOutcome::Missing => {
+                return Ok(BehindBaseUpdateRoute::Rejected)
+            }
+        }
+    } else {
+        match reserve_agent_workspace_base_update(
+            Arc::clone(&repair_repo),
+            attempt,
+            observed_base_oid,
+            summary,
+            workspace.pr_auto_merge_current,
+        )
+        .await?
+        {
+            AgentWorkspaceRepairTransitionOutcome::Applied(attempt) => attempt,
+            AgentWorkspaceRepairTransitionOutcome::Stale(_)
+            | AgentWorkspaceRepairTransitionOutcome::Missing => {
+                return Ok(BehindBaseUpdateRoute::Rejected)
+            }
         }
     };
     if let Some(reason) =
@@ -3979,6 +4103,7 @@ async fn drive_agent_workspace_behind_base_update(
             BehindBaseUpdateRoute::DeferToAgent { reserved, reason },
             observed_base_oid,
             workspace.pr_auto_merge_current,
+            preserve_blocked_phase,
         )
         .await;
     }
@@ -4025,13 +4150,14 @@ async fn drive_agent_workspace_behind_base_update(
             } else {
                 format!("{message} Conflicts: {}", conflict_files.join(", "))
             },
-            },
+        },
     };
     mark_behind_base_update_route(
         repair_repo,
         route,
         observed_base_oid,
         workspace.pr_auto_merge_current,
+        preserve_blocked_phase,
     )
     .await
 }
@@ -4167,7 +4293,14 @@ async fn route_agent_workspace_pr_autofix_for_target(
             }) {
                 return Ok(false);
             }
-            if attempt.phase == AgentWorkspaceRepairPhase::Ready {
+            // A `Blocked` `needs_human` generation is admitted here purely so base staleness can
+            // supersede it; `blocked_base_staleness_candidate` keeps every other behavior in this
+            // block `Ready`-only. The `expected_held_attempt` guard above already rejects any
+            // non-`Ready` attempt, so the held-health-recheck caller never reaches this path.
+            let blocked_base_staleness_candidate = attempt.phase
+                != AgentWorkspaceRepairPhase::Ready
+                && attempt_admits_base_staleness_supersession(&attempt, &workspace);
+            if attempt_admits_base_staleness_supersession(&attempt, &workspace) {
                 let mut attempt_already_settled = false;
                 let mut health_suppressed = agent_workspace_repair_is_health_held(&attempt);
                 let mut ci_held = agent_workspace_repair_is_ci_held(&attempt);
@@ -4190,6 +4323,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
                 if base_stale_held
                     && merge_state_is_known
                     && observed_base_is_known
+                    && !blocked_base_staleness_candidate
                     && !matches!(
                         disposition,
                         HealthHoldDisposition::BlockedStaleAfterUpdate { .. }
@@ -4212,6 +4346,21 @@ async fn route_agent_workspace_pr_autofix_for_target(
                     base_stale_held = agent_workspace_repair_is_base_stale_held(&attempt);
                 }
                 if base_stale_held && (!merge_state_is_known || !observed_base_is_known) {
+                    return Ok(false);
+                }
+                // The anti-runaway guard for the blocked path. Once RalphX has already updated to
+                // the tip GitHub still reports the branch behind, a second merge and push cannot
+                // help, so the generation waits instead. Held without mutating durable state: a
+                // blocked attempt has no hold reservation of its own to update.
+                // Must sit before `hold_active` so that ci_held cannot route the admitted Blocked
+                // attempt through hold_agent_workspace_base_update_route, which promotes to Ready
+                // via reserve_agent_workspace_base_stale_hold and destroys the fence.
+                if blocked_base_staleness_candidate
+                    && matches!(
+                        disposition,
+                        HealthHoldDisposition::BlockedStaleAfterUpdate { .. }
+                    )
+                {
                     return Ok(false);
                 }
                 let hold_active = health_suppressed || ci_held || base_stale_held;
@@ -4241,7 +4390,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
                     }
                 }
 
-                if hold_active
+                if (hold_active || blocked_base_staleness_candidate)
                     && matches!(
                         (&target.kind, &disposition, project),
                         (
@@ -4303,10 +4452,11 @@ async fn route_agent_workspace_pr_autofix_for_target(
                         attempt.clone(),
                         &observed_base_oid,
                         &summary,
+                        blocked_base_staleness_candidate,
                     )
                     .await?
                     {
-                        BehindBaseUpdateRoute::Updated { .. } => {
+                        BehindBaseUpdateRoute::Updated { reserved } => {
                             persist_agent_workspace_observed_base(
                                 workspace_repo.as_ref(),
                                 conversation_id,
@@ -4322,6 +4472,20 @@ async fn route_agent_workspace_pr_autofix_for_target(
                                 "RalphX merged the current base and pushed the PR branch; waiting for fresh GitHub evidence.",
                             )
                             .await?;
+                            // Ordered after the observed-base and route writes so a failed
+                            // telemetry write can never leave a cleared hold with no record of
+                            // the update that justified clearing it.
+                            if blocked_base_staleness_candidate {
+                                clear_needs_human_hold_after_base_update(
+                                    Arc::clone(repair_repo),
+                                    working_dir,
+                                    &workspace,
+                                    reserved,
+                                    conversation_id,
+                                    target.pr_number,
+                                )
+                                .await?;
+                            }
                             return Ok(false);
                         }
                         BehindBaseUpdateRoute::DeferToAgent { reserved, reason } => {
@@ -4329,6 +4493,9 @@ async fn route_agent_workspace_pr_autofix_for_target(
                                 repair_repo.as_ref(),
                                 branch_update_repo.as_ref(),
                                 &reserved,
+                                // DeferToAgent legitimately settles from Blocked when a
+                                // blocked-base-staleness candidate is deferred to an agent.
+                                reserved.phase,
                             )
                             .await?
                             {
@@ -4348,21 +4515,45 @@ async fn route_agent_workspace_pr_autofix_for_target(
                             attempt_already_settled = true;
                         }
                         BehindBaseUpdateRoute::Blocked { reserved, message } => {
-                            hold_agent_workspace_base_update_route(
-                                Arc::clone(repair_repo),
-                                workspace_repo.as_ref(),
-                                reserved,
-                                conversation_id,
-                                target.pr_number,
-                                &observed_base_oid,
-                                &message,
-                                workspace.pr_auto_merge_current,
-                            )
-                            .await?;
+                            if blocked_base_staleness_candidate {
+                                // Phase is already preserved (Blocked) by mark_behind_base_update_route.
+                                // Calling hold_agent_workspace_base_update_route would promote to Ready
+                                // via reserve_agent_workspace_base_stale_hold, destroying the fence.
+                                // Anti-loop is guarded by base_update_target_commit + BlockedStaleAfterUpdate.
+                                record_agent_workspace_base_update_route(
+                                    workspace_repo.as_ref(),
+                                    conversation_id,
+                                    target.pr_number,
+                                    &observed_base_oid,
+                                    "blocked",
+                                    &message,
+                                )
+                                .await?;
+                                drop(reserved);
+                            } else {
+                                hold_agent_workspace_base_update_route(
+                                    Arc::clone(repair_repo),
+                                    workspace_repo.as_ref(),
+                                    reserved,
+                                    conversation_id,
+                                    target.pr_number,
+                                    &observed_base_oid,
+                                    &message,
+                                    workspace.pr_auto_merge_current,
+                                )
+                                .await?;
+                            }
                             return Ok(false);
                         }
                         BehindBaseUpdateRoute::Rejected => return Ok(false),
                     }
+                }
+                // A Blocked generation is admitted only so base staleness can supersede it.
+                // Every remaining branch in this block is CI/health-hold settlement written
+                // for a Ready generation, and settling or releasing a needs_human hold from
+                // here has no head-scoped justification.
+                if blocked_base_staleness_candidate && !attempt_already_settled {
+                    return Ok(false);
                 }
                 if !attempt_already_settled {
                     if ci_held
@@ -4405,6 +4596,9 @@ async fn route_agent_workspace_pr_autofix_for_target(
                     };
                     // A changed conclusion ends the rerun-pending generation. The next normal
                     // dispatch below creates a fresh, independently fenced repair attempt.
+                    // Pass Ready explicitly: this path is only for Ready generations; a Blocked
+                    // generation is excluded by the early return above, and the explicit phase
+                    // keeps the CAS fail-closed against any future path that might admit one.
                     if !settle_ready_agent_workspace_repair_attempt(
                         repair_repo.as_ref(),
                         branch_update_repo
@@ -4414,6 +4608,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
                             )
                             .as_ref(),
                         &attempt,
+                        AgentWorkspaceRepairPhase::Ready,
                     )
                     .await?
                     {
@@ -4663,6 +4858,7 @@ async fn route_agent_workspace_pr_autofix_for_target(
         &target,
         target.pr_number,
         &issue.classification,
+        issue.kind,
         auto_merge_before_reservation,
         AgentWorkspacePrAutofixDispatch {
             repair_summary: &issue.summary,
@@ -4821,7 +5017,9 @@ async fn record_base_parity_transient_detection(
          without any PR-side work."
     );
 
-    let publication_events = workspace_repo.list_publication_events(conversation_id).await?;
+    let publication_events = workspace_repo
+        .list_publication_events(conversation_id)
+        .await?;
     // Once-per-classification gate for the event/notification only — never for the reservation.
     // The hold this records is meant to be consumed (a user rerun clears the pending reason) and
     // re-established later at the same classification if the parity shape persists; the workspace
@@ -4856,6 +5054,9 @@ async fn record_base_parity_transient_detection(
             carryover_pr_autofix_evidence: Some(PrAutofixCarryover {
                 health_fingerprint: Some(classification.to_string()),
                 dispatch_head_commit: None,
+                // Only reachable under a `Checks` classification (see the base-parity branch in
+                // `evaluate_and_dispatch_agent_workspace_pr_autofix`).
+                issue_kind: Some(AgentWorkspacePrAutofixIssueKind::Checks),
             }),
         },
     )
@@ -5234,6 +5435,9 @@ async fn dispatch_agent_workspace_pr_autofix(
     _target: &AgentWorkspacePrAutofixTarget,
     pr_number: i64,
     classification: &str,
+    // The persisted health fingerprint hashes the kind away, so it must travel as its own typed
+    // value for the completion guard to be able to read it back.
+    issue_kind: AgentWorkspacePrAutofixIssueKind,
     auto_merge_before_reservation: Option<bool>,
     dispatch: AgentWorkspacePrAutofixDispatch<'_>,
 ) -> crate::AppResult<bool> {
@@ -5375,6 +5579,7 @@ async fn dispatch_agent_workspace_pr_autofix(
     // Backend-derived dispatch evidence fences later success completion and suppression.
     attempt.pr_autofix_dispatch_head_commit = health.sync_state.head_ref_oid.clone();
     attempt.pr_autofix_health_fingerprint = Some(classification.to_string());
+    attempt.pr_autofix_issue_kind = Some(issue_kind);
     let target_identity =
         GitService::canonical_target_identity(working_dir, &workspace.branch_name).await?;
     let dispatch_attempt = match reserve_agent_workspace_repair_dispatch(
@@ -6719,6 +6924,7 @@ async fn route_agent_workspace_review_feedback_if_present_with_repair_repo(
         &target,
         pr_number,
         &issue.classification,
+        issue.kind,
         auto_merge_before_reservation,
         AgentWorkspacePrAutofixDispatch {
             repair_summary,

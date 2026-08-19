@@ -1,15 +1,13 @@
 use crate::application::agent_conversation_workspace::{
-    is_terminal_agent_conversation_publication_status,
-    resolve_agent_conversation_workspace_path_for_send,
-    resolve_effective_agent_conversation_workspace_path,
+    classify_agent_conversation_workspace_path,
+    classify_effective_agent_conversation_workspace_path,
+    is_terminal_agent_conversation_publication_status, WorkspacePathResolution,
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceStatus, Project,
 };
 use crate::domain::repositories::PlanBranchRepository;
 use crate::error::AppResult;
-
-const WORKSPACE_MISSING_ERROR: &str = "Agent conversation workspace is missing";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentWorkspaceContinuationAvailability {
@@ -93,7 +91,7 @@ pub fn classify_agent_workspace_continuation(
 
     classify_resolved_workspace(
         workspace,
-        resolve_agent_conversation_workspace_path_for_send(project, workspace),
+        classify_agent_conversation_workspace_path(project, workspace),
     )
 }
 
@@ -119,46 +117,51 @@ pub async fn classify_agent_workspace_continuation_with_plan_branch(
     let resolved = if workspace.linked_plan_branch_id.is_some() {
         match plan_branch_repo {
             Some(repo) => {
-                resolve_effective_agent_conversation_workspace_path(project, workspace, repo)
-                    .await
-                    .map(|resolved| resolved.path)
+                classify_effective_agent_conversation_workspace_path(project, workspace, repo).await
             }
             None => Err(crate::error::AppError::Validation(
                 "Linked plan branch repository is unavailable".to_string(),
             )),
         }
     } else {
-        resolve_agent_conversation_workspace_path_for_send(project, workspace)
+        classify_agent_conversation_workspace_path(project, workspace)
     };
     classify_resolved_workspace(workspace, resolved)
 }
 
 fn classify_resolved_workspace(
     workspace: &AgentConversationWorkspace,
-    resolved: AppResult<std::path::PathBuf>,
+    resolved: AppResult<WorkspacePathResolution>,
 ) -> AgentWorkspaceContinuationAvailability {
     let terminal_pr = is_terminal_agent_conversation_publication_status(
         workspace.publication_pr_status.as_deref(),
     );
     match resolved {
-        Ok(_) if terminal_pr => AgentWorkspaceContinuationAvailability::Blocked(
-            AgentWorkspaceContinuationBlock::TerminalWorkspace,
-        ),
-        Ok(_) => AgentWorkspaceContinuationAvailability::Available,
-        Err(error) => {
-            let detail = error.to_string();
-            if detail.contains(WORKSPACE_MISSING_ERROR) {
-                let reason = if terminal_pr {
-                    AgentWorkspaceContinuationBlock::CleanedAfterTerminal
-                } else {
-                    AgentWorkspaceContinuationBlock::LocalWorkspaceMissing
-                };
-                AgentWorkspaceContinuationAvailability::Blocked(reason)
-            } else {
-                AgentWorkspaceContinuationAvailability::Blocked(
-                    AgentWorkspaceContinuationBlock::UnknownRequiresManualCheck(detail),
-                )
-            }
+        Ok(WorkspacePathResolution::Valid(_)) if terminal_pr => {
+            AgentWorkspaceContinuationAvailability::Blocked(
+                AgentWorkspaceContinuationBlock::TerminalWorkspace,
+            )
         }
+        Ok(WorkspacePathResolution::Valid(_)) => AgentWorkspaceContinuationAvailability::Available,
+        Ok(WorkspacePathResolution::Missing { .. }) => {
+            AgentWorkspaceContinuationAvailability::Blocked(if terminal_pr {
+                AgentWorkspaceContinuationBlock::CleanedAfterTerminal
+            } else {
+                AgentWorkspaceContinuationBlock::LocalWorkspaceMissing
+            })
+        }
+        // `NotGit` keeps its legacy error text so the manual-check message is unchanged.
+        Ok(resolution) => AgentWorkspaceContinuationAvailability::Blocked(
+            AgentWorkspaceContinuationBlock::UnknownRequiresManualCheck(
+                resolution
+                    .into_valid_path(workspace)
+                    .err()
+                    .map(|error| error.to_string())
+                    .unwrap_or_default(),
+            ),
+        ),
+        Err(error) => AgentWorkspaceContinuationAvailability::Blocked(
+            AgentWorkspaceContinuationBlock::UnknownRequiresManualCheck(error.to_string()),
+        ),
     }
 }

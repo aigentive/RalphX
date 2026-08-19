@@ -11,9 +11,11 @@ use crate::domain::integrations::{
 use crate::domain::services::ComposerIntegrationReference;
 
 use super::atlassian_client::{
-    add_jira_comment, assign_jira_issue_to_current_user, build_confluence_search_cql,
-    build_jira_search_jql, clear_jira_issue_assignee, confluence_page_id_query, fetch_confluence,
-    fetch_jira, list_jira_issue_transitions, search_confluence, search_jira, transition_jira_issue,
+    add_jira_comment, assign_jira_issue_to_account, assign_jira_issue_to_current_user,
+    build_confluence_search_cql, build_jira_search_jql, clear_jira_issue_assignee,
+    confluence_page_id_query, fetch_confluence, fetch_jira, list_confluence_spaces,
+    list_jira_comments, list_jira_issue_transitions, search_confluence, search_confluence_raw,
+    search_jira, search_jira_raw, search_jira_users, transition_jira_issue,
     AtlassianJsonRequester, HyperAtlassianApiClient, RequestAuth,
 };
 
@@ -132,6 +134,105 @@ fn confluence_search_cql_keeps_multi_word_title_queries() {
         "type=page AND (title ~ \"release checklist*\" OR text ~ \"release checklist*\")"
     );
     assert_eq!(confluence_page_id_query("release checklist"), None);
+}
+
+// ---- Raw JQL/CQL pass-through (gap G1) -----------------------------------
+
+#[tokio::test]
+async fn search_jira_raw_submits_the_caller_jql_byte_identical() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({ "issues": [] }))]);
+    let jql = "project = ENG AND status = \"In Progress\"";
+
+    search_jira_raw(&requester, &auth_context(), jql, 25)
+        .await
+        .expect("raw jql search should succeed");
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 1, "no smart-mode fallback request");
+    assert_eq!(requests[0].method, Method::POST);
+    assert!(requests[0].url.contains("/rest/api/3/search/jql"));
+    assert_eq!(
+        requests[0]
+            .body
+            .as_ref()
+            .and_then(|body| body.get("jql"))
+            .and_then(Value::as_str),
+        Some(jql),
+        "raw JQL must reach the request body unmodified"
+    );
+}
+
+#[tokio::test]
+async fn search_jira_raw_rejects_a_blank_query_without_any_request() {
+    let requester = FakeAtlassianRequester::new(vec![]);
+
+    let error = search_jira_raw(&requester, &auth_context(), "   ", 25)
+        .await
+        .expect_err("blank raw JQL should be rejected");
+
+    assert!(error.message.contains("must not be blank"));
+    assert!(requester.requests().is_empty(), "no request should be sent");
+}
+
+#[tokio::test]
+async fn search_jira_smart_mode_still_rewrites_free_text_into_jql() {
+    // Regression: adding the raw pass-through path must not change smart
+    // mode's existing issue-key/phrase JQL rewriting.
+    let requester = FakeAtlassianRequester::new(vec![
+        Ok(json!({ "issues": [] })),
+        Ok(json!({ "sections": [] })),
+    ]);
+
+    search_jira(&requester, &auth_context(), "closed login issue", 25)
+        .await
+        .expect("smart search should succeed");
+
+    let requests = requester.requests();
+    let jql_request = requests
+        .iter()
+        .find(|request| request.method == Method::POST)
+        .expect("a jql request should have been sent");
+    assert_eq!(
+        jql_request
+            .body
+            .as_ref()
+            .and_then(|body| body.get("jql"))
+            .and_then(Value::as_str),
+        Some("text ~ \"closed login issue*\" ORDER BY updated DESC")
+    );
+}
+
+#[tokio::test]
+async fn search_confluence_raw_submits_the_caller_cql_byte_identical() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({ "results": [] }))]);
+    let cql = "text ~ \"release notes\"";
+
+    search_confluence_raw(&requester, &auth_context(), cql, 25)
+        .await
+        .expect("raw cql search should succeed");
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 1, "no page-id short-circuit request");
+    assert_eq!(requests[0].method, Method::GET);
+    assert!(requests[0]
+        .url
+        .contains("cql=text%20~%20%22release%20notes%22"));
+    assert!(
+        !requests[0].url.contains("type%3Dpage"),
+        "raw CQL must not be wrapped by the smart-mode type=page query"
+    );
+}
+
+#[tokio::test]
+async fn search_confluence_raw_rejects_a_blank_query_without_any_request() {
+    let requester = FakeAtlassianRequester::new(vec![]);
+
+    let error = search_confluence_raw(&requester, &auth_context(), "  ", 25)
+        .await
+        .expect_err("blank raw CQL should be rejected");
+
+    assert!(error.message.contains("must not be blank"));
+    assert!(requester.requests().is_empty(), "no request should be sent");
 }
 
 #[tokio::test]
@@ -287,6 +388,151 @@ async fn jira_clear_assignee_puts_null_account_id_on_issue() {
     assert_eq!(
         requests[0].body.as_ref(),
         Some(&json!({ "accountId": Value::Null }))
+    );
+}
+
+#[tokio::test]
+async fn jira_assign_to_account_puts_the_given_account_id_on_issue() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(Value::Null)]);
+
+    assign_jira_issue_to_account(&requester, &auth_context(), " rx-42 ", " account-9 ")
+        .await
+        .expect("assign Jira issue to account");
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, Method::PUT);
+    assert_eq!(
+        requests[0].url,
+        "https://example.atlassian.net/rest/api/3/issue/rx-42/assignee"
+    );
+    assert_eq!(
+        requests[0].body.as_ref(),
+        Some(&json!({ "accountId": "account-9" }))
+    );
+}
+
+#[tokio::test]
+async fn jira_assign_to_account_rejects_a_blank_account_id_without_any_request() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(Value::Null)]);
+
+    let error = assign_jira_issue_to_account(&requester, &auth_context(), "RX-42", "  ")
+        .await
+        .expect_err("blank accountId should be rejected");
+
+    assert_eq!(error, "Jira accountId is required");
+    assert!(requester.requests().is_empty());
+}
+
+#[tokio::test]
+async fn jira_search_users_bounds_max_results_to_twenty_and_parses_matches() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!([
+        { "accountId": "acc-1", "displayName": "Ada Lovelace" },
+        { "accountId": "acc-2", "displayName": "  " },
+        { "accountId": "  " },
+    ]))]);
+
+    let users = search_jira_users(&requester, &auth_context(), "ada", 500)
+        .await
+        .expect("search jira users");
+
+    // A blank accountId is dropped; a blank displayName falls back to the id.
+    assert_eq!(users.len(), 2);
+    assert_eq!(users[0].account_id, "acc-1");
+    assert_eq!(users[0].display_name, "Ada Lovelace");
+    assert_eq!(users[1].account_id, "acc-2");
+    assert_eq!(users[1].display_name, "acc-2");
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, Method::GET);
+    assert_eq!(
+        requests[0].url,
+        "https://example.atlassian.net/rest/api/3/user/search?query=ada&maxResults=20"
+    );
+}
+
+#[tokio::test]
+async fn jira_search_users_rejects_a_blank_query_without_any_request() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!([]))]);
+
+    let error = search_jira_users(&requester, &auth_context(), "  ", 10)
+        .await
+        .expect_err("blank query should be rejected");
+
+    assert_eq!(error, "Jira user search query is required");
+    assert!(requester.requests().is_empty());
+}
+
+#[tokio::test]
+async fn jira_lists_comments_with_the_providers_true_total() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({
+        "total": 12,
+        "comments": [
+            {
+                "id": "c1",
+                "author": { "displayName": "Reviewer" },
+                "created": "2026-06-17T10:01:00.000+0000",
+                "body": "Please cover parser"
+            }
+        ]
+    }))]);
+
+    let page = list_jira_comments(&requester, &auth_context(), " RX-42 ", 0, 20)
+        .await
+        .expect("list jira comments");
+
+    assert_eq!(page.total, 12);
+    assert_eq!(page.comments.len(), 1);
+    assert_eq!(page.comments[0].id.as_deref(), Some("c1"));
+    assert_eq!(page.comments[0].body_markdown, "Please cover parser");
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, Method::GET);
+    assert_eq!(
+        requests[0].url,
+        "https://example.atlassian.net/rest/api/3/issue/RX-42/comment?startAt=0&maxResults=20&orderBy=-created"
+    );
+}
+
+#[tokio::test]
+async fn jira_lists_comments_rejects_a_blank_issue_key_without_any_request() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({}))]);
+
+    let error = list_jira_comments(&requester, &auth_context(), "  ", 0, 20)
+        .await
+        .expect_err("blank issue key should be rejected");
+
+    assert_eq!(error, "Jira issue key is required");
+    assert!(requester.requests().is_empty());
+}
+
+#[tokio::test]
+async fn confluence_lists_spaces_from_the_v2_api() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({
+        "results": [
+            { "id": "10001", "key": "ENG", "name": "Engineering" },
+            { "id": "10002", "key": "OPS", "name": "Operations" },
+        ]
+    }))]);
+
+    let spaces = list_confluence_spaces(&requester, &auth_context(), 500)
+        .await
+        .expect("list confluence spaces");
+
+    assert_eq!(spaces.len(), 2);
+    assert_eq!(spaces[0].id, "10001");
+    assert_eq!(spaces[0].key, "ENG");
+    assert_eq!(spaces[0].name, "Engineering");
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, Method::GET);
+    // Limit clamps to the API-safe upper bound rather than the caller's 500.
+    assert_eq!(
+        requests[0].url,
+        "https://example.atlassian.net/wiki/api/v2/spaces?limit=250"
     );
 }
 
@@ -504,6 +750,10 @@ async fn fetch_jira_renders_issue_fields_and_recent_comments() {
     assert!(content.body.contains("second comment"));
     assert!(content.body.contains("fourth comment"));
     assert!(!content.body.contains("older comments omitted"));
+    // No-attachments case: the fixture carries no "attachment" field, so the
+    // rendered body must omit the whole attachments section.
+    assert!(content.attachments.is_empty());
+    assert!(!content.body.contains("Attachments"));
 }
 
 #[tokio::test]
@@ -515,6 +765,9 @@ async fn fetch_jira_parses_adf_description_comments_and_attachments() {
             "assignee": { "displayName": "Ada Lovelace" },
             "reporter": { "displayName": "Grace Hopper" },
             "updated": "2026-06-17T10:00:00.000+0000",
+            "issuetype": { "name": "Task" },
+            "labels": ["backend", "urgent"],
+            "priority": { "name": "High" },
             "description": {
                 "type": "doc",
                 "content": [
@@ -612,6 +865,21 @@ async fn fetch_jira_parses_adf_description_comments_and_attachments() {
                 },
                 {
                     "id": "a2",
+                    "filename": "spec.pdf",
+                    "mimeType": "application/pdf",
+                    "size": 512000,
+                    "content": "https://example.atlassian.net/secure/attachment/a2/spec.pdf",
+                    "created": "2026-06-17T10:04:00.000+0000"
+                },
+                {
+                    "id": "a3",
+                    "filename": "notes.txt",
+                    "mimeType": "text/plain",
+                    "size": 128,
+                    "created": "2026-06-17T10:05:00.000+0000"
+                },
+                {
+                    "id": "a4",
                     "filename": "   "
                 }
             ]
@@ -666,7 +934,15 @@ async fn fetch_jira_parses_adf_description_comments_and_attachments() {
         content.comments[0].updated_at.as_deref(),
         Some("2026-06-17T10:02:00.000+0000")
     );
-    assert_eq!(content.attachments.len(), 1);
+    assert_eq!(
+        content.issue_type.as_deref(),
+        Some("Task"),
+        "1.3: issue type parsed from the extended field list"
+    );
+    assert_eq!(content.labels, vec!["backend", "urgent"]);
+    assert_eq!(content.priority.as_deref(), Some("High"));
+    // 3 attachments render, filtering out the blank-filename entry.
+    assert_eq!(content.attachments.len(), 3);
     assert_eq!(content.attachments[0].filename, "design.png");
     assert_eq!(
         content.attachments[0].mime_type.as_deref(),
@@ -674,12 +950,34 @@ async fn fetch_jira_parses_adf_description_comments_and_attachments() {
     );
     assert_eq!(content.attachments[0].size, Some(2048));
     assert_eq!(content.attachments[0].author.as_deref(), Some("Designer"));
+    assert_eq!(content.attachments[1].filename, "spec.pdf");
+    assert_eq!(content.attachments[2].filename, "notes.txt");
     assert!(content
         .body
         .contains("Comment by Reviewer (2026-06-17T10:02:00.000+0000):\nPlease cover parser"));
     assert!(content
         .body
         .contains("Comment by Implementer (unknown date):\nAdded focused tests"));
+    // Rendered reference metadata (gap G7): previously fetched but discarded
+    // fields now surface in the prompt body.
+    assert!(content.body.contains("Type: Task"));
+    assert!(content.body.contains("Assignee: Ada Lovelace"));
+    assert!(content.body.contains("Reporter: Grace Hopper"));
+    assert!(content.body.contains("Priority: High"));
+    assert!(content.body.contains("Labels: backend, urgent"));
+    assert!(content.body.contains("Attachments (3):"));
+    assert!(content.body.contains("- design.png (image/png, 2 KB)"));
+    assert!(content
+        .body
+        .contains("- spec.pdf (application/pdf, 500 KB)"));
+    assert!(content.body.contains("- notes.txt (text/plain, 128 B)"));
+    assert!(content
+        .body
+        .contains("(readable via list_ticket_attachments / fetch_ticket_attachment)"));
+    // Attachment filenames/mime/size render, but never the download URLs.
+    assert!(!content
+        .body
+        .contains("https://example.atlassian.net/secure"));
 }
 
 #[tokio::test]
@@ -717,9 +1015,9 @@ async fn fetch_jira_requests_custom_acceptance_criteria_and_prefers_it_to_descri
     .await
     .expect("jira fetch");
 
-    assert!(requester.requests()[0]
-        .url
-        .contains("fields=summary,status,description,assignee,reporter,updated,comment,attachment,customfield_10037"));
+    assert!(requester.requests()[0].url.contains(
+        "fields=summary,status,description,assignee,reporter,updated,comment,attachment,issuetype,labels,priority,parent,subtasks,customfield_10037"
+    ));
     assert_eq!(
         content.acceptance_criteria_markdown.as_deref(),
         Some("- Custom field wins")
@@ -775,8 +1073,334 @@ async fn fetch_jira_renders_five_newest_comments_with_metadata_and_omitted_count
         .body
         .contains("Comment by Author 4 (2026-06-04T10:00:00Z):\ncomment body 4"));
     assert!(content.body.contains("comment body 8"));
-    assert!(content.body.contains("(3 older comments omitted)"));
+    // No "total" field in the fixture: falls back to the fetched-comment count.
+    assert!(content
+        .body
+        .contains("(8 total comments; showing latest 5 — jira_list_comments for more)"));
     assert_eq!(content.body.matches("Comment by ").count(), 5);
+}
+
+#[tokio::test]
+async fn fetch_jira_comment_count_hint_uses_the_providers_true_total_not_the_fetched_page_size() {
+    // Jira's `comment.total` can exceed the (already-capped-at-10) fetched
+    // comments array when an issue has many more comments than fit in one
+    // page. The hint must report the provider's true total, not len().
+    let comments = (1..=6)
+        .map(|index| json!({ "id": format!("c{index}"), "body": format!("comment {index}") }))
+        .collect::<Vec<_>>();
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({
+        "fields": {
+            "summary": "Many comments",
+            "comment": { "comments": comments, "total": 42 }
+        }
+    }))]);
+
+    let content = fetch_jira(
+        &requester,
+        &auth_context(),
+        &ComposerIntegrationReference {
+            key: Some("RX-200".to_string()),
+            ..integration_reference("jira", "ignored-id")
+        },
+        &[],
+    )
+    .await
+    .expect("jira fetch");
+
+    assert!(content
+        .body
+        .contains("(42 total comments; showing latest 5 — jira_list_comments for more)"));
+}
+
+#[tokio::test]
+async fn fetch_jira_omits_the_comment_count_hint_when_total_is_within_the_shown_limit() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({
+        "fields": {
+            "summary": "Few comments",
+            "comment": {
+                "comments": [{ "body": "only one" }],
+                "total": 1
+            }
+        }
+    }))]);
+
+    let content = fetch_jira(
+        &requester,
+        &auth_context(),
+        &ComposerIntegrationReference {
+            key: Some("RX-201".to_string()),
+            ..integration_reference("jira", "ignored-id")
+        },
+        &[],
+    )
+    .await
+    .expect("jira fetch");
+
+    assert!(!content.body.contains("jira_list_comments"));
+    assert!(!content.body.contains("total comments"));
+}
+
+#[tokio::test]
+async fn fetch_jira_renders_parent_and_subtasks_from_returned_fields_with_zero_extra_calls() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({
+        "fields": {
+            "summary": "Child work item",
+            "status": { "name": "In Progress" },
+            "issuetype": { "name": "Story" },
+            "parent": {
+                "key": "RX-1",
+                "fields": {
+                    "summary": "Umbrella epic",
+                    "status": { "name": "In Progress" },
+                    "issuetype": { "name": "Epic" }
+                }
+            },
+            "subtasks": [
+                {
+                    "key": "RX-10",
+                    "fields": {
+                        "summary": "Write tests",
+                        "status": { "name": "To Do" },
+                        "issuetype": { "name": "Sub-task" }
+                    }
+                },
+                {
+                    "key": "RX-11",
+                    "fields": {
+                        "summary": "Implement",
+                        "status": { "name": "Done" },
+                        "issuetype": { "name": "Sub-task" }
+                    }
+                }
+            ]
+        }
+    }))]);
+
+    let content = fetch_jira(
+        &requester,
+        &auth_context(),
+        &ComposerIntegrationReference {
+            key: Some("RX-5".to_string()),
+            ..integration_reference("jira", "ignored-id")
+        },
+        &[],
+    )
+    .await
+    .expect("jira fetch");
+
+    // 3.1: a non-epic issue with a parent/subtasks never makes the epic
+    // children lookup — only the base issue GET.
+    assert_eq!(
+        requester.requests().len(),
+        1,
+        "non-epic issue makes zero extra calls"
+    );
+    assert!(content.body.contains("Parent: RX-1 — Umbrella epic"));
+    assert!(content.body.contains("Subtasks (2):"));
+    assert!(content.body.contains("- RX-10 — Write tests (To Do)"));
+    assert!(content.body.contains("- RX-11 — Implement (Done)"));
+    assert_eq!(content.parent_key.as_deref(), Some("RX-1"));
+    assert!(content.children.is_empty());
+    assert!(!content.body.contains("Child issues"));
+}
+
+#[tokio::test]
+async fn fetch_jira_renders_parent_key_only_when_parent_summary_is_missing() {
+    let requester = FakeAtlassianRequester::new(vec![Ok(json!({
+        "fields": {
+            "summary": "Bare parent link",
+            "parent": { "key": "RX-2" }
+        }
+    }))]);
+
+    let content = fetch_jira(
+        &requester,
+        &auth_context(),
+        &ComposerIntegrationReference {
+            key: Some("RX-6".to_string()),
+            ..integration_reference("jira", "ignored-id")
+        },
+        &[],
+    )
+    .await
+    .expect("jira fetch");
+
+    assert_eq!(content.parent_key.as_deref(), Some("RX-2"));
+    assert!(content.body.contains("Parent: RX-2"));
+    assert!(!content.body.contains("Parent: RX-2 — "));
+}
+
+#[tokio::test]
+async fn fetch_jira_epic_renders_child_issues_with_exactly_one_extra_call() {
+    let epic_issue = json!({
+        "fields": {
+            "summary": "Umbrella epic",
+            "status": { "name": "In Progress" },
+            "issuetype": { "name": "Epic" }
+        }
+    });
+    let children_response = json!({
+        "issues": [
+            {
+                "key": "RX-21",
+                "fields": {
+                    "summary": "Child 1",
+                    "status": { "name": "To Do" },
+                    "issuetype": { "name": "Task" }
+                }
+            },
+            {
+                "key": "RX-22",
+                "fields": {
+                    "summary": "Child 2",
+                    "status": { "name": "Done" },
+                    "issuetype": { "name": "Task" }
+                }
+            }
+        ],
+        "total": 30
+    });
+    let requester = FakeAtlassianRequester::new(vec![Ok(epic_issue), Ok(children_response)]);
+
+    let content = fetch_jira(
+        &requester,
+        &auth_context(),
+        &ComposerIntegrationReference {
+            key: Some("RX-1".to_string()),
+            ..integration_reference("jira", "ignored-id")
+        },
+        &[],
+    )
+    .await
+    .expect("jira fetch");
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 2, "epic issue makes exactly one extra call");
+    assert_eq!(requests[1].method, Method::POST);
+    assert_eq!(
+        requests[1].url,
+        "https://example.atlassian.net/rest/api/3/search/jql"
+    );
+    let body = requests[1]
+        .body
+        .as_ref()
+        .expect("epic children request body");
+    assert_eq!(
+        body.get("jql").and_then(Value::as_str),
+        Some("parent = RX-1 ORDER BY rank")
+    );
+    assert_eq!(
+        body.get("fields").and_then(Value::as_array),
+        Some(&vec![
+            Value::String("summary".to_string()),
+            Value::String("status".to_string()),
+            Value::String("issuetype".to_string()),
+        ])
+    );
+    assert_eq!(body.get("maxResults").and_then(Value::as_u64), Some(25));
+    assert!(content.body.contains("Child issues (2 shown of 30):"));
+    assert!(content.body.contains("- RX-21 — Child 1 (To Do)"));
+    assert!(content.body.contains("- RX-22 — Child 2 (Done)"));
+    assert_eq!(content.children.len(), 2);
+    assert_eq!(content.children[0].key, "RX-21");
+}
+
+#[tokio::test]
+async fn fetch_jira_epic_matches_issue_type_case_insensitively() {
+    let epic_issue = json!({
+        "fields": {
+            "summary": "lowercase epic",
+            "issuetype": { "name": "epic" }
+        }
+    });
+    let requester = FakeAtlassianRequester::new(vec![Ok(epic_issue), Ok(json!({ "issues": [] }))]);
+
+    fetch_jira(
+        &requester,
+        &auth_context(),
+        &ComposerIntegrationReference {
+            key: Some("RX-1".to_string()),
+            ..integration_reference("jira", "ignored-id")
+        },
+        &[],
+    )
+    .await
+    .expect("jira fetch");
+
+    assert_eq!(requester.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn fetch_jira_epic_caps_child_issues_at_twenty_five_even_if_server_overreturns() {
+    let epic_issue = json!({
+        "fields": {
+            "summary": "Big epic",
+            "issuetype": { "name": "Epic" }
+        }
+    });
+    let issues: Vec<Value> = (1..=30)
+        .map(|index| {
+            json!({
+                "key": format!("RX-{}", 100 + index),
+                "fields": {
+                    "summary": format!("Child {index}"),
+                    "status": { "name": "To Do" }
+                }
+            })
+        })
+        .collect();
+    let requester =
+        FakeAtlassianRequester::new(vec![Ok(epic_issue), Ok(json!({ "issues": issues }))]);
+
+    let content = fetch_jira(
+        &requester,
+        &auth_context(),
+        &ComposerIntegrationReference {
+            key: Some("RX-1".to_string()),
+            ..integration_reference("jira", "ignored-id")
+        },
+        &[],
+    )
+    .await
+    .expect("jira fetch");
+
+    // Defensive cap in case the server ever returns more than the requested
+    // maxResults; "shown of M" reports the real returned population (30).
+    assert_eq!(content.children.len(), 25);
+    assert!(content.body.contains("Child issues (25 shown of 30):"));
+}
+
+#[tokio::test]
+async fn fetch_jira_epic_child_call_failure_still_renders_body() {
+    let epic_issue = json!({
+        "fields": {
+            "summary": "Umbrella epic",
+            "status": { "name": "In Progress" },
+            "issuetype": { "name": "Epic" }
+        }
+    });
+    let requester = FakeAtlassianRequester::new(vec![
+        Ok(epic_issue),
+        Err(AtlassianApiError::transport("boom")),
+    ]);
+
+    let content = fetch_jira(
+        &requester,
+        &auth_context(),
+        &ComposerIntegrationReference {
+            key: Some("RX-1".to_string()),
+            ..integration_reference("jira", "ignored-id")
+        },
+        &[],
+    )
+    .await
+    .expect("secondary-call failure must not fail the whole expansion");
+
+    assert_eq!(requester.requests().len(), 2);
+    assert_eq!(content.title, "Umbrella epic");
+    assert!(content.body.contains("Status: In Progress"));
+    assert!(content.body.contains("Child issues: unavailable"));
+    assert!(content.children.is_empty());
 }
 
 #[tokio::test]
@@ -806,6 +1430,181 @@ async fn fetch_confluence_strips_storage_html_and_builds_web_url() {
         content.url.as_deref(),
         Some("https://example.atlassian.net/wiki/spaces/OPS/pages/456/Reference-docs")
     );
+    assert!(content.comments.is_empty());
+    assert!(content.attachments.is_empty());
+    assert!(content.children.is_empty());
+}
+
+fn confluence_page_value() -> Value {
+    json!({
+        "title": "Reference docs",
+        "body": { "storage": { "value": "<p>Hello team</p>" } },
+        "_links": { "webui": "/spaces/OPS/pages/456/Reference-docs" }
+    })
+}
+
+fn confluence_footer_comments_value(count: usize) -> Value {
+    let results: Vec<Value> = (0..count)
+        .map(|index| {
+            json!({
+                "id": format!("comment-{index}"),
+                "body": { "storage": { "value": format!("<p>Comment {index}</p>") } },
+                "version": { "authorId": format!("author-{index}"), "createdAt": "2024-01-01T00:00:00.000Z" }
+            })
+        })
+        .collect();
+    json!({ "results": results })
+}
+
+fn confluence_attachments_value() -> Value {
+    json!({
+        "results": [{
+            "id": "att-1",
+            "title": "diagram.png",
+            "mediaType": "image/png",
+            "fileSize": 2048,
+            "downloadLink": "/download/attachments/456/diagram.png"
+        }]
+    })
+}
+
+fn confluence_children_value() -> Value {
+    json!({
+        "results": [
+            { "id": "789", "title": "Child page A" },
+            { "id": "790", "title": "Child page B" }
+        ]
+    })
+}
+
+#[tokio::test]
+async fn fetch_confluence_populates_comments_attachments_and_children_from_secondary_calls() {
+    let requester = FakeAtlassianRequester::new(vec![
+        Ok(confluence_page_value()),
+        Ok(confluence_footer_comments_value(3)),
+        Ok(confluence_attachments_value()),
+        Ok(confluence_children_value()),
+    ]);
+
+    let content = fetch_confluence(
+        &requester,
+        &auth_context(),
+        &integration_reference("confluence", "456"),
+    )
+    .await
+    .expect("confluence fetch");
+
+    assert_eq!(content.comments.len(), 3);
+    assert_eq!(content.attachments.len(), 1);
+    assert_eq!(content.attachments[0].filename, "diagram.png");
+    assert_eq!(content.children.len(), 2);
+    assert_eq!(content.children[0].key, "789");
+    assert_eq!(content.children[0].summary, "Child page A");
+    assert!(content.body.contains("Attachments (1):"));
+    assert!(content.body.contains("diagram.png"));
+    assert!(content.body.contains("Child pages (2):"));
+    assert!(content.body.contains("Comment 0"));
+
+    let requests = requester.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(requests[1].url.contains("/footer-comments"));
+    assert!(requests[2].url.contains("/attachments"));
+    assert!(requests[3].url.contains("/children"));
+}
+
+#[tokio::test]
+async fn fetch_confluence_renders_only_the_last_five_comments_in_the_body() {
+    let requester = FakeAtlassianRequester::new(vec![
+        Ok(confluence_page_value()),
+        Ok(confluence_footer_comments_value(8)),
+        Err(AtlassianApiError::transport("no attachments fixture")),
+        Err(AtlassianApiError::transport("no children fixture")),
+    ]);
+
+    let content = fetch_confluence(
+        &requester,
+        &auth_context(),
+        &integration_reference("confluence", "456"),
+    )
+    .await
+    .expect("confluence fetch");
+
+    assert_eq!(content.comments.len(), 8);
+    assert!(content.body.contains("Comment 7"));
+    assert!(content.body.contains("Comment 3"));
+    assert!(!content.body.contains("Comment 2"));
+    assert!(content.body.contains("(3 older comments omitted)"));
+}
+
+#[tokio::test]
+async fn fetch_confluence_survives_footer_comments_failure_and_keeps_other_sections() {
+    let requester = FakeAtlassianRequester::new(vec![
+        Ok(confluence_page_value()),
+        Err(AtlassianApiError::from_status(500, "boom")),
+        Ok(confluence_attachments_value()),
+        Ok(confluence_children_value()),
+    ]);
+
+    let content = fetch_confluence(
+        &requester,
+        &auth_context(),
+        &integration_reference("confluence", "456"),
+    )
+    .await
+    .expect("page fetch must still succeed when comments fail");
+
+    assert!(content.comments.is_empty());
+    assert_eq!(content.attachments.len(), 1);
+    assert_eq!(content.children.len(), 2);
+}
+
+#[tokio::test]
+async fn fetch_confluence_survives_attachments_failure_and_keeps_other_sections() {
+    let requester = FakeAtlassianRequester::new(vec![
+        Ok(confluence_page_value()),
+        Ok(confluence_footer_comments_value(2)),
+        Err(AtlassianApiError::from_status(
+            404,
+            "no attachments endpoint",
+        )),
+        Ok(confluence_children_value()),
+    ]);
+
+    let content = fetch_confluence(
+        &requester,
+        &auth_context(),
+        &integration_reference("confluence", "456"),
+    )
+    .await
+    .expect("page fetch must still succeed when attachments fail");
+
+    assert_eq!(content.comments.len(), 2);
+    assert!(content.attachments.is_empty());
+    assert_eq!(content.children.len(), 2);
+    assert!(!content.body.contains("Attachments ("));
+}
+
+#[tokio::test]
+async fn fetch_confluence_survives_child_pages_failure_and_keeps_other_sections() {
+    let requester = FakeAtlassianRequester::new(vec![
+        Ok(confluence_page_value()),
+        Ok(confluence_footer_comments_value(2)),
+        Ok(confluence_attachments_value()),
+        Err(AtlassianApiError::from_status(403, "forbidden")),
+    ]);
+
+    let content = fetch_confluence(
+        &requester,
+        &auth_context(),
+        &integration_reference("confluence", "456"),
+    )
+    .await
+    .expect("page fetch must still succeed when child pages fail");
+
+    assert_eq!(content.comments.len(), 2);
+    assert_eq!(content.attachments.len(), 1);
+    assert!(content.children.is_empty());
+    assert!(!content.body.contains("Child pages ("));
 }
 
 #[tokio::test]

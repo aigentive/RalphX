@@ -1,4 +1,8 @@
-use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
+use crate::application::agent_conversation_workspace::{
+    classify_effective_agent_conversation_workspace_path,
+    resolve_effective_agent_conversation_workspace_path, WorkspacePathResolution,
+};
+use crate::application::agent_workspace_publish_recovery::settle_missing_workspace_resolution;
 use crate::application::agent_workspace_publish_repair_state::{
     block_agent_workspace_repair_completion, validate_agent_workspace_repair_target_lease,
     AgentWorkspaceRepairTransitionOutcome,
@@ -391,12 +395,52 @@ async fn recover_repair_owned_git_mutation_claim(
                 workspace.project_id
             ))
         })?;
-    let target = resolve_effective_agent_conversation_workspace_path(
+    // Resolved rather than classified because the happy path needs the effective branch name too.
+    // On failure, classify to tell a deleted worktree apart from a real error: propagating here
+    // aborted the whole recovery pass and fenced every remaining claim.
+    let target = match resolve_effective_agent_conversation_workspace_path(
         &project,
         &workspace,
         state.plan_branch_repo.as_ref(),
     )
-    .await?;
+    .await
+    {
+        Ok(target) => target,
+        Err(error) => {
+            let classified = classify_effective_agent_conversation_workspace_path(
+                &project,
+                &workspace,
+                state.plan_branch_repo.as_ref(),
+            )
+            .await;
+            let Ok(WorkspacePathResolution::Missing {
+                expected,
+                parent_root_present,
+            }) = classified
+            else {
+                return Err(error);
+            };
+            let claim_id = claim.claim_id.clone();
+            // `release_target_lease` returns `MutationInFlight` while a claim is active.
+            // The worktree is gone so the push can never complete; completing the claim first
+            // is safe and required for `settle_missing_workspace_resolution` to release the lease.
+            let _ =
+                complete_repair_claim(state.branch_update_repo.as_ref(), claim, effect.id.as_str())
+                    .await?;
+            settle_missing_workspace_resolution(
+                state,
+                &workspace,
+                &expected,
+                parent_root_present,
+                "git_mutation_recovery",
+            )
+            .await?;
+            return Ok(GitMutationRecoveryOutcome::NeedsRepair {
+                claim_id,
+                reason: "repair mutation workspace worktree is missing".into(),
+            });
+        }
+    };
     let observed_identity =
         GitService::canonical_target_identity(&target.path, &target.branch_name).await?;
     if observed_identity != identity {

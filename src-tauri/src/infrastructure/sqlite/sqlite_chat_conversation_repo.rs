@@ -693,6 +693,40 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
             .await
     }
 
+    async fn refresh_provider_session_ref(
+        &self,
+        id: &ChatConversationId,
+        session_ref: &ProviderSessionRef,
+    ) -> AppResult<bool> {
+        let id_str = id.as_str().to_string();
+        let (claude_session_id, provider_session_id, provider_harness) =
+            compatible_provider_session_fields_from_provider_ref(
+                Some(session_ref.harness),
+                Some(session_ref.provider_session_id.clone()),
+            );
+        self.db
+            .run(move |conn| {
+                let rows_affected = conn.execute(
+                    "UPDATE chat_conversations
+                 SET claude_session_id = ?1,
+                     provider_session_id = ?2,
+                     provider_harness = ?3,
+                     updated_at = ?4
+                 WHERE id = ?5
+                   AND (provider_session_id IS NOT NULL OR claude_session_id IS NOT NULL)",
+                    rusqlite::params![
+                        claude_session_id,
+                        provider_session_id,
+                        provider_harness.map(|value| value.to_string()),
+                        Utc::now().to_rfc3339(),
+                        id_str
+                    ],
+                )?;
+                Ok(rows_affected == 1)
+            })
+            .await
+    }
+
     async fn clear_provider_session_ref(&self, id: &ChatConversationId) -> AppResult<()> {
         let id_str = id.as_str().to_string();
         self.db

@@ -12,8 +12,21 @@ tool calls on top of it.
 | Tier | Grants |
 |---|---|
 | `none` | No Atlassian tools at all |
-| `read` | `jira_search_issues`, `jira_get_issue`, `jira_list_projects`, `jira_list_transitions`, `confluence_search_pages`, `confluence_get_page`, `atlassian_api_request` (GET/HEAD only) |
+| `read` | `jira_search_issues`, `jira_get_issue`, `jira_list_projects`, `jira_list_transitions`, `jira_list_boards`, `jira_list_sprints`, `jira_get_sprint_issues`, `jira_list_comments`, `jira_search_users`, `confluence_search_pages`, `confluence_get_page`, `confluence_list_spaces`, `atlassian_api_request` (GET/HEAD only), `list_ticket_attachments`, `fetch_ticket_attachment` (Jira calls only — see below) |
 | `read_write` | Everything in `read`, plus `jira_create_issue`, `jira_update_issue`, `jira_add_comment`, `jira_transition_issue`, `jira_assign_issue`, `confluence_create_page`, `confluence_update_page`, and mutating `atlassian_api_request` methods |
+
+`list_ticket_attachments` and `fetch_ticket_attachment` are also granted to
+worker/coder through their canonical `agent.yaml` `capabilities.mcp_tools`,
+independent of this tier system, because they cover Linear and ClickUp
+attachments too. Only the *Jira* provider call re-derives and enforces the
+tier above (`authorize_ticket_attachment_access` in
+`src-tauri/src/http_server/handlers/ticket_attachments.rs`); Linear/ClickUp
+calls stay on the canonical grant plus a trusted, live caller-run identity
+check — never a fall-through with no check at all. `fetch_ticket_attachment`
+may return a materialized `contentPath` under RalphX-managed attachment
+storage, readable by Claude-harness runs, plus an optional inline
+`contentText` preview for small `text/*` attachments; other sandboxed
+harnesses may not have filesystem access to that path.
 
 ## Built-in Defaults
 
@@ -88,6 +101,47 @@ consulted for authorization.
 
 Validation runs at the handler *and* again at the request sink in the client.
 
+## Jira Software (Agile) Tools
+
+`jira_list_boards`, `jira_list_sprints`, and `jira_get_sprint_issues` cover the
+board/sprint surface at the `read` tier:
+
+- `jira_list_boards` accepts an optional `projectKey` filter; omitting it lists
+  every board visible to the credential.
+- `jira_list_sprints` currently returns only active sprints. An explicit
+  `state` other than `"active"` is rejected rather than silently ignored.
+- `jira_get_sprint_issues` returns up to 50 issues per sprint, using the same
+  enriched summary shape (status, issue type, assignee, updated timestamp) as
+  `jira_search_issues`.
+
+## Discovery Tools
+
+`jira_list_comments`, `jira_search_users`, and `confluence_list_spaces` cover
+gaps that otherwise leave agents guessing at ids or unable to see comments
+beyond the handful inlined by `jira_get_issue`, all at the `read` tier:
+
+- `jira_list_comments` pages through an issue's comments (`startAt`/`maxResults`,
+  default 20, capped at 100) and returns the provider's true `total` alongside
+  markdown-converted bodies (the same ADF→markdown conversion `jira_get_issue`
+  uses).
+- `jira_search_users` is a bounded (max 20) name/address search returning
+  `accountId`/`displayName`, used to resolve an `accountId` for
+  `jira_assign_issue` or `jira_create_issue`'s `assigneeAccountId`.
+- `confluence_list_spaces` lists Confluence spaces (`id`/`key`/`name`) via the
+  v2 API, unblocking `confluence_create_page`'s otherwise-unguessable
+  `spaceId`.
+
+`jira_assign_issue` accepts an optional `accountId` in addition to
+`assignToMe`. Precedence: `accountId` (if present) wins, then `assignToMe`,
+then the issue's assignee is cleared.
+
+`jira_create_issue` additionally accepts `parentKey` (epic/parent link, maps to
+`fields.parent`), `assigneeAccountId`, and `components`.
+
+When an issue has more comments than the inline prompt-expansion budget shows,
+the rendered reference body now reports the provider's true comment total and
+points agents at `jira_list_comments` instead of a bare omitted-count.
+
 ## Known Limitations
 
 - **Claude-native `Task` subagents are out of scope.** They inherit generated
@@ -111,4 +165,5 @@ Validation runs at the handler *and* again at the request sink in the client.
 | Client operations + containment | `src-tauri/src/infrastructure/atlassian_mcp_client.rs` |
 | HTTP endpoints + authorization | `src-tauri/src/http_server/handlers/atlassian_mcp/` |
 | MCP tool schemas + dispatch | `plugins/app/ralphx-mcp-server/src/atlassian-tools.ts` |
+| Ticket attachment tools (Jira/Linear/ClickUp) | `src-tauri/src/http_server/handlers/ticket_attachments.rs`, `plugins/app/ralphx-mcp-server/src/ticket-attachment-tools.ts` |
 | Roles editor control | `frontend/src/components/settings/AgentRoleDefaultEditor.tsx` |
