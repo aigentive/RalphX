@@ -291,7 +291,7 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.metadata.outputs.source_ref }}
 
@@ -345,7 +345,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -367,7 +367,7 @@ jobs:
           rustup target list --installed
 
       - name: Rust cache
-        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
         with:
           workspaces: "./src-tauri -> target"
 
@@ -376,7 +376,7 @@ jobs:
         working-directory: frontend
 
       - name: Checkout workflow automation support
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           path: workflow-support

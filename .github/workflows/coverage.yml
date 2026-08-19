@@ -32,14 +32,14 @@ jobs:
       run_rust: ${{ steps.decide.outputs.run_rust }}
       run_frontend: ${{ steps.decide.outputs.run_frontend }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Detect changed paths
         id: filter
         if: github.event_name != 'merge_group'
-        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           list-files: shell
           predicate-quantifier: every
@@ -159,7 +159,7 @@ jobs:
       CARGO_TERM_COLOR: never
       RALPHX_TEST_MODE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Free runner disk space
         shell: bash
@@ -189,7 +189,7 @@ jobs:
           tool: cargo-llvm-cov,nextest
 
       - name: Rust cache
-        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
         with:
           workspaces: './src-tauri -> target'
           shared-key: rust-coverage-deps
@@ -238,7 +238,7 @@ jobs:
       RUST_LIB_COVERAGE_ARTIFACT: coverage-rust-lib-${{ matrix.artifact_suffix }}
       RUST_LIB_COVERAGE_ROOT: coverage/coverage-rust-lib-${{ matrix.artifact_suffix }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Linux system dependencies
         uses: ./.github/actions/linux-deps
@@ -518,7 +518,7 @@ jobs:
       CARGO_BUILD_JOBS: "1"
       RALPHX_TEST_MODE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Free runner disk space
         shell: bash
@@ -548,7 +548,7 @@ jobs:
           tool: cargo-llvm-cov,nextest
 
       - name: Rust cache
-        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
         with:
           workspaces: './src-tauri -> target'
           shared-key: rust-coverage-ipc
@@ -821,10 +821,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -900,10 +900,10 @@ jobs:
             artifact_name: coverage-plugin-internal-mcp
             codecov_flag: plugin-internal-mcp
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -1004,7 +1004,7 @@ jobs:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
       IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download coverage artifacts
         uses: actions/download-artifact@v8
@@ -1077,7 +1077,7 @@ jobs:
 
       - name: Upload Rust lib coverage to Codecov
         if: needs.rust-lib-coverage.result == 'success' && env.CODECOV_TOKEN != ''
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
@@ -1092,7 +1092,7 @@ jobs:
 
       - name: Upload Rust IPC coverage to Codecov
         if: needs.rust-ipc-coverage.result == 'success' && env.CODECOV_TOKEN != ''
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
@@ -1107,7 +1107,7 @@ jobs:
 
       - name: Upload frontend coverage to Codecov
         if: needs.frontend-coverage.result == 'success' && env.CODECOV_TOKEN != ''
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
@@ -1122,7 +1122,7 @@ jobs:
 
       - name: Upload internal MCP coverage to Codecov
         if: needs.plugin-coverage.result == 'success' && env.CODECOV_TOKEN != ''
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
@@ -1137,7 +1137,7 @@ jobs:
 
       - name: Upload external MCP coverage to Codecov
         if: needs.plugin-coverage.result == 'success' && env.CODECOV_TOKEN != ''
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           use_pypi: true
