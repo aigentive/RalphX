@@ -1607,6 +1607,17 @@ export function useChatEvents({
         if (!isRelevant(payload)) return;
 
         let usedLightweightHandoff = false;
+        if (!isProviderRole(payload.role) && payload.render_ready) {
+          // Place the just-sent user message at its true backend sequence so the
+          // pre-refetch frame is correct instead of a guessed tail position.
+          // Deliberately outside the finalization machinery below: user messages
+          // must never set isFinalizing or clear live streaming state.
+          upsertRenderReadyMessageIntoConversationCache(
+            queryClient,
+            payload.conversation_id,
+            payload.render_ready,
+          );
+        }
         if (isProviderRole(payload.role)) {
           const convId = payload.conversation_id;
           const assistantMessageId = payload.message_id;
