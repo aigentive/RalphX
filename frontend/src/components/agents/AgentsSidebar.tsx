@@ -132,16 +132,22 @@ import {
   AGENT_SIDEBAR_INBOX_FILTERED_EMPTY,
   AGENT_SIDEBAR_INBOX_FILTERS,
   AGENT_SIDEBAR_RECENT_GROUPS,
+  AGENT_SIDEBAR_REVIEW_GROUPS,
   describeInboxLaneCount,
   formatInboxLaneCount,
   formatParkedDelegateMeta,
   getAgeEscalation,
   laneForInboxFilter,
+  lanesForInboxFilter,
+  reviewStateLabel,
+  reviewStateTone,
   shouldEscalateAge,
   summarizeInboxLaneCounts,
   type AgentSidebarInboxEmptyState,
   type AgentSidebarInboxFilter,
+  type AgentSidebarInboxLaneDescriptor,
   type AgeEscalation,
+  type ReviewStateTone,
 } from "./agentSidebarInboxLanes";
 import {
   useAgentSidebarAutomationGroup,
@@ -923,9 +929,17 @@ export function AgentsSidebar({
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [inboxLaneCounts, setInboxLaneCounts] = useState<
     Record<AgentSidebarAttentionLane, number>
-  >({ needs: 0, working: 0, stale: 0, done: 0 });
+  >({
+    needs: 0,
+    working: 0,
+    stale: 0,
+    done: 0,
+    review_needs: 0,
+    review_working: 0,
+    review_watching: 0,
+  });
   // Stable identity: every lane keeps this in an effect dependency list, so an
-  // inline callback would re-run all four lane effects on each parent render.
+  // inline callback would re-run all seven lane effects on each parent render.
   const handleInboxLaneCountChange = useCallback(
     (lane: AgentSidebarAttentionLane, total: number) => {
       setInboxLaneCounts((current) =>
@@ -2032,6 +2046,7 @@ function AgentSidebarConversationRowsPanel({
         workspacePublicationFingerprint(
           row.publicationState,
           row.publicationLabel,
+          row.reviewState,
         ),
       );
     }
@@ -2117,6 +2132,14 @@ function AgentSidebarConversationRowsPanel({
         publicationLabel
       );
       const sessionActionsOpen = openSessionActionsId === conversation.id;
+      // A Review PR row shows its GitHub-side state instead of the generic
+      // publish verb: "Approved" is the whole point of the Watching lane.
+      const reviewVerb = row.reviewState
+        ? {
+            label: reviewStateLabel(row.reviewState),
+            color: REVIEW_STATE_TONE_COLORS[reviewStateTone(row.reviewState)],
+          }
+        : null;
       const calculatedAgeEscalation = inboxLane
         ? getAgeEscalation(
             conversation.lastMessageAt ?? conversation.updatedAt,
@@ -2143,7 +2166,11 @@ function AgentSidebarConversationRowsPanel({
           publicationState={row.publicationState}
           publicationLabel={publicationLabel}
           parkedDelegateCount={row.parkedDelegateCount}
-          {...(inboxLane && row.actionVerb ? { actionVerb: row.actionVerb } : {})}
+          {...(inboxLane && reviewVerb
+            ? { actionVerb: reviewVerb.label, actionVerbTone: reviewVerb.color }
+            : inboxLane && row.actionVerb
+              ? { actionVerb: row.actionVerb }
+              : {})}
           {...(inboxLane && ageEscalation ? { ageEscalation } : {})}
           isSelected={isSelected}
           isPinned={isPinned}
@@ -2570,6 +2597,38 @@ function hasActiveInboxFilters(
   );
 }
 
+// Tone tokens for the review state in the row meta line. Applied as an
+// explicit `color` longhand rather than a utility class so WKWebView cannot
+// drop it on inheritance.
+const REVIEW_STATE_TONE_COLORS: Readonly<Record<ReviewStateTone, string>> = {
+  accent: "var(--accent-primary)",
+  warning: "var(--status-warning)",
+  error: "var(--status-error)",
+  success: "var(--status-success)",
+  info: "var(--status-info)",
+  muted: "var(--text-muted)",
+};
+
+// Below the breakpoint every chip collapses to icon + count, not just the
+// longest one: collapsing "PR Reviews" alone still left the other three
+// truncated to "Re...", "S...", "D..." at a 220px sidebar, which is less
+// legible than four icons.
+//
+// The container-query breakpoint is measured, not guessed — see
+// `tests/visual/views/agents/agents-inbox-reviews.spec.ts`, which asserts the
+// labels fit above it and the icon form renders below it. Re-derive it there if
+// a chip label ever changes length.
+//
+// Measured chip-row container widths: 340px sidebar -> 315px, 276px -> 251px,
+// 220px -> 195px. Only 315px fits four full labels once "PR Reviews" replaced
+// the shorter "Reviews", so the breakpoint sits in the 251-315 gap at 300px.
+const INBOX_FILTER_COLLAPSE_ICONS: Record<AgentSidebarInboxFilter, LucideIcon> = {
+  recent: Inbox,
+  reviews: GitPullRequest,
+  stale: Clock,
+  done: CheckCheck,
+};
+
 interface InboxLaneGroupsProps extends PublicationStateGroupsProps {
   laneCounts: Record<AgentSidebarAttentionLane, number>;
   onCreateAgent: () => void;
@@ -2641,14 +2700,19 @@ function InboxLaneGroups({
         role="tablist"
         aria-label="Inbox lanes"
         aria-orientation="horizontal"
-        className="mb-1 flex shrink-0 items-center gap-1"
+        className="@container mb-1 flex shrink-0 items-center gap-1"
         data-testid="agents-inbox-lane-chips"
       >
         {AGENT_SIDEBAR_INBOX_FILTERS.map(({ filter, label }, index) => {
-          const count = filter === "recent"
-            ? laneCounts.needs + laneCounts.working
-            : laneCounts[laneForInboxFilter(filter)!];
+          // Summed from the filter's declared lanes rather than a ternary with
+          // a non-null assertion: `laneForInboxFilter` is null for every
+          // composite filter, and `!` would render the string "undefined".
+          const count = lanesForInboxFilter(filter).reduce(
+            (total, lane) => total + laneCounts[lane],
+            0
+          );
           const isActive = filter === resolvedActiveLane;
+          const CollapseIcon = INBOX_FILTER_COLLAPSE_ICONS[filter];
           return (
             <button
               key={filter}
@@ -2666,8 +2730,10 @@ function InboxLaneGroups({
               data-testid={`agents-inbox-lane-chip-${filter}`}
               onClick={() => selectLane(filter)}
               onKeyDown={(event) => handleChipKeyDown(event, index)}
-              // Content-sized rather than equal-width: at 268px an even split
-              // truncates "Needs you" even when the row has room to spare.
+              // Content-sized rather than equal-width: an even split truncates
+              // the longest label even when the row has room to spare. Real
+              // sidebar widths are 340 (large) / 276 (medium), with a
+              // 220-520 drag override.
               className="agents-inbox-lane-chip inline-flex min-w-0 items-center justify-center gap-1 rounded-[6px] px-1.5 py-1 text-[0.6875rem] font-medium transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:1px]"
               style={{
                 backgroundColor: isActive
@@ -2681,7 +2747,11 @@ function InboxLaneGroups({
                 color: isActive ? "var(--text-primary)" : "var(--text-muted)",
               }}
             >
-              <span className="min-w-0 truncate">{label}</span>
+              <span className="hidden min-w-0 truncate @[300px]:inline">{label}</span>
+              <CollapseIcon
+                className="size-3 shrink-0 @[300px]:hidden"
+                aria-hidden="true"
+              />
               <span
                 aria-hidden="true"
                 className="agents-inbox-lane-chip-count shrink-0 text-[0.625rem] tabular-nums"
@@ -2707,6 +2777,12 @@ function InboxLaneGroups({
           onCreateAgent={onCreateAgent}
           onLaneCountChange={onLaneCountChange}
           onSelectLane={selectLane}
+          {...props}
+        />
+        <ReviewsInboxLane
+          isActive={resolvedActiveLane === "reviews"}
+          onClearSearch={onClearSearch}
+          onLaneCountChange={onLaneCountChange}
           {...props}
         />
         {AGENT_SIDEBAR_INBOX_FILTERS.map(({ filter, emptyState }) => {
@@ -2825,7 +2901,6 @@ function RecentInboxLane({
     sort: rowSort,
     minimumRowCount: rememberedWorkingRowCount,
   });
-  const scrollerRef = useRef<HTMLDivElement | null>(null);
   const groups = useMemo(
     () => [
       { descriptor: AGENT_SIDEBAR_RECENT_GROUPS[0], query: needsQuery },
@@ -2837,9 +2912,6 @@ function RecentInboxLane({
   const workingTotal = workingQuery.group.total;
   const isNeedsSettled = !needsQuery.isPending && !needsQuery.isLoading;
   const isWorkingSettled = !workingQuery.isPending && !workingQuery.isLoading;
-  const needsRowCount = needsQuery.group.rows.length;
-  const workingRowCount = workingQuery.group.rows.length;
-  const isFiltered = hasActiveInboxFilters(searchQuery, selectedPublicationStates);
 
   // A lane that has not settled reports no count: a transient 0 would blink the
   // Recent chip, which sums both lanes.
@@ -2855,22 +2927,309 @@ function RecentInboxLane({
     }
   }, [isWorkingSettled, onLaneCountChange, workingTotal]);
 
+  const isFiltered = hasActiveInboxFilters(searchQuery, selectedPublicationStates);
+  const emptyState = isFiltered
+    ? AGENT_SIDEBAR_INBOX_FILTERED_EMPTY
+    : AGENT_SIDEBAR_INBOX_FILTERS[0].emptyState;
+
+  return (
+    <CompositeInboxLane
+      scrollKey={inboxScrollKey}
+      groups={groups}
+      isActive={isActive}
+      scrollerTestId="agents-sidebar-session-list-inbox-recent"
+      groupTestIdPrefix="agents-inbox-recent-group"
+      emptyCard={
+        <AgentsInboxZeroCard
+          testId="agents-inbox-lane-empty-recent"
+          tone={emptyState.tone}
+          icon={isFiltered ? SearchX : CheckCheck}
+          headline={emptyState.headline}
+          subline={emptyState.subline}
+          {...(!isFiltered && {
+            primaryAction: { label: "New agent", onClick: onCreateAgent },
+          })}
+          {...(isFiltered && searchQuery.length > 0
+            ? { secondaryAction: { label: "Clear search", onClick: onClearSearch } }
+            : !isFiltered && doneCount > 0
+              ? {
+                  secondaryAction: {
+                    label: `Review ${doneCount} done`,
+                    onClick: () => onSelectLane("done"),
+                  },
+                }
+              : {})}
+        />
+      }
+      isSidebarVisible={isSidebarVisible}
+      projectById={projectById}
+      pinnedConversationIds={pinnedConversationIds}
+      selectedConversationId={selectedConversationId}
+      onArchiveConversation={onArchiveConversation}
+      onAutoRenameConversation={onAutoRenameConversation}
+      onRenameConversation={onRenameConversation}
+      onRestoreConversation={onRestoreConversation}
+      onForkConversation={onForkConversation}
+      onSelectConversation={onSelectConversation}
+      onTogglePinnedConversation={onTogglePinnedConversation}
+    />
+  );
+}
+
+interface ReviewsInboxLaneProps extends PublicationStateGroupsProps {
+  isActive: boolean;
+  onClearSearch: () => void;
+  onLaneCountChange: (lane: AgentSidebarAttentionLane, total: number) => void;
+}
+
+// PR Reviews is the second composite filter: three review lane queries in one
+// scroller. Its three hook triples are written out rather than mapped for the
+// same reason RecentInboxLane writes out two — hook order must be static.
+function ReviewsInboxLane({
+  isActive,
+  onClearSearch,
+  onLaneCountChange,
+  projects,
+  isSidebarVisible,
+  pinnedConversationIdList,
+  priorityConversationIds,
+  pinnedConversationIds,
+  rowSort,
+  selectedConversationId,
+  searchQuery,
+  selectedPublicationStates,
+  onArchiveConversation,
+  onAutoRenameConversation,
+  onRenameConversation,
+  onRestoreConversation,
+  onForkConversation,
+  onSelectConversation,
+  onTogglePinnedConversation,
+  showArchived,
+}: ReviewsInboxLaneProps) {
+  const projectIds = useMemo(() => projects.map((project) => project.id), [projects]);
+  const projectById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project])),
+    [projects]
+  );
+  const inboxScrollKey = useMemo(
+    () =>
+      [
+        "inbox",
+        "reviews",
+        showArchived ? "archived" : "active",
+        searchQuery,
+        rowSort,
+        selectedPublicationStates.join(","),
+        projectIds.join(","),
+        pinnedConversationIdList.join(","),
+      ].join("::"),
+    [
+      pinnedConversationIdList,
+      projectIds,
+      rowSort,
+      searchQuery,
+      selectedPublicationStates,
+      showArchived,
+    ]
+  );
+  const rememberedNeedsRowCount = useRememberedRecentInboxGroupRowCount(
+    inboxScrollKey,
+    "review_needs"
+  );
+  const rememberedWorkingRowCount = useRememberedRecentInboxGroupRowCount(
+    inboxScrollKey,
+    "review_working"
+  );
+  const rememberedWatchingRowCount = useRememberedRecentInboxGroupRowCount(
+    inboxScrollKey,
+    "review_watching"
+  );
+  const needsQuery = useAgentSidebarInboxGroup({
+    lane: "review_needs",
+    projectIds,
+    archivedOnly: showArchived,
+    search: searchQuery,
+    publicationStates: selectedPublicationStates,
+    pinnedConversationIds: pinnedConversationIdList,
+    priorityConversationIds,
+    sort: rowSort,
+    minimumRowCount: rememberedNeedsRowCount,
+  });
+  const workingQuery = useAgentSidebarInboxGroup({
+    lane: "review_working",
+    projectIds,
+    archivedOnly: showArchived,
+    search: searchQuery,
+    publicationStates: selectedPublicationStates,
+    pinnedConversationIds: pinnedConversationIdList,
+    priorityConversationIds,
+    sort: rowSort,
+    minimumRowCount: rememberedWorkingRowCount,
+  });
+  const watchingQuery = useAgentSidebarInboxGroup({
+    lane: "review_watching",
+    projectIds,
+    archivedOnly: showArchived,
+    search: searchQuery,
+    publicationStates: selectedPublicationStates,
+    pinnedConversationIds: pinnedConversationIdList,
+    priorityConversationIds,
+    sort: rowSort,
+    minimumRowCount: rememberedWatchingRowCount,
+  });
+  const groups = useMemo(
+    () => [
+      { descriptor: AGENT_SIDEBAR_REVIEW_GROUPS[0], query: needsQuery },
+      { descriptor: AGENT_SIDEBAR_REVIEW_GROUPS[1], query: workingQuery },
+      { descriptor: AGENT_SIDEBAR_REVIEW_GROUPS[2], query: watchingQuery },
+    ],
+    [needsQuery, workingQuery, watchingQuery]
+  );
+  const needsTotal = needsQuery.group.total;
+  const workingTotal = workingQuery.group.total;
+  const watchingTotal = watchingQuery.group.total;
+  const isNeedsSettled = !needsQuery.isPending && !needsQuery.isLoading;
+  const isWorkingSettled = !workingQuery.isPending && !workingQuery.isLoading;
+  const isWatchingSettled = !watchingQuery.isPending && !watchingQuery.isLoading;
+
+  useEffect(() => {
+    if (needsTotal !== 0 || isNeedsSettled) {
+      onLaneCountChange("review_needs", needsTotal);
+    }
+  }, [isNeedsSettled, needsTotal, onLaneCountChange]);
+
+  useEffect(() => {
+    if (workingTotal !== 0 || isWorkingSettled) {
+      onLaneCountChange("review_working", workingTotal);
+    }
+  }, [isWorkingSettled, onLaneCountChange, workingTotal]);
+
+  useEffect(() => {
+    if (watchingTotal !== 0 || isWatchingSettled) {
+      onLaneCountChange("review_watching", watchingTotal);
+    }
+  }, [isWatchingSettled, onLaneCountChange, watchingTotal]);
+
+  const isFiltered = hasActiveInboxFilters(searchQuery, selectedPublicationStates);
+  const emptyState = isFiltered
+    ? AGENT_SIDEBAR_INBOX_FILTERED_EMPTY
+    : AGENT_SIDEBAR_INBOX_FILTERS[1].emptyState;
+
+  return (
+    <CompositeInboxLane
+      scrollKey={inboxScrollKey}
+      groups={groups}
+      isActive={isActive}
+      scrollerTestId="agents-sidebar-session-list-inbox-reviews"
+      groupTestIdPrefix="agents-inbox-reviews-group"
+      emptyCard={
+        <AgentsInboxZeroCard
+          testId="agents-inbox-lane-empty-reviews"
+          tone={emptyState.tone}
+          icon={isFiltered ? SearchX : GitPullRequest}
+          headline={emptyState.headline}
+          subline={emptyState.subline}
+          {...(isFiltered && searchQuery.length > 0
+            ? { secondaryAction: { label: "Clear search", onClick: onClearSearch } }
+            : {})}
+        />
+      }
+      isSidebarVisible={isSidebarVisible}
+      projectById={projectById}
+      pinnedConversationIds={pinnedConversationIds}
+      selectedConversationId={selectedConversationId}
+      onArchiveConversation={onArchiveConversation}
+      onAutoRenameConversation={onAutoRenameConversation}
+      onRenameConversation={onRenameConversation}
+      onRestoreConversation={onRestoreConversation}
+      onForkConversation={onForkConversation}
+      onSelectConversation={onSelectConversation}
+      onTogglePinnedConversation={onTogglePinnedConversation}
+    />
+  );
+}
+
+interface CompositeInboxLaneGroup {
+  descriptor: AgentSidebarInboxLaneDescriptor;
+  query: ReturnType<typeof useAgentSidebarInboxGroup>;
+}
+
+interface CompositeInboxLaneProps {
+  scrollKey: string;
+  groups: readonly CompositeInboxLaneGroup[];
+  isActive: boolean;
+  emptyCard: ReactNode;
+  scrollerTestId: string;
+  groupTestIdPrefix: string;
+  isSidebarVisible: boolean;
+  projectById: Map<string, Project>;
+  pinnedConversationIds: Record<string, true>;
+  selectedConversationId: string | null;
+  onSelectConversation: (projectId: string | null, conversation: AgentConversation) => void;
+  onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
+  onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
+  onArchiveConversation: ArchiveConversationHandler;
+  onRestoreConversation: (conversation: AgentConversation) => void;
+  onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
+  onTogglePinnedConversation: (conversationId: string) => void;
+}
+
+// The scroller shared by every composite inbox filter (Recent, PR Reviews).
+// Deliberately props-only: the lane queries stay in the caller so each caller
+// keeps a fixed, statically verifiable hook order. Driving N lane queries from
+// a `.map()` here would break `react-hooks/rules-of-hooks`.
+function CompositeInboxLane({
+  scrollKey,
+  groups,
+  isActive,
+  emptyCard,
+  scrollerTestId,
+  groupTestIdPrefix,
+  isSidebarVisible,
+  projectById,
+  pinnedConversationIds,
+  selectedConversationId,
+  onSelectConversation,
+  onAutoRenameConversation,
+  onRenameConversation,
+  onArchiveConversation,
+  onRestoreConversation,
+  onForkConversation,
+  onTogglePinnedConversation,
+}: CompositeInboxLaneProps) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
   // Restore once rows exist — restoring against an empty scroller would clamp
   // the offset back to 0.
   const restoredScrollKeyRef = useRef<string | null>(null);
-  const hasRecentRows = needsRowCount + workingRowCount > 0;
+  const hasRows = groups.some((group) => group.query.group.rows.length > 0);
+  // `inboxGroupRowCounts` is already keyed by lane, so it absorbs the review
+  // lanes with no type change.
+  const rowCountsByLane = useMemo(
+    () =>
+      Object.fromEntries(
+        groups.map((group) => [group.descriptor.lane, group.query.group.rows.length])
+      ) as Partial<Record<AgentSidebarAttentionLane, number>>,
+    [groups]
+  );
+  const isEmpty = groups.every(
+    (group) =>
+      group.query.group.total === 0 &&
+      !group.query.isPending &&
+      !group.query.isLoading
+  );
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
-    if (!isActive || !scroller || !hasRecentRows) {
+    if (!isActive || !scroller || !hasRows) {
       return;
     }
-    if (restoredScrollKeyRef.current === inboxScrollKey) {
+    if (restoredScrollKeyRef.current === scrollKey) {
       return;
     }
-    restoredScrollKeyRef.current = inboxScrollKey;
+    restoredScrollKeyRef.current = scrollKey;
     scroller.scrollTop =
-      agentSidebarSessionScrollPositions.get(inboxScrollKey)?.scrollTop ?? 0;
-  }, [hasRecentRows, inboxScrollKey, isActive]);
+      agentSidebarSessionScrollPositions.get(scrollKey)?.scrollTop ?? 0;
+  }, [hasRows, scrollKey, isActive]);
 
   useEffect(() => {
     const scroller = scrollerRef.current;
@@ -2878,58 +3237,29 @@ function RecentInboxLane({
       return;
     }
     const save = () =>
-      rememberAgentSidebarSessionScroll(inboxScrollKey, scroller.scrollTop, {
-        inboxGroupRowCounts: { needs: needsRowCount, working: workingRowCount },
+      rememberAgentSidebarSessionScroll(scrollKey, scroller.scrollTop, {
+        inboxGroupRowCounts: rowCountsByLane,
       });
     scroller.addEventListener("scroll", save, { passive: true });
     return () => {
       save();
       scroller.removeEventListener("scroll", save);
     };
-  }, [inboxScrollKey, isActive, needsRowCount, workingRowCount]);
+  }, [scrollKey, isActive, rowCountsByLane]);
 
   if (!isActive) {
     return null;
   }
 
-  if (
-    needsTotal === 0 &&
-    workingTotal === 0 &&
-    isNeedsSettled &&
-    isWorkingSettled
-  ) {
-    const emptyState = isFiltered
-      ? AGENT_SIDEBAR_INBOX_FILTERED_EMPTY
-      : AGENT_SIDEBAR_INBOX_FILTERS[0].emptyState;
-    return (
-      <AgentsInboxZeroCard
-        testId="agents-inbox-lane-empty-recent"
-        tone={emptyState.tone}
-        icon={isFiltered ? SearchX : CheckCheck}
-        headline={emptyState.headline}
-        subline={emptyState.subline}
-        {...(!isFiltered && {
-          primaryAction: { label: "New agent", onClick: onCreateAgent },
-        })}
-        {...(isFiltered && searchQuery.length > 0
-          ? { secondaryAction: { label: "Clear search", onClick: onClearSearch } }
-          : !isFiltered && doneCount > 0
-            ? {
-                secondaryAction: {
-                  label: `Review ${doneCount} done`,
-                  onClick: () => onSelectLane("done"),
-                },
-              }
-            : {})}
-      />
-    );
+  if (isEmpty) {
+    return emptyCard;
   }
 
   return (
     <div
       ref={scrollerRef}
       className="agents-sidebar-session-list mt-1 flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto"
-      data-testid="agents-sidebar-session-list-inbox-recent"
+      data-testid={scrollerTestId}
     >
       {groups.map(({ descriptor, query }, index) => {
         const isSettled = !query.isPending && !query.isLoading;
@@ -2937,10 +3267,10 @@ function RecentInboxLane({
         return (
           <section
             key={descriptor.lane}
-            className={`agents-inbox-recent-group flex flex-col gap-0.5${
+            className={`agents-inbox-composite-group flex flex-col gap-0.5${
               index > 0 ? " mt-1.5" : ""
             }`}
-            data-testid={`agents-inbox-recent-group-${descriptor.lane}`}
+            data-testid={`${groupTestIdPrefix}-${descriptor.lane}`}
           >
             {/* The sidebar's existing group row with the icon column dropped —
                 inbox groups have no icon. Opaque background so rows scrolling
@@ -2948,7 +3278,7 @@ function RecentInboxLane({
             <div
               className="agents-project-row sticky top-0 z-[5] grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-[7px] rounded-[6px] px-2 py-1.5 text-left text-[0.8438rem]"
               style={{ backgroundColor: "var(--app-sidebar-bg)" }}
-              data-testid={`agents-inbox-recent-group-header-${descriptor.lane}`}
+              data-testid={`${groupTestIdPrefix}-header-${descriptor.lane}`}
             >
               <h3 className="min-w-0 truncate">{descriptor.label}</h3>
               <span
@@ -2985,7 +3315,7 @@ function RecentInboxLane({
                 isSidebarVisible={isSidebarVisible}
                 projectById={projectById}
                 pinnedConversationIds={pinnedConversationIds}
-                scrollKey={`${inboxScrollKey}::${descriptor.lane}`}
+                scrollKey={`${scrollKey}::${descriptor.lane}`}
                 selectedConversationId={selectedConversationId}
                 showProjectNameInMeta
                 testId={`agents-sidebar-session-list-inbox-${descriptor.lane}`}
@@ -3005,6 +3335,7 @@ function RecentInboxLane({
     </div>
   );
 }
+
 
 function useRememberedRecentInboxGroupRowCount(
   scrollKey: string,
@@ -3572,6 +3903,7 @@ interface AgentSessionRowProps {
   publicationLabel: string | null;
   parkedDelegateCount: number;
   actionVerb?: string;
+  actionVerbTone?: string;
   ageEscalation?: AgeEscalation;
   isSelected: boolean;
   isPinned: boolean;
@@ -3601,6 +3933,7 @@ function AgentSessionRow({
   publicationLabel,
   parkedDelegateCount,
   actionVerb,
+  actionVerbTone,
   ageEscalation,
   isSelected,
   isPinned,
@@ -3662,7 +3995,12 @@ function AgentSessionRow({
           >
             {actionVerb && (
               <>
-                <span className="shrink-0 font-medium">{actionVerb}</span>
+                <span
+                  className="shrink-0 font-medium"
+                  {...(actionVerbTone ? { style: { color: actionVerbTone } } : {})}
+                >
+                  {actionVerb}
+                </span>
                 <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
                   ·
                 </span>
@@ -4147,6 +4485,7 @@ function ProjectSessionGroup({
         workspacePublicationFingerprint(
           row.publicationState,
           row.publicationLabel,
+          row.reviewState,
         ),
       );
     }
