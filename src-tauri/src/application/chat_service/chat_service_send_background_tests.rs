@@ -1928,6 +1928,133 @@ async fn queue_processing_stops_before_launch_when_run_persistence_fails() {
     );
 }
 
+/// Drains one queued message far enough to emit `agent:message_created`.
+///
+/// The CLI path is intentionally invalid: the spawn fails after the user
+/// message has been persisted and announced, which is the surface under test.
+async fn drain_one_queued_message(
+    app_state: &AppState,
+    context_id: &str,
+    content: &str,
+) -> RecordingEventSink {
+    let events = RecordingEventSink::new();
+    let conversation_id = ChatConversationId::new();
+    seed_completed_continuation_runtime(
+        &app_state.agent_run_repo,
+        &conversation_id,
+        AgentHarnessKind::Claude,
+        "session-cli",
+    )
+    .await;
+    app_state
+        .message_queue
+        .queue(ChatContextType::Ideation, context_id, content.to_string());
+
+    let invalid_cli_path = Path::new("/definitely/missing/ralphx-test-cli");
+    let unused_path = Path::new(".");
+    super::super::chat_service_queue::process_queued_messages(
+        ChatContextType::Ideation,
+        AgentHarnessKind::Claude,
+        context_id,
+        context_id,
+        conversation_id.clone(),
+        "session-cli",
+        false,
+        &app_state.message_queue,
+        None,
+        None,
+        &app_state.running_agent_registry,
+        &app_state.agent_run_repo,
+        &app_state.chat_message_repo,
+        Some(Arc::clone(&app_state.chat_timeline_repo)),
+        &app_state.chat_attachment_repo,
+        &app_state.artifact_repo,
+        &app_state.activity_event_repo,
+        &app_state.task_repo,
+        &app_state.ideation_session_repo,
+        invalid_cli_path,
+        unused_path,
+        unused_path,
+        None,
+        None,
+        Arc::new(events.clone()),
+        None,
+        Some(
+            crate::application::runtime_factory::ChatRuntimeFactoryDeps::from_app_state(app_state),
+        ),
+        None,
+        None,
+        tokio_util::sync::CancellationToken::new(),
+        None,
+        None,
+        super::StreamingStateCache::new(),
+    )
+    .await;
+
+    events
+}
+
+#[tokio::test]
+async fn queue_drain_emits_render_ready_user_message_at_repo_sequence() {
+    let app_state = AppState::new_test();
+    let events =
+        drain_one_queued_message(&app_state, "session-queue-render-ready", "Queued ask").await;
+
+    let created = events
+        .events()
+        .into_iter()
+        .find(|event| event.event == "agent:message_created")
+        .expect("queue drain should emit agent:message_created");
+    let message_id = created.payload["message_id"]
+        .as_str()
+        .expect("message id")
+        .to_string();
+    let persisted = app_state
+        .chat_timeline_repo
+        .get_by_conversation(&ChatConversationId::from_string(
+            created.payload["conversation_id"].as_str().expect("cid"),
+        ))
+        .await
+        .expect("timeline should read back")
+        .into_iter()
+        .find(|item| item.message_id.as_ref().map(|id| id.as_str()) == Some(message_id.as_str()))
+        .expect("queued user message should have a persisted timeline item");
+
+    let render_ready = &created.payload["render_ready"];
+    assert!(
+        !render_ready.is_null(),
+        "queued user message must carry render_ready so the frontend can place it"
+    );
+    assert_eq!(render_ready["message"]["id"], message_id.as_str());
+    assert_eq!(render_ready["message"]["role"], "user");
+    let items = render_ready["timeline_items"]
+        .as_array()
+        .expect("timeline items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["sequence"].as_i64(), Some(persisted.sequence));
+}
+
+#[tokio::test]
+async fn queue_drain_still_emits_hidden_user_message_without_render_ready() {
+    let app_state = AppState::new_test();
+    let events = drain_one_queued_message(
+        &app_state,
+        "session-queue-hidden",
+        "<instructions>rehydrate</instructions>",
+    )
+    .await;
+
+    let created = events
+        .events()
+        .into_iter()
+        .find(|event| event.event == "agent:message_created")
+        .expect("the queue path has no emission-level hidden guard; the event still fires");
+    assert!(
+        created.payload["render_ready"].is_null(),
+        "hidden messages persist no timeline item, so they carry no render-ready position"
+    );
+}
+
 #[tokio::test]
 async fn terminal_queued_verifier_failure_releases_deferred_plan_attention() {
     let state = AppState::new_test();

@@ -2345,23 +2345,40 @@ async fn persist_message_text_timeline_item_skips_empty_and_hidden_messages() {
 
     let mut empty = ChatMessage::user_in_session(IdeationSessionId::new(), "");
     empty.conversation_id = Some(conversation_id);
-    persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &empty).await;
+    assert!(
+        persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &empty)
+            .await
+            .is_none()
+    );
 
     let mut recovery = ChatMessage::user_in_session(IdeationSessionId::new(), "recover");
     recovery.conversation_id = Some(conversation_id);
     recovery.metadata = Some(r#"{"recovery_context":true}"#.to_string());
-    persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &recovery).await;
+    assert!(
+        persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &recovery)
+            .await
+            .is_none()
+    );
 
     let mut hidden = ChatMessage::user_in_session(IdeationSessionId::new(), "internal");
     hidden.conversation_id = Some(conversation_id);
     hidden.metadata = Some(r#"{"hidden_from_ui":true}"#.to_string());
-    persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &hidden).await;
+    assert!(
+        persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &hidden)
+            .await
+            .is_none()
+    );
 
     let mut normal = ChatMessage::user_in_session(IdeationSessionId::new(), "hello");
     normal.conversation_id = Some(conversation_id);
     normal.provider_harness = Some(AgentHarnessKind::Codex);
     normal.provider_session_id = Some("thread-user".to_string());
-    persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &normal).await;
+    let persisted =
+        persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &normal)
+            .await
+            .expect("visible message should return its persisted timeline item");
+    assert_eq!(persisted.message_id.as_ref(), Some(&normal.id));
+    assert!(persisted.sequence > 0);
 
     let page = state
         .chat_timeline_repo
@@ -2410,11 +2427,17 @@ async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() 
 
     let mut no_conversation = ChatMessage::user_in_session(IdeationSessionId::new(), "ignored");
     no_conversation.conversation_id = None;
-    persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &no_conversation)
-        .await;
+    assert!(persist_message_text_timeline_item(
+        &Some(state.chat_timeline_repo.clone()),
+        &no_conversation
+    )
+    .await
+    .is_none());
     let mut no_repo = ChatMessage::user_in_session(IdeationSessionId::new(), "ignored");
     no_repo.conversation_id = Some(conversation_id);
-    persist_message_text_timeline_item(&None, &no_repo).await;
+    assert!(persist_message_text_timeline_item(&None, &no_repo)
+        .await
+        .is_none());
 
     let page = state
         .chat_timeline_repo
