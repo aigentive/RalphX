@@ -16,9 +16,9 @@ use crate::application::git_service::git_cmd;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceStatus, AgentRunId, AgentRunStatus,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, ChatContextType,
-    ChatConversationId,
+    workspace_review_fixer_status_is_active, AgentConversationWorkspace,
+    AgentConversationWorkspaceStatus, AgentRunId, AgentRunStatus, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewMonitor, ChatContextType, ChatConversationId,
 };
 use crate::domain::services::running_agent_registry::RunningAgentKey;
 
@@ -77,6 +77,8 @@ pub(crate) enum AutoReviewSkipReason {
     BlockingFindings,
     ReviewFailed,
     RelatedRuntimeGenerating,
+    RepairAttemptActive,
+    ReviewFixerActive,
     StartSkipped,
 }
 
@@ -95,6 +97,8 @@ impl AutoReviewSkipReason {
             Self::BlockingFindings => "blocking_findings",
             Self::ReviewFailed => "review_failed",
             Self::RelatedRuntimeGenerating => "related_runtime_generating",
+            Self::RepairAttemptActive => "repair_attempt_active",
+            Self::ReviewFixerActive => "review_fixer_active",
             Self::StartSkipped => "start_skipped",
         }
     }
@@ -415,6 +419,39 @@ pub(crate) async fn resolve_auto_review_start_action(
                 AutoReviewSkipReason::GateNotRequired,
             ));
         }
+    }
+
+    // Reviewing a head that a repair or fixer is actively rewriting wastes the run and inflates
+    // the convergence counter. Defer instead: the existing repair-boundary starter and PR-fix
+    // completion handoff already re-dispatch once the head settles, so no new machinery is needed.
+    if workspace_review_fixer_status_is_active(context.monitor.review_fixer_status.as_deref()) {
+        return Ok(AutoReviewStartAction::Skip(
+            AutoReviewSkipReason::ReviewFixerActive,
+        ));
+    }
+    // Fail closed toward deferral: a repair-repo read error must not read as "no repair active".
+    // Deferring is always recoverable through those same handoffs; reviewing a doomed head is not.
+    let repair_attempt_active = match state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await
+    {
+        Ok(attempt) => attempt.is_some(),
+        Err(error) => {
+            tracing::warn!(
+                target: "ralphx_lib::commands::agent_workspace_auto_review",
+                operation = "auto_review_repair_lookup_failed",
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Could not read repair state; deferring auto-review"
+            );
+            true
+        }
+    };
+    if repair_attempt_active {
+        return Ok(AutoReviewStartAction::Skip(
+            AutoReviewSkipReason::RepairAttemptActive,
+        ));
     }
 
     if related_workspace_runtime_is_generating(state, execution_state, workspace, &context.monitor)

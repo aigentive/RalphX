@@ -580,6 +580,7 @@ fn workspace_review_target_response_includes_packet_only_when_requested() {
                 deletions: 0,
             },
             changed_files: vec![AgentWorkspaceReviewChangedFile {
+                low_signal: None,
                 path: "src/lib.rs".to_string(),
                 status: "modified".to_string(),
                 sources: vec!["committed".to_string()],
@@ -887,6 +888,7 @@ fn workspace_review_missing_hunk_anchors_requires_every_anchor() {
         title: None,
         message: "Explains the first hunk.".to_string(),
         level: "notice".to_string(),
+        file_patch_hash: None,
         created_by_run_id: Some("run-1".to_string()),
         created_at: chrono::Utc::now(),
     };

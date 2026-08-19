@@ -54,6 +54,7 @@ function reviewMonitor(
     status: "ready",
     reviewOutcome: "none",
     reviewGateStatus: "required",
+    reviewSettlementSource: null,
     currentTargetScope: "workspace_delta",
     reviewedTargetScope: "workspace_delta",
     reviewConversationId: "review-conversation-1",
@@ -119,6 +120,41 @@ function reviewContext(
     ...overrides,
   };
 }
+
+it("explains a passed gate that was settled from a timed-out reviewer's artifact", () => {
+  renderPanel({
+    reviewContext: reviewContext({
+      isCurrent: true,
+      isOutdated: false,
+      monitor: reviewMonitor({
+        reviewOutcome: "passed",
+        reviewGateStatus: "passed",
+        reviewSettlementSource: "artifact_degraded",
+      }),
+    }),
+  });
+
+  // The gate still reads as passed: a degraded settlement authorizes exactly what a typed one does.
+  expect(screen.getByText("Review passed")).toBeInTheDocument();
+  expect(screen.getByText(/reviewer timed out before reporting/i)).toBeInTheDocument();
+});
+
+it("does not explain settlement for an ordinary typed pass", () => {
+  renderPanel({
+    reviewContext: reviewContext({
+      isCurrent: true,
+      isOutdated: false,
+      monitor: reviewMonitor({
+        reviewOutcome: "passed",
+        reviewGateStatus: "passed",
+        reviewSettlementSource: "typed",
+      }),
+    }),
+  });
+
+  expect(screen.getByText("Review passed")).toBeInTheDocument();
+  expect(screen.queryByText(/reviewer timed out before reporting/i)).not.toBeInTheDocument();
+});
 
 it("distinguishes a blocking review authorized by a human bypass", () => {
   renderPanel({

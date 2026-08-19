@@ -207,6 +207,15 @@ export const AGENT_WORKSPACE_TOOLS = [
                     type: "string",
                     description: "Target diff fingerprint from get_workspace_review_context.",
                 },
+                outcome: {
+                    type: "string",
+                    enum: ["passed", "blocking"],
+                    description: "Disposition of this review, matching the artifact's disposition line. RalphX records it durably so the review gate can still settle correctly if your run is cut short after this write.",
+                },
+                blocking_summary: {
+                    type: "string",
+                    description: "Short summary of what blocks the change. Required when outcome is 'blocking'.",
+                },
             },
             required: [
                 "content",
@@ -214,6 +223,7 @@ export const AGENT_WORKSPACE_TOOLS = [
                 "target_scope",
                 "head_sha",
                 "diff_fingerprint",
+                "outcome",
             ],
         },
     },
@@ -672,7 +682,7 @@ export async function callGetPrReviewContextTool(callTauriGet, args, runtimeCont
 }
 export async function callGetWorkspaceReviewContextTool(callTauriGet, args, runtimeContext) {
     const conversation_id = resolveAgentWorkspaceConversationId("get_workspace_review_context", args, runtimeContext);
-    const path = `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true`;
+    const path = `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true&include_events=false`;
     const headers = buildRuntimeIdentityTransportHeaders({
         agentRunId: runtimeContext?.agentRunId,
         conversationId: runtimeContext?.conversationId,
@@ -732,6 +742,8 @@ export async function callWriteWorkspaceReviewArtifactTool(callTauri, args, runt
         target_scope: artifactArgs.target_scope,
         head_sha: artifactArgs.head_sha,
         diff_fingerprint: artifactArgs.diff_fingerprint,
+        outcome: artifactArgs.outcome,
+        blocking_summary: artifactArgs.blocking_summary,
         created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
     });
 }
