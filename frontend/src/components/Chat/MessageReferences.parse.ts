@@ -375,7 +375,9 @@ function parseIntegrationReferences(
         record.provider !== "granola") ||
       (record.provider === "atlassian" &&
         record.kind !== "jira" &&
-        record.kind !== "confluence") ||
+        record.kind !== "jira_board" &&
+        record.kind !== "confluence" &&
+        record.kind !== "confluence_link") ||
       (record.provider === "linear" && record.kind !== "linear") ||
       (record.provider === "clickup" && record.kind !== "clickup") ||
       (record.provider === "granola" && record.kind !== "note") ||
@@ -392,7 +394,9 @@ function parseIntegrationReferences(
       | "granola";
     const kind = record.kind as
       | "jira"
+      | "jira_board"
       | "confluence"
+      | "confluence_link"
       | "linear"
       | "clickup"
       | "note";

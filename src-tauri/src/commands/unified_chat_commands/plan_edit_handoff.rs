@@ -62,17 +62,19 @@ pub(crate) async fn clear_plan_provider_session_after_commit(
     state: &AppState,
     conversation: &mut ChatConversation,
 ) -> Result<(), String> {
-    if conversation.provider_session_ref().is_some() {
-        state
-            .chat_conversation_repo
-            .clear_provider_session_ref(&conversation.id)
-            .await
-            .map_err(|error| error.to_string())?;
-        conversation.clear_provider_session_ref();
-        tracing::info!(
-            conversation_id = %conversation.id,
-            "Cleared planning provider session after Plan-to-Edit handoff"
-        );
-    }
+    // Unconditional on purpose: the in-memory snapshot can predate a stream-teardown
+    // write that resurrected the row's provider session. Gating on the snapshot would
+    // skip the DB clear and leave the stale plan session behind. The clear is an
+    // idempotent `SET ... = NULL`, so running it against an already-empty row is free.
+    state
+        .chat_conversation_repo
+        .clear_provider_session_ref(&conversation.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    conversation.clear_provider_session_ref();
+    tracing::info!(
+        conversation_id = %conversation.id,
+        "Cleared planning provider session after Plan-to-Edit handoff"
+    );
     Ok(())
 }

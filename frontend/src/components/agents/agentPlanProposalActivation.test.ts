@@ -91,4 +91,37 @@ describe("activateAgentPlanProposals", () => {
     expect(chatApi.activateAgentTaskPipeline).toHaveBeenCalledTimes(1);
     expect(onConversationModeSwitched).not.toHaveBeenCalled();
   });
+
+  it("appends the message of an Error rejection to the retry dialog", async () => {
+    vi.mocked(chatApi.sendAgentMessage).mockRejectedValue(new Error("send failed"));
+
+    await expect(
+      activateAgentPlanProposals({
+        sessionId: "session-1",
+        workspace: planWorkspace,
+        queryClient: new QueryClient(),
+        canPromoteWorkspace: true,
+        runtimeOverride: runtime,
+      }),
+    ).rejects.toThrow(/it will not activate Tasks again\. send failed$/);
+  });
+
+  it("surfaces plain string rejections from the backend", async () => {
+    // Tauri rejects with plain strings, which an `instanceof Error` check silently drops.
+    vi.mocked(chatApi.sendAgentMessage).mockRejectedValue(
+      "Failed to resolve manual default for workspace_edit: A complete role runtime override cannot be mixed with legacy provider or model overrides",
+    );
+
+    await expect(
+      activateAgentPlanProposals({
+        sessionId: "session-1",
+        workspace: planWorkspace,
+        queryClient: new QueryClient(),
+        canPromoteWorkspace: true,
+        runtimeOverride: runtime,
+      }),
+    ).rejects.toThrow(
+      /A complete role runtime override cannot be mixed with legacy provider or model overrides$/,
+    );
+  });
 });

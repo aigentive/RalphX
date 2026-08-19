@@ -9,7 +9,9 @@ use super::pr_autofix_redelivery::{
     remember_blocked_pr_autofix_fingerprint, PrAutofixFingerprintSpend, PrAutofixSuccessorDecision,
 };
 use super::StalePublishRepairRecoveryOutcome;
-use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
+use crate::application::agent_conversation_workspace::{
+    classify_effective_agent_conversation_workspace_path, WorkspacePathResolution,
+};
 use crate::application::agent_workspace_pr_autofix_attempt::load_latest_exact_pr_autofix_run_for_pr;
 use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_dispatch_is_due, agent_workspace_repair_hold_reason,
@@ -39,10 +41,11 @@ use crate::application::publish_resilience::{
 };
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent, AgentRunId,
-    AgentRunStatus, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
-    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairOperationHoldReason,
-    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, ChatContextType, GitTargetLeaseOwner,
+    AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
+    AgentConversationWorkspaceStatus, AgentRunId, AgentRunStatus, AgentWorkspaceRepairAttempt,
+    AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairContinuation,
+    AgentWorkspaceRepairOperationHoldReason, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    ChatContextType, GitTargetLeaseOwner,
 };
 use crate::domain::entities::{
     NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget,
@@ -105,12 +108,9 @@ const MAX_CONTINUATION_RECOVERY_FAILURE_STREAK: u32 = 3;
 pub(crate) fn agent_workspace_repair_owns_unpublished_publish_continuation(
     attempt: &AgentWorkspaceRepairAttempt,
 ) -> bool {
-    let Some(head) = attempt.repair_head_commit.as_deref().map(str::trim) else {
+    let Some(head) = attempt.unpublished_local_head() else {
         return false;
     };
-    if head.is_empty() {
-        return false;
-    }
     let marker = format!("{PR_AUTOFIX_HEAD_REDRIVE_REASON_PREFIX}{head}");
     attempt
         .pending_reasons
@@ -681,12 +681,9 @@ async fn retry_safe_ready_agent_workspace_repair_publish(
                 ) {
                     return Ok(DurableRepairRecoveryOutcome::Noop);
                 }
-                let Some(head) = current.repair_head_commit.as_deref().map(str::trim) else {
+                let Some(head) = current.unpublished_local_head() else {
                     return Ok(DurableRepairRecoveryOutcome::Noop);
                 };
-                if head.is_empty() {
-                    return Ok(DurableRepairRecoveryOutcome::Noop);
-                }
                 let marker = format!("{PR_AUTOFIX_HEAD_REDRIVE_REASON_PREFIX}{head}");
                 (
                     true,
@@ -1076,12 +1073,7 @@ async fn retry_safe_blocked_agent_workspace_repair(
         // publish-vs-health hold livelock. Evaluate only the durable-head shape here so the
         // pre-existing cap behavior remains unchanged for ordinary successors and holds.
         if current.source == AgentWorkspaceRepairSource::PrAutofix {
-            let repair_head = current
-                .repair_head_commit
-                .as_deref()
-                .map(str::trim)
-                .filter(|head| !head.is_empty())
-                .map(str::to_string);
+            let repair_head = current.unpublished_local_head().map(str::to_string);
             if let Some(repair_head) =
                 repair_head.filter(|head| !exhausted_publish_redrive_was_checked(&current, head))
             {
@@ -1120,11 +1112,9 @@ async fn retry_safe_blocked_agent_workspace_repair(
         // A repair head still awaiting publication is a bounded, already-owned gap: the redrive
         // check above owns it for exactly one GitHub read per head. Re-arming here as well would
         // add a second, unbounded health read for the same generation on every later pass.
-        let has_unpublished_repair_head = current
-            .repair_head_commit
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|head| !head.is_empty());
+        // Must stay keyed on the same accessor as the redrive check above, or an attempt carrying
+        // only base-update evidence would both skip the redrive and re-arm the streak.
+        let has_unpublished_repair_head = current.unpublished_local_head().is_some();
         if current.source == AgentWorkspaceRepairSource::PrAutofix && !has_unpublished_repair_head {
             if let Some(outcome) = rearm_blocked_pr_autofix_streak(state, &current).await? {
                 return Ok(outcome);
@@ -1160,9 +1150,14 @@ async fn retry_safe_blocked_agent_workspace_repair(
             }
         }
     }
+    let mut retargeted_base: Option<String> = None;
     let carryover_pr_autofix_evidence = if current.source == AgentWorkspaceRepairSource::PrAutofix {
         match evaluate_pr_autofix_successor(state, &current, &workspace).await {
             PrAutofixSuccessorDecision::Proceed(carryover) => carryover,
+            PrAutofixSuccessorDecision::ProceedRetargeted { observed_base_commit } => {
+                retargeted_base = Some(observed_base_commit);
+                None
+            }
             PrAutofixSuccessorDecision::RedrivePublish => {
                 return redrive_blocked_repair_publish(state, current, &workspace).await;
             }
@@ -1191,7 +1186,18 @@ async fn retry_safe_blocked_agent_workspace_repair(
             source: current.source,
             continuation: current.continuation,
             target_base_ref: workspace.base_ref,
-            target_base_commit: workspace.base_commit,
+            // retargeted_base carries the observed OID when the base moved (ProceedRetargeted);
+            // the predecessor's own target is the fallback for ordinary retries so completion
+            // validates against the right base. workspace.base_commit is the diff baseline and
+            // deliberately lags an observed-but-unmerged base on supersede/defer routes.
+            target_base_commit: retargeted_base
+                .or_else(|| {
+                    current
+                        .target_base_commit
+                        .clone()
+                        .filter(|commit| !commit.trim().is_empty())
+                })
+                .or(workspace.base_commit),
             verified_newer_base: false,
             reason: marker,
             summary: "Automatically retrying the blocked workspace repair.".to_string(),
@@ -1543,18 +1549,18 @@ async fn redeliver_due_repair_dispatch(
         .get_by_id(&workspace.project_id)
         .await?
         .ok_or_else(|| AppError::ProjectNotFound(workspace.project_id.to_string()))?;
-    let resolved = resolve_effective_agent_conversation_workspace_path(
-        &project,
-        &workspace,
-        state.plan_branch_repo.as_ref(),
-    )
-    .await?;
+    let Some(worktree_path) =
+        resolve_repair_delivery_path_or_settle(state, &project, &workspace, "repair_redelivery")
+            .await?
+    else {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    };
     reserve_and_deliver_repair_dispatch(
         state,
         attempt,
         target_identity,
         workspace,
-        resolved.path,
+        worktree_path,
         "Retrying the durable workspace repair delivery.",
         "Durable workspace repair delivery retry completed.",
     )
@@ -1616,20 +1622,20 @@ async fn rescue_orphaned_repair_dispatch(
         .get_by_id(&workspace.project_id)
         .await?
         .ok_or_else(|| AppError::ProjectNotFound(workspace.project_id.to_string()))?;
-    let resolved = resolve_effective_agent_conversation_workspace_path(
-        &project,
-        &workspace,
-        state.plan_branch_repo.as_ref(),
-    )
-    .await?;
+    let Some(worktree_path) =
+        resolve_repair_delivery_path_or_settle(state, &project, &workspace, "orphan_rescue")
+            .await?
+    else {
+        return Ok(DurableRepairRecoveryOutcome::Noop);
+    };
     let target_identity =
-        GitService::canonical_target_identity(&resolved.path, &workspace.branch_name).await?;
+        GitService::canonical_target_identity(&worktree_path, &workspace.branch_name).await?;
     reserve_and_deliver_repair_dispatch(
         state,
         attempt,
         target_identity,
         workspace,
-        resolved.path,
+        worktree_path,
         "Rescuing the orphaned durable workspace repair delivery.",
         "Recovered the orphaned durable workspace repair delivery.",
     )
@@ -2431,6 +2437,154 @@ fn continuation_open_effect_recovery_streak(attempt: &AgentWorkspaceRepairAttemp
         .filter_map(|streak| streak.parse::<u32>().ok())
         .max()
         .unwrap_or_default()
+}
+
+/// Resolves the worktree path a durable repair delivery needs, settling a confirmed-missing
+/// worktree instead of propagating. `Ok(None)` means "skip this attempt", never "fail the pass".
+///
+/// Propagation here was the cause of the startup `durable claims remain fenced` ERROR: the loop in
+/// [`recover_agent_workspace_repair_attempts_for_state`] uses `?`, so one orphaned worktree aborted
+/// the whole pass — 17 of 24 unsettled repair attempts were never reconciled and the in-flight
+/// git-mutation stage never ran at all.
+///
+/// # Errors
+///
+/// Propagates identity and plan-branch errors unchanged, and still reports a directory that exists
+/// without a `.git` entry as an error, since that is not a settled-orphan shape.
+async fn resolve_repair_delivery_path_or_settle(
+    state: &AppState,
+    project: &crate::domain::entities::Project,
+    workspace: &AgentConversationWorkspace,
+    trigger: &str,
+) -> AppResult<Option<std::path::PathBuf>> {
+    match classify_effective_agent_conversation_workspace_path(
+        project,
+        workspace,
+        state.plan_branch_repo.as_ref(),
+    )
+    .await?
+    {
+        WorkspacePathResolution::Valid(path) => Ok(Some(path)),
+        WorkspacePathResolution::Missing {
+            expected,
+            parent_root_present,
+        } => {
+            settle_missing_workspace_resolution(
+                state,
+                workspace,
+                &expected,
+                parent_root_present,
+                trigger,
+            )
+            .await?;
+            Ok(None)
+        }
+        resolution => resolution.into_valid_path(workspace).map(Some),
+    }
+}
+
+/// Publication-event step recorded when a workspace's worktree is confirmed gone.
+pub(crate) const WORKSPACE_MISSING_SETTLED_STEP: &str = "workspace_missing_settled";
+
+/// Settles a workspace whose worktree directory no longer exists.
+///
+/// Before this, every recovery site that hit a missing worktree logged a warning and returned a
+/// retryable skip, so the same dead workspace was re-examined on every scan forever (~495 warnings
+/// in 34 minutes of production logs). Marking the workspace `Missing` closes those entries:
+/// `pr_supervision_recovery_base_skip_reason` and the repair reconciliation scan both short-circuit
+/// on any non-`Active` status.
+///
+/// `Missing` is deliberately *recoverable* — `agent_workspace_pr_reopen` restores it to `Active`
+/// when the worktree comes back. This must never terminalize the workspace.
+///
+/// Idempotent: a workspace already marked `Missing` writes no second evidence row and settles
+/// nothing twice.
+///
+/// # Errors
+///
+/// Returns `AppError::Database` when the evidence write, status write, or attempt settlement fails.
+pub(crate) async fn mark_agent_conversation_workspace_missing_with_evidence(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    expected_path: &std::path::Path,
+    trigger: &str,
+) -> AppResult<()> {
+    if workspace.status != AgentConversationWorkspaceStatus::Active {
+        return Ok(());
+    }
+
+    // Evidence before the transition, per the established escalation pattern.
+    state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            workspace.conversation_id.clone(),
+            WORKSPACE_MISSING_SETTLED_STEP,
+            "failed",
+            format!(
+                "The local worktree for this workspace no longer exists ({}). Detected by {trigger}. \
+                 Restore the worktree or start a fresh Agent conversation.",
+                expected_path.display()
+            ),
+            Some("workspace_missing".to_string()),
+        ))
+        .await?;
+
+    state
+        .agent_conversation_workspace_repo
+        .update_status(
+            &workspace.conversation_id,
+            AgentConversationWorkspaceStatus::Missing,
+        )
+        .await?;
+
+    // Current-attempt authority: only the currently unsettled generation is settled, through the
+    // same durable settlement API every other blocker uses. Already-settled history is untouched.
+    if let Some(attempt) = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&workspace.conversation_id)
+        .await?
+        .filter(|attempt| attempt.is_unsettled())
+    {
+        block_recovery_attempt(state, attempt, "workspace_worktree_missing").await?;
+    }
+
+    tracing::warn!(
+        conversation_id = workspace.conversation_id.as_str(),
+        expected = %expected_path.display(),
+        trigger,
+        "Agent workspace worktree is gone; marked Missing and settled its repair attempt"
+    );
+    Ok(())
+}
+
+/// Routes a [`WorkspacePathResolution::Missing`] to the right outcome.
+///
+/// A missing *parent root* means the whole worktree root is absent — an unmounted volume or a
+/// moved home directory — which must never settle a workspace, so it warns once and changes
+/// nothing (fail closed).
+///
+/// # Errors
+///
+/// Returns whatever [`mark_agent_conversation_workspace_missing_with_evidence`] returns.
+pub(crate) async fn settle_missing_workspace_resolution(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    expected: &std::path::Path,
+    parent_root_present: bool,
+    trigger: &str,
+) -> AppResult<()> {
+    if !parent_root_present {
+        tracing::warn!(
+            conversation_id = workspace.conversation_id.as_str(),
+            expected = %expected.display(),
+            trigger,
+            "Agent workspace worktree root is absent; skipping without marking the workspace \
+             missing (unmounted volume, not a deleted workspace)"
+        );
+        return Ok(());
+    }
+    mark_agent_conversation_workspace_missing_with_evidence(state, workspace, expected, trigger)
+        .await
 }
 
 async fn block_recovery_attempt(

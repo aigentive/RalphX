@@ -8,9 +8,8 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     AgentConversationJiraIssueLink, AgentConversationWorkspaceMode, AgentRun,
-    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewArtifactOutcome,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewSettlementSource, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
+    AgentWorkspaceReviewApprovalSnapshot, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
     ArtifactType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
     ChatTimelineItem, ChatTimelineItemKind, IdeationAnalysisBaseRefKind, IdeationSession,
     IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, ProjectId, RuntimeSource,
@@ -7738,6 +7737,7 @@ fn selected_source_review_packet_includes_hunk_anchors() {
     assert_eq!(anchor.new_start, 1);
     assert_eq!(anchor.new_lines, 3);
 }
+}
 
 // ── Degraded settlement from recorded artifact evidence ──────────────────
 
@@ -8787,4 +8787,497 @@ async fn previous_review_delta_includes_uncommitted_work() {
             .any(|file| file.path == "staged-but-uncommitted.rs"),
         "uncommitted work is unreviewed even though prev_head..head cannot see it"
     );
+}
+
+/// Seeds a `Running` fixer run linked to an active fixer monitor, mirroring the state a routed
+/// Workspace Review fixer holds while it works.
+async fn seed_active_fixer_run(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    attempt_id: &str,
+) -> AgentRunId {
+    let run = AgentRun::new(conversation_id.clone());
+    let run_id = run.id.clone();
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("fixer run should persist");
+    let mut monitor = fixer_attempt_monitor(
+        conversation_id.clone(),
+        ProjectId("project-1".to_string()),
+        attempt_id,
+        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
+    );
+    monitor.review_fixer_run_id = Some(run_id.as_str());
+    monitor.review_fixer_conversation_id = Some(conversation_id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("active fixer monitor should persist");
+    run_id
+}
+
+async fn reload_monitor(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AgentWorkspaceReviewMonitor {
+    state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(conversation_id)
+        .await
+        .expect("monitor read should succeed")
+        .expect("monitor should exist")
+}
+
+#[tokio::test]
+async fn fixer_completion_accepts_a_summary_without_touching_the_monitor() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let run_id = seed_active_fixer_run(&state, &conversation_id, "fixer-attempt-accept").await;
+
+    let outcome = complete_workspace_review_fixer_run(&state, &conversation_id, &run_id, None)
+        .await
+        .expect("fixer completion should resolve");
+
+    assert_eq!(outcome, WorkspaceReviewFixerCompletionOutcome::Accepted);
+    let monitor = reload_monitor(&state, &conversation_id).await;
+    assert_eq!(
+        monitor.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_RUNNING)
+    );
+    assert_eq!(
+        monitor.review_fixer_attempt_id.as_deref(),
+        Some("fixer-attempt-accept")
+    );
+    assert!(monitor.last_error.is_none());
+}
+
+#[tokio::test]
+async fn fixer_completion_blocker_settles_the_attempt_failed_with_the_blocker_text() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let run_id = seed_active_fixer_run(&state, &conversation_id, "fixer-attempt-blocked").await;
+
+    let outcome = complete_workspace_review_fixer_run(
+        &state,
+        &conversation_id,
+        &run_id,
+        Some("  The requested change needs a schema migration.  "),
+    )
+    .await
+    .expect("fixer completion should resolve");
+
+    assert_eq!(outcome, WorkspaceReviewFixerCompletionOutcome::Blocked);
+    let monitor = reload_monitor(&state, &conversation_id).await;
+    assert_eq!(
+        monitor.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED)
+    );
+    assert_eq!(
+        monitor.last_error.as_deref(),
+        Some("Workspace Review fixer reported a blocker: The requested change needs a schema migration.")
+    );
+}
+
+#[tokio::test]
+async fn fixer_completion_blocker_stops_re_routing_on_the_same_findings() {
+    let (_temp, repo, base_sha) = init_repo();
+    committed_workspace_delta(&repo);
+
+    let mut state = AppState::new_test();
+    state.agent_provider_settings_repo =
+        Arc::new(crate::infrastructure::memory::MemoryAgentProviderSettingsRepository::new());
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(
+        &project,
+        &repo,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main",
+        Some(base_sha),
+    );
+    seed_conversation(&state, &workspace).await;
+    persist_workspace(&state, &workspace).await;
+
+    persist_active_review_for_current_target(&state, &workspace, "review-one", "artifact-one", 0)
+        .await;
+    let routed = complete_agent_workspace_review_run(
+        &state,
+        &workspace,
+        Some("blocking".to_string()),
+        Some("A blocking finding the fixer cannot repair.".to_string()),
+        None,
+        Some("review-one".to_string()),
+    )
+    .await
+    .expect("first blocking completion should attempt automatic routing");
+    let attempt_id = routed
+        .review_fixer_attempt_id
+        .clone()
+        .expect("routing should reserve a fixer attempt");
+
+    // Re-link the reserved attempt to a live fixer run, as a successful launch would.
+    let run = AgentRun::new(workspace.conversation_id.clone());
+    let run_id = run.id.clone();
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("fixer run should persist");
+    let mut linked = reload_monitor(&state, &workspace.conversation_id).await;
+    linked.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_RUNNING.to_string());
+    linked.review_fixer_run_id = Some(run_id.as_str());
+    linked.review_fixer_conversation_id = Some(workspace.conversation_id.clone());
+    linked.last_error = None;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(linked)
+        .await
+        .expect("linked fixer monitor should persist");
+
+    assert_eq!(
+        complete_workspace_review_fixer_run(
+            &state,
+            &workspace.conversation_id,
+            &run_id,
+            Some("This repair needs a human decision."),
+        )
+        .await
+        .expect("blocker should settle"),
+        WorkspaceReviewFixerCompletionOutcome::Blocked
+    );
+
+    // The blocker left the diff untouched, so the current Review artifact pair stays valid and a
+    // re-review reports the same finding against the same fingerprint. The settled `failed` status
+    // is what must stop a second fixer from being routed for it.
+    let mut re_reviewing = reload_monitor(&state, &workspace.conversation_id).await;
+    re_reviewing.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(re_reviewing)
+        .await
+        .expect("re-reviewing monitor should persist");
+    let re_reviewed = complete_agent_workspace_review_run(
+        &state,
+        &workspace,
+        Some("blocking".to_string()),
+        Some("A blocking finding the fixer cannot repair.".to_string()),
+        None,
+        Some("review-one".to_string()),
+    )
+    .await
+    .expect("re-review should persist");
+
+    assert_eq!(
+        re_reviewed.review_fixer_status.as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED)
+    );
+    assert_eq!(
+        re_reviewed.review_fixer_attempt_id.as_deref(),
+        Some(attempt_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn fixer_completion_is_idempotent_once_the_attempt_is_terminal() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let run_id = seed_active_fixer_run(&state, &conversation_id, "fixer-attempt-terminal").await;
+    let mut monitor = reload_monitor(&state, &conversation_id).await;
+    monitor.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED.to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("terminal fixer monitor should persist");
+
+    for blocker in [None, Some("late blocker")] {
+        assert_eq!(
+            complete_workspace_review_fixer_run(&state, &conversation_id, &run_id, blocker)
+                .await
+                .expect("fixer completion should resolve"),
+            WorkspaceReviewFixerCompletionOutcome::AlreadySettled
+        );
+    }
+}
+
+#[tokio::test]
+async fn fixer_completion_rejects_runs_that_are_not_the_active_fixer() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let run_id = seed_active_fixer_run(&state, &conversation_id, "fixer-attempt-mismatch").await;
+
+    // Unknown run.
+    assert_eq!(
+        complete_workspace_review_fixer_run(
+            &state,
+            &conversation_id,
+            &AgentRunId::new(),
+            Some("blocker"),
+        )
+        .await
+        .expect("unknown run should resolve"),
+        WorkspaceReviewFixerCompletionOutcome::NotFixerRun
+    );
+
+    // No monitor for the caller conversation.
+    let other_conversation_id = ChatConversationId::new();
+    let other_run = AgentRun::new(other_conversation_id.clone());
+    let other_run_id = other_run.id.clone();
+    state
+        .agent_run_repo
+        .create(other_run)
+        .await
+        .expect("other run should persist");
+    assert_eq!(
+        complete_workspace_review_fixer_run(
+            &state,
+            &other_conversation_id,
+            &other_run_id,
+            Some("blocker"),
+        )
+        .await
+        .expect("monitor-less conversation should resolve"),
+        WorkspaceReviewFixerCompletionOutcome::NotFixerRun
+    );
+
+    // Right run, wrong conversation binding.
+    assert_eq!(
+        complete_workspace_review_fixer_run(
+            &state,
+            &other_conversation_id,
+            &run_id,
+            Some("blocker"),
+        )
+        .await
+        .expect("cross-conversation run should resolve"),
+        WorkspaceReviewFixerCompletionOutcome::NotFixerRun
+    );
+
+    // Linked run that is no longer running.
+    state
+        .agent_run_repo
+        .complete(&run_id)
+        .await
+        .expect("run completion should succeed");
+    assert_eq!(
+        complete_workspace_review_fixer_run(&state, &conversation_id, &run_id, Some("blocker"))
+            .await
+            .expect("terminated run should resolve"),
+        WorkspaceReviewFixerCompletionOutcome::NotFixerRun
+    );
+    assert_eq!(
+        reload_monitor(&state, &conversation_id)
+            .await
+            .review_fixer_status
+            .as_deref(),
+        Some(WORKSPACE_REVIEW_FIXER_STATUS_RUNNING)
+    );
+}
+
+/// Repository double that reports an active fixer monitor but always loses the settle CAS, which
+/// is the only way a real fixer attempt gets superseded between the read and the write.
+struct LostFixerSettleCasRepository {
+    monitor: AgentWorkspaceReviewMonitor,
+}
+
+fn unsupported() -> AppError {
+    AppError::Infrastructure("unsupported in this test double".to_string())
+}
+
+#[async_trait::async_trait]
+impl AgentConversationWorkspaceRepository for LostFixerSettleCasRepository {
+    async fn get_workspace_review_monitor(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(Some(self.monitor.clone()))
+    }
+
+    async fn settle_workspace_review_fixer_attempt(
+        &self,
+        _monitor: AgentWorkspaceReviewMonitor,
+        _expected_attempt_id: &str,
+        _expected_snapshot: &AgentWorkspaceReviewFixerSnapshot,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
+    }
+
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        Err(unsupported())
+    }
+    async fn set_stale_base_detected_at(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _detected_at: Option<DateTime<Utc>>,
+    ) -> AppResult<()> {
+        Err(unsupported())
+    }
+    async fn set_review_automation_override(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _value: Option<bool>,
+    ) -> AppResult<()> {
+        Err(unsupported())
+    }
+    async fn create_or_update(
+        &self,
+        _workspace: AgentConversationWorkspace,
+    ) -> AppResult<AgentConversationWorkspace> {
+        Err(unsupported())
+    }
+
+    async fn get_by_conversation_id(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Err(unsupported())
+    }
+
+    async fn get_by_project_id(
+        &self,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(unsupported())
+    }
+
+    async fn list_active_direct_published_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(unsupported())
+    }
+
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(unsupported())
+    }
+
+    async fn list_active_needs_agent_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(unsupported())
+    }
+
+    async fn update_links(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _ideation_session_id: Option<&IdeationSessionId>,
+        _plan_branch_id: Option<&crate::domain::entities::PlanBranchId>,
+    ) -> AppResult<()> {
+        Err(unsupported())
+    }
+
+    async fn update_publication(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: Option<i64>,
+        _pr_url: Option<&str>,
+        _pr_status: Option<&str>,
+        _push_status: Option<&str>,
+    ) -> AppResult<()> {
+        Err(unsupported())
+    }
+
+    async fn update_pr_supervision_preferences(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _autofix_enabled: bool,
+        _auto_merge_desired: bool,
+        _auto_merge_method: &str,
+    ) -> AppResult<()> {
+        Err(unsupported())
+    }
+
+    async fn update_status(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _status: crate::domain::entities::AgentConversationWorkspaceStatus,
+    ) -> AppResult<()> {
+        Err(unsupported())
+    }
+
+    async fn save_pr_description(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _description: crate::domain::entities::AgentWorkspacePrDescription,
+    ) -> AppResult<()> {
+        Err(unsupported())
+    }
+
+    async fn get_pr_description(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<crate::domain::entities::AgentWorkspacePrDescription>> {
+        Err(unsupported())
+    }
+
+    async fn clear_pr_description(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
+        Err(unsupported())
+    }
+
+    async fn append_publication_event(
+        &self,
+        _event: crate::domain::entities::AgentConversationWorkspacePublicationEvent,
+    ) -> AppResult<()> {
+        Err(unsupported())
+    }
+
+    async fn list_publication_events(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<crate::domain::entities::AgentConversationWorkspacePublicationEvent>> {
+        Err(unsupported())
+    }
+
+    async fn get_pr_review_monitor(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<crate::domain::entities::AgentWorkspacePrReviewMonitor>> {
+        Err(unsupported())
+    }
+
+    async fn set_pr_review_auto_approve_enabled(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _enabled: bool,
+    ) -> AppResult<crate::domain::entities::AgentWorkspacePrReviewMonitor> {
+        Err(unsupported())
+    }
+
+    async fn mark_pr_review_first_action_resolved(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<crate::domain::entities::AgentWorkspacePrReviewMonitor> {
+        Err(unsupported())
+    }
+
+    async fn claim_pending_pr_review_action(&self, _action_id: &str) -> AppResult<bool> {
+        Err(unsupported())
+    }
+
+    async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
+        Err(unsupported())
+    }
+}
+
+#[tokio::test]
+async fn fixer_completion_reports_supersession_when_the_settle_cas_is_lost() {
+    let mut state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let run_id = seed_active_fixer_run(&state, &conversation_id, "fixer-attempt-superseded").await;
+    let monitor = reload_monitor(&state, &conversation_id).await;
+    state.agent_conversation_workspace_repo = Arc::new(LostFixerSettleCasRepository { monitor });
+
+    let outcome =
+        complete_workspace_review_fixer_run(&state, &conversation_id, &run_id, Some("blocker"))
+            .await
+            .expect("a lost settle CAS must not surface as an error");
+
+    assert_eq!(outcome, WorkspaceReviewFixerCompletionOutcome::Superseded);
 }

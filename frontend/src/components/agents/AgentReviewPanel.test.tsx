@@ -493,6 +493,81 @@ describe("AgentReviewPanel", () => {
     ).toBeInTheDocument();
   });
 
+  it("surfaces the blocker a Workspace Review fixer reported", () => {
+    renderPanel({
+      reviewContext: reviewContext({
+        isCurrent: true,
+        isOutdated: false,
+        monitor: reviewMonitor({
+          reviewOutcome: "blocking",
+          reviewGateStatus: "blocking",
+          reviewBlockingSummary: "One unresolved blocker remains.",
+          reviewFixerStatus: "failed",
+          lastError:
+            "Workspace Review fixer reported a blocker: this needs a schema migration.",
+        }),
+      }),
+    });
+
+    expect(
+      screen.getByText("Automatic fix stopped"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "One unresolved blocker remains. Workspace Review fixer reported a blocker: this needs a schema migration.",
+      ),
+    ).toBeInTheDocument();
+    // The blocker is recoverable: the user must still be able to retry manually.
+    expect(screen.getByRole("button", { name: "Fix Issues" })).toBeEnabled();
+  });
+
+  it("surfaces the same headline for a fixer launch failure (provider error)", () => {
+    renderPanel({
+      reviewContext: reviewContext({
+        isCurrent: true,
+        isOutdated: false,
+        monitor: reviewMonitor({
+          reviewOutcome: "blocking",
+          reviewGateStatus: "blocking",
+          reviewBlockingSummary: "One unresolved blocker remains.",
+          reviewFixerStatus: "failed",
+          lastError:
+            "Failed to resolve Review fixer provider: no provider configured",
+        }),
+      }),
+    });
+
+    expect(
+      screen.getByText("Automatic fix stopped"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "One unresolved blocker remains. Failed to resolve Review fixer provider: no provider configured",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Fix Issues" })).toBeEnabled();
+  });
+
+  it("leaves the ordinary blocking banner untouched without a failed fixer", () => {
+    renderPanel({
+      reviewContext: reviewContext({
+        isCurrent: true,
+        isOutdated: false,
+        monitor: reviewMonitor({
+          reviewOutcome: "blocking",
+          reviewGateStatus: "blocking",
+          reviewBlockingSummary: "One unresolved blocker remains.",
+          reviewFixerStatus: null,
+        }),
+      }),
+    });
+
+    expect(screen.getByText("Review blocking")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Automatic fix stopped"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows the Workspace Review-only automation row and writes its explicit override", async () => {
     const user = userEvent.setup();
     const workspace = conversationWorkspaceFixture({

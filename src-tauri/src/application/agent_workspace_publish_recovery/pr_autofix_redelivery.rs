@@ -5,7 +5,9 @@
 //! evidence-driven rather than phase-driven, so they live beside the recovery reconciler instead
 //! of inside it.
 
-use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
+use crate::application::agent_conversation_workspace::{
+    classify_effective_agent_conversation_workspace_path, WorkspacePathResolution,
+};
 use crate::application::agent_workspace_publish_repair_state::{
     held_repair_has_unpublished_head, PrAutofixCarryover,
 };
@@ -14,7 +16,8 @@ use crate::application::AppState;
 use crate::domain::entities::{AgentConversationWorkspace, AgentWorkspaceRepairAttempt};
 
 use super::durable_attempt_recovery::{
-    human_repair_dispatch_context, DEFAULT_REPAIR_DISPATCH_CONTEXT,
+    human_repair_dispatch_context, settle_missing_workspace_resolution,
+    DEFAULT_REPAIR_DISPATCH_CONTEXT,
 };
 
 /// How much agent time has already been spent on one failure identity, and whether that spend has
@@ -83,6 +86,10 @@ pub(crate) enum PrAutofixSuccessorDecision {
     /// A successor is authorized. Carries freshly observed PR evidence when GitHub could be read,
     /// so downstream fingerprint suppression has something to compare on the next round.
     Proceed(Option<PrAutofixCarryover>),
+    /// The base GitHub reports has moved past what this generation targeted. The successor is
+    /// authorized and must adopt the observed base, or the same movement re-authorizes a successor
+    /// on every later evaluation.
+    ProceedRetargeted { observed_base_commit: String },
     /// The prior generation produced a validated local repair head that has not reached the PR.
     /// Re-drive the durable publish continuation instead of holding or buying another fixer run:
     /// GitHub health cannot change until that head is published.
@@ -118,20 +125,20 @@ async fn resolve_pr_autofix_pr_number(
     plan_branch.pr_number
 }
 
-/// True when the workspace's base has moved since this generation was targeted. That is new input
-/// for the repair independent of anything GitHub reports about the PR, so it authorizes a
-/// successor on its own.
+/// True when the base GitHub currently reports has moved past what this generation was targeted
+/// at. That is new input for the repair independent of anything GitHub reports about PR checks,
+/// so it authorizes a successor on its own.
 pub(super) fn repair_base_advanced(
     current: &AgentWorkspaceRepairAttempt,
-    workspace: &AgentConversationWorkspace,
+    observed_base: Option<&str>,
 ) -> bool {
-    let (Some(target), Some(workspace_base)) = (
+    let (Some(target), Some(obs)) = (
         current.target_base_commit.as_deref(),
-        workspace.base_commit.as_deref(),
+        observed_base,
     ) else {
         return false;
     };
-    !target.trim().is_empty() && !workspace_base.trim().is_empty() && target != workspace_base
+    !target.trim().is_empty() && !obs.trim().is_empty() && target != obs
 }
 
 /// Decides whether a blocked PR autofix attempt may start a successor generation.
@@ -152,10 +159,6 @@ pub(crate) async fn evaluate_pr_autofix_successor(
     if current.pr_autofix_health_fingerprint.is_none() {
         return PrAutofixSuccessorDecision::Proceed(None);
     }
-    // A moved base is new input for the repair even when the PR still reports the same failure.
-    if repair_base_advanced(current, workspace) {
-        return PrAutofixSuccessorDecision::Proceed(None);
-    }
     let Some(github) = state.github_service.as_ref() else {
         return PrAutofixSuccessorDecision::Withhold("github_service_unavailable");
     };
@@ -174,14 +177,48 @@ pub(crate) async fn evaluate_pr_autofix_successor(
             return PrAutofixSuccessorDecision::Withhold("project_unreadable");
         }
     };
-    let resolved = match resolve_effective_agent_conversation_workspace_path(
+    // Classified, not resolved: a deleted worktree must be settled once rather than re-warned on
+    // every evaluation. The effective classifier is the matching companion here — a linked-plan
+    // workspace resolves a different path entirely and must never be judged on its record path.
+    let resolved = match classify_effective_agent_conversation_workspace_path(
         &project,
         workspace,
         state.plan_branch_repo.as_ref(),
     )
     .await
     {
-        Ok(resolved) => resolved,
+        Ok(WorkspacePathResolution::Valid(path)) => path,
+        Ok(WorkspacePathResolution::Missing {
+            expected,
+            parent_root_present,
+        }) => {
+            if let Err(error) = settle_missing_workspace_resolution(
+                state,
+                workspace,
+                &expected,
+                parent_root_present,
+                "pr_autofix_successor",
+            )
+            .await
+            {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    %error,
+                    "Could not settle a missing workspace during PR autofix successor evaluation"
+                );
+            }
+            return PrAutofixSuccessorDecision::Withhold("workspace_path_unresolved");
+        }
+        Ok(resolution) => {
+            tracing::warn!(
+                conversation_id = workspace.conversation_id.as_str(),
+                pr_number,
+                ?resolution,
+                "Blocked PR autofix successor evaluation found an unusable workspace path"
+            );
+            return PrAutofixSuccessorDecision::Withhold("workspace_path_unresolved");
+        }
         Err(error) => {
             tracing::warn!(
                 conversation_id = workspace.conversation_id.as_str(),
@@ -192,7 +229,7 @@ pub(crate) async fn evaluate_pr_autofix_successor(
             return PrAutofixSuccessorDecision::Withhold("workspace_path_unresolved");
         }
     };
-    let health = match github.fetch_pr_health(&resolved.path, pr_number).await {
+    let health = match github.fetch_pr_health(&resolved, pr_number).await {
         Ok(health) => health,
         Err(error) => {
             tracing::warn!(
@@ -204,6 +241,23 @@ pub(crate) async fn evaluate_pr_autofix_successor(
             return PrAutofixSuccessorDecision::Withhold("pr_health_unreadable");
         }
     };
+    // A moved base is new input for the repair even when the PR still reports the same failure —
+    // but only when something *outside* this attempt moved it. A base update this attempt ran
+    // itself and has not published yet is our own unpublished work; early-returning here would
+    // strand it by never reaching the redrive decision below.
+    // The comparison is against the live GitHub-observed base, not workspace.base_commit: after
+    // the supersede/defer routes, workspace.base_commit stays at the branch point while the
+    // attempt carries the observed base, so a workspace comparison would be permanently true.
+    // ProceedRetargeted carries the observed OID so the successor is targeted at it; without
+    // that retarget the same base movement would re-authorize a successor on every evaluation.
+    if let Some(observed) = health.sync_state.base_ref_oid.as_deref() {
+        if repair_base_advanced(current, Some(observed)) && current.base_update_head_commit.is_none()
+        {
+            return PrAutofixSuccessorDecision::ProceedRetargeted {
+                observed_base_commit: observed.to_string(),
+            };
+        }
+    }
     let Some(issue) = classify_agent_workspace_pr_autofix_issue(pr_number, &health) else {
         // Nothing is failing on the PR any more. A fixer generation dispatched now would have
         // nothing to fix, which is exactly the wasted generation this path exists to prevent.
@@ -218,6 +272,7 @@ pub(crate) async fn evaluate_pr_autofix_successor(
     PrAutofixSuccessorDecision::Proceed(Some(PrAutofixCarryover {
         dispatch_head_commit: health.sync_state.head_ref_oid.clone(),
         health_fingerprint: Some(issue.classification),
+        issue_kind: Some(issue.kind),
     }))
 }
 
@@ -293,7 +348,8 @@ pub(crate) fn due_pr_autofix_redispatch_message(
          infrastructure timeout, startup failure) — never for a real test, lint, coverage, or code failure\n",
     );
     out.push_str(
-        "- `pre_existing_on_base` when the same failure already exists on the base branch and this PR did not cause it\n",
+        "- `pre_existing_on_base` for check failures only, when the same check already fails on the \
+         base branch and this PR did not cause it — never for mergeability (behind/conflicting)\n",
     );
     out.push_str("- `needs_human` when the problem needs a human decision\n");
     out.push_str(

@@ -24,12 +24,12 @@ use crate::application::{AppState, GitService};
 use crate::domain::entities::AgentRun;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentRunId, AgentWorkspaceRepairAttempt,
-    AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairContinuation,
-    AgentWorkspaceRepairEffectKind, AgentWorkspaceRepairOperationHoldReason,
-    AgentWorkspaceRepairOperationRecoveryAction, AgentWorkspaceRepairOutcome,
-    AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource, AgentWorkspaceReviewGateStatus,
-    ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
+    AgentConversationWorkspacePublicationEvent, AgentRunId, AgentWorkspacePrAutofixIssueKind,
+    AgentWorkspaceRepairAttempt, AgentWorkspaceRepairCompletionAuthority,
+    AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffectKind,
+    AgentWorkspaceRepairOperationHoldReason, AgentWorkspaceRepairOperationRecoveryAction,
+    AgentWorkspaceRepairOutcome, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
+    AgentWorkspaceReviewGateStatus, ChatConversationId, GitTargetIdentity, GitTargetLeaseOwner,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, AgentConversationWorkspaceRepository,
@@ -173,6 +173,9 @@ pub(crate) enum PublishAuthority {
 pub(crate) struct PrAutofixCarryover {
     pub dispatch_head_commit: Option<String>,
     pub health_fingerprint: Option<String>,
+    /// Blocker category the successor is being dispatched for. Carried because the fingerprint
+    /// hashes it away, so a successor would otherwise lose the completion guard's typed input.
+    pub issue_kind: Option<AgentWorkspacePrAutofixIssueKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -455,7 +458,10 @@ fn start_attempt_from_workspace(
     if let Some(carryover) = request.carryover_pr_autofix_evidence.as_ref() {
         attempt.pr_autofix_dispatch_head_commit = carryover.dispatch_head_commit.clone();
         attempt.pr_autofix_health_fingerprint = carryover.health_fingerprint.clone();
+        attempt.pr_autofix_issue_kind = carryover.issue_kind;
     }
+    // `base_update_head_commit` is deliberately never carried: each generation must earn its own
+    // unpublished-head evidence, or a settled generation's stale head would authorize a redrive.
     attempt
 }
 
@@ -811,18 +817,21 @@ pub(crate) fn agent_workspace_repair_hold_reason(
 ///
 /// Whitespace-only values never grant a re-drive; nonempty head values are compared exactly. A
 /// missing remote head also withholds the effect, because it is not proof that the local repair is
-/// unpublished.
+/// unpublished. The head may come from a validated completion or from a base update this attempt
+/// ran itself — both are local work GitHub has not seen.
 pub(crate) fn held_repair_has_unpublished_head(
     attempt: &AgentWorkspaceRepairAttempt,
     remote_head: Option<&str>,
 ) -> bool {
-    let Some(local_head) = attempt.repair_head_commit.as_deref() else {
+    // Raw on both sides: the comparison stays byte-exact, exactly as before this predicate learned
+    // about base-update evidence.
+    let Some(local_head) = attempt.unpublished_local_head_raw() else {
         return false;
     };
     let Some(remote_head) = remote_head else {
         return false;
     };
-    !local_head.trim().is_empty() && !remote_head.trim().is_empty() && local_head != remote_head
+    !remote_head.trim().is_empty() && local_head != remote_head
 }
 
 /// Holds a PR autofix generation at a backend-derived health fingerprint without pretending the
@@ -929,6 +938,39 @@ pub(crate) async fn reserve_agent_workspace_base_update(
         .map(repair_attempt_transition_outcome)
 }
 
+/// Like `reserve_agent_workspace_base_update` but keeps the existing phase and blocker intact.
+///
+/// Used for `Blocked` + `needs_human` generations admitted into the base-staleness supersession
+/// path: the phase must not move to `Ready` until a successful push proves the CI evidence is
+/// gone and `release_agent_workspace_needs_human_hold_for_new_head` atomically clears both.
+pub(crate) async fn reserve_agent_workspace_base_update_preserving_phase(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    observed_base_commit: &str,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if observed_base_commit.trim().is_empty() {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.summary = Some(summary.to_string());
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
 /// Record the base tip after the reserved update route has produced a concrete outcome. This
 /// separate CAS prevents a pre-effect crash from tripping the already-updated anti-runaway guard.
 pub(crate) async fn mark_agent_workspace_base_update_target(
@@ -954,6 +996,76 @@ pub(crate) async fn mark_agent_workspace_base_update_target(
             expected_updated_at,
             next_phase: AgentWorkspaceRepairPhase::Ready,
             compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// Like `mark_agent_workspace_base_update_target` but keeps the existing phase intact.
+///
+/// Used with `reserve_agent_workspace_base_update_preserving_phase` so the anti-runaway
+/// `base_update_target_commit` marker lands without promoting a `Blocked` generation to `Ready`.
+pub(crate) async fn mark_agent_workspace_base_update_target_preserving_phase(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    observed_base_commit: &str,
+    summary: &str,
+    auto_merge_current: Option<bool>,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if observed_base_commit.trim().is_empty() {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.base_update_target_commit = Some(observed_base_commit.to_string());
+    attempt.summary = Some(summary.to_string());
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    let projection = repair_attempt_projection(&attempt, summary, auto_merge_current);
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: Some(projection),
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
+/// Record the local branch head produced by a base update the agent ran inside an active
+/// `pr_autofix` attempt.
+///
+/// This is unpublished-head evidence only, so it deliberately preserves the current phase: the
+/// fixer run is normally still mid-flight and must not be moved. It also stays out of
+/// `target_base_commit` / `base_update_target_commit`, which
+/// `classify_health_hold_disposition` reads to route base-staleness dispositions — writing either
+/// here would re-route the hold instead of letting the existing redrive publish it.
+///
+/// # Errors
+///
+/// Returns the repository error when the durable transition cannot be attempted.
+pub(crate) async fn record_agent_workspace_pr_autofix_base_update_head(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    observed_head_commit: &str,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    if observed_head_commit.trim().is_empty() {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt.base_update_head_commit = Some(observed_head_commit.trim().to_string());
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: expected_phase,
+            compatibility_projection: None,
             events: Vec::new(),
         })
         .await
@@ -990,6 +1102,62 @@ pub(crate) async fn reserve_agent_workspace_base_stale_hold(
         Vec::new(),
     )
     .await
+}
+
+/// Releases a `needs_human` hold whose evidence a base update just invalidated.
+///
+/// The marker is an absolute fence on automation, so it may only be released against proof that
+/// the state it described is gone. That proof is head-scoped: the hold described CI at
+/// `pr_autofix_dispatch_head_commit`, and `pushed_head` is the head the update actually published.
+/// A differing head means the hold's evidence no longer describes reality.
+///
+/// Fails closed on every weaker shape — a missing or blank dispatch head (rescued orphan attempts
+/// can carry a NULL one), a blank pushed head, or an unchanged head all leave the hold in place.
+/// The blocker text is never consulted; it is free-form agent prose, not evidence.
+pub(crate) async fn release_agent_workspace_needs_human_hold_for_new_head(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    pushed_head: &str,
+    summary: &str,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let pushed_head = pushed_head.trim();
+    let dispatch_head = attempt
+        .pr_autofix_dispatch_head_commit
+        .as_deref()
+        .map(str::trim)
+        .filter(|head| !head.is_empty());
+    let clears = !pushed_head.is_empty()
+        && dispatch_head.is_some_and(|dispatch_head| dispatch_head != pushed_head)
+        && attempt
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == NEEDS_HUMAN_REPAIR_REASON);
+    if !clears {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt
+        .pending_reasons
+        .retain(|reason| reason != NEEDS_HUMAN_REPAIR_REASON);
+    // Phase and marker move together atomically: a Blocked attempt cleared of its needs_human
+    // hold becomes Ready so that re-arming and publish can proceed. attempt.phase must equal
+    // next_phase to satisfy the matches_attempt guard in the repo CAS.
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt.summary = Some(summary.to_string());
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
 }
 
 async fn reserve_agent_workspace_repair_health_hold(
@@ -1168,6 +1336,7 @@ pub(crate) async fn retry_agent_workspace_pr_autofix_hold_override(
         carryover_pr_autofix_evidence: Some(PrAutofixCarryover {
             dispatch_head_commit: current.pr_autofix_dispatch_head_commit.clone(),
             health_fingerprint: current.pr_autofix_health_fingerprint.clone(),
+            issue_kind: current.pr_autofix_issue_kind,
         }),
     };
     let successor = start_attempt_from_workspace(&workspace, &request);
@@ -1248,6 +1417,7 @@ pub(crate) async fn settle_repair_and_start_retargeted_successor(
         carryover_pr_autofix_evidence: Some(PrAutofixCarryover {
             dispatch_head_commit: reserved.pr_autofix_dispatch_head_commit.clone(),
             health_fingerprint: reserved.pr_autofix_health_fingerprint.clone(),
+            issue_kind: reserved.pr_autofix_issue_kind,
         }),
     };
     let successor = start_attempt_from_workspace(workspace, &request);
@@ -1273,9 +1443,9 @@ pub(crate) async fn settle_repair_and_start_retargeted_successor(
         })
         .await?
     {
-        SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Started(attempt) => {
-            Ok(AgentWorkspaceRepairRetargetOutcome::Started(Box::new(attempt)))
-        }
+        SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Started(attempt) => Ok(
+            AgentWorkspaceRepairRetargetOutcome::Started(Box::new(attempt)),
+        ),
         SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Stale(_)
         | SettleAndStartAgentWorkspaceRepairSuccessorOutcome::Missing => {
             Ok(AgentWorkspaceRepairRetargetOutcome::Stale)

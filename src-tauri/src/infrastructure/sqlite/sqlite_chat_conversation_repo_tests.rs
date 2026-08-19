@@ -824,6 +824,121 @@ async fn test_update_provider_session_ref_for_codex() {
 }
 
 #[tokio::test]
+async fn refresh_provider_session_ref_updates_existing_ref() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+
+    let conv = make_conversation(ChatContextType::Project, "ctx-refresh-existing");
+    let conv_id = conv.id.clone();
+    repo.create(conv).await.unwrap();
+    repo.update_provider_session_ref(
+        &conv_id,
+        &ProviderSessionRef {
+            harness: AgentHarnessKind::Claude,
+            provider_session_id: "session-1".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let refreshed = repo
+        .refresh_provider_session_ref(
+            &conv_id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "session-2".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(refreshed, "refresh must apply when a ref is present");
+    let loaded = repo.get_by_id(&conv_id).await.unwrap().unwrap();
+    assert_eq!(
+        loaded.provider_session_ref().map(|r| r.provider_session_id),
+        Some("session-2".to_string())
+    );
+}
+
+#[tokio::test]
+async fn refresh_provider_session_ref_never_resurrects_cleared_ref() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+
+    let conv = make_conversation(ChatContextType::Project, "ctx-refresh-cleared");
+    let conv_id = conv.id.clone();
+    repo.create(conv).await.unwrap();
+    repo.update_provider_session_ref(
+        &conv_id,
+        &ProviderSessionRef {
+            harness: AgentHarnessKind::Claude,
+            provider_session_id: "plan-session".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    repo.clear_provider_session_ref(&conv_id).await.unwrap();
+
+    let refreshed = repo
+        .refresh_provider_session_ref(
+            &conv_id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "plan-session".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(!refreshed, "cleared ref must not be resurrected");
+    let loaded = repo.get_by_id(&conv_id).await.unwrap().unwrap();
+    assert!(loaded.provider_session_ref().is_none());
+    assert_eq!(loaded.claude_session_id, None);
+    assert_eq!(loaded.provider_session_id, None);
+    assert_eq!(loaded.provider_harness, None);
+}
+
+#[tokio::test]
+async fn refresh_provider_session_ref_honors_legacy_claude_only_rows() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+
+    let conv = make_conversation(ChatContextType::Project, "ctx-refresh-legacy");
+    let conv_id = conv.id.clone();
+    repo.create(conv).await.unwrap();
+    // Legacy shape: only `claude_session_id` is set, matching pre-provider-harness rows.
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE chat_conversations
+                SET claude_session_id = ?1,
+                    provider_session_id = NULL,
+                    provider_harness = NULL
+              WHERE id = ?2",
+            rusqlite::params!["legacy-session", conv_id.as_str()],
+        )
+        .unwrap();
+    });
+
+    let refreshed = repo
+        .refresh_provider_session_ref(
+            &conv_id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "legacy-session-next".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(refreshed, "legacy claude-only rows count as present");
+    let loaded = repo.get_by_id(&conv_id).await.unwrap().unwrap();
+    assert_eq!(
+        loaded.provider_session_ref().map(|r| r.provider_session_id),
+        Some("legacy-session-next".to_string())
+    );
+}
+
+#[tokio::test]
 async fn test_update_role_default_bindings_updates_mode_persona_and_session_tuple() {
     let db = setup_test_db();
     let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());

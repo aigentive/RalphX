@@ -2,7 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use rusqlite::params;
 
 use super::sqlite_chat_payload_retention_repo::{
-    PruneCursor, SqliteChatPayloadRetentionRepository, WalCheckpointOutcome,
+    PayloadUsage, PruneCursor, SqliteChatPayloadRetentionRepository, WalCheckpointOutcome,
 };
 use super::DbConnection;
 use crate::testing::SqliteTestDb;
@@ -358,6 +358,76 @@ async fn prune_oldest_batch_ignores_the_time_window_and_walks_oldest_first() {
             1
         );
     });
+}
+
+/// Proof obligation 5: iterating the chunked measurement to exhaustion returns exactly what the
+/// single unbounded scan returns, and no single batch reads more than the bound. The unbounded
+/// scan held one pooled connection for 175s on the production database.
+#[tokio::test]
+async fn chunked_payload_usage_equals_the_single_scan_and_stays_within_the_batch_bound() {
+    let db = SqliteTestDb::new("chat-payload-retention-chunked-usage");
+    let repo = SqliteChatPayloadRetentionRepository::from_shared(db.shared_conn());
+    let now = Utc::now();
+    for index in 0..7 {
+        seed_payload_sized(
+            &db,
+            &format!("block-{index}"),
+            &format!("conversation-{index}"),
+            now - Duration::seconds(index),
+            false,
+            32 * (index as usize + 1),
+        );
+    }
+
+    let oracle = repo.payload_usage().await.unwrap();
+    assert_eq!(oracle.row_count, 7);
+
+    let batch_rows = 3;
+    let mut totals = PayloadUsage::default();
+    let mut cursor: Option<String> = None;
+    let mut batches = 0;
+    loop {
+        let (partial, next) = repo
+            .payload_usage_batch(batch_rows, cursor.clone())
+            .await
+            .unwrap();
+        assert!(
+            partial.row_count <= u64::from(batch_rows),
+            "a batch read {} rows, above the {batch_rows}-row bound",
+            partial.row_count
+        );
+        totals.row_count += partial.row_count;
+        totals.total_bytes += partial.total_bytes;
+        batches += 1;
+        assert!(batches <= 10, "keyset pagination must terminate");
+        match next {
+            Some(next_cursor) => cursor = Some(next_cursor),
+            None => break,
+        }
+    }
+
+    assert_eq!(totals, oracle);
+    assert_eq!(batches, 3, "7 rows at 3 per batch is 3 batches");
+}
+
+/// An empty table measures as zero in one batch, and a cursor past the last key returns nothing
+/// rather than restarting the walk.
+#[tokio::test]
+async fn chunked_payload_usage_handles_an_empty_table_and_an_exhausted_cursor() {
+    let db = SqliteTestDb::new("chat-payload-retention-chunked-empty");
+    let repo = SqliteChatPayloadRetentionRepository::from_shared(db.shared_conn());
+
+    let (empty, next) = repo.payload_usage_batch(100, None).await.unwrap();
+    assert_eq!(empty, PayloadUsage::default());
+    assert!(next.is_none());
+
+    seed_payload(&db, "only", "conversation-only", Utc::now(), false);
+    let (beyond, next) = repo
+        .payload_usage_batch(100, Some("only".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(beyond, PayloadUsage::default());
+    assert!(next.is_none());
 }
 
 #[tokio::test]

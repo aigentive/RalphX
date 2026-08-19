@@ -411,6 +411,16 @@ function reviewStatusForState({
       icon: AlertCircle,
     };
   }
+  if (context?.monitor.reviewFixerStatus === "failed") {
+    return {
+      label: "Automatic fix stopped",
+      detail: [context.monitor.reviewBlockingSummary, context.monitor.lastError]
+        .filter(Boolean)
+        .join(" "),
+      color: "var(--status-warning)",
+      icon: AlertCircle,
+    };
+  }
   if (context?.monitor.reviewFixerStatus === "cycle_capped") {
     return {
       label: "Automatic fix cycle limit reached",

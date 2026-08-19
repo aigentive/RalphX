@@ -131,6 +131,20 @@ pub trait ChatConversationRepository: Send + Sync {
         session_ref: &ProviderSessionRef,
     ) -> AppResult<()>;
 
+    /// Refresh the provider session reference **only when one is currently set**.
+    ///
+    /// Returns `Ok(false)` when the conversation has no provider session ref, so a
+    /// deliberately cleared ref (Plan→Edit handoff) can never be resurrected by a
+    /// late stream-teardown write.
+    ///
+    /// # Errors
+    /// Returns an error when the underlying storage read/write fails.
+    async fn refresh_provider_session_ref(
+        &self,
+        id: &ChatConversationId,
+        session_ref: &ProviderSessionRef,
+    ) -> AppResult<bool>;
+
     /// Clear the provider session reference for a conversation.
     async fn clear_provider_session_ref(&self, id: &ChatConversationId) -> AppResult<()>;
 

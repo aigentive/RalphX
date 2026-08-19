@@ -82,6 +82,15 @@ repair_string_enum!(AgentWorkspaceRepairSource {
     Legacy => "legacy",
 });
 
+// Category of the PR blocker a `pr_autofix` dispatch was aimed at. Backend-observed at dispatch,
+// never model supplied; the persisted health fingerprint hashes this away, so it needs its own
+// durable column to stay recoverable at completion time.
+repair_string_enum!(AgentWorkspacePrAutofixIssueKind {
+    Review => "review",
+    Checks => "checks",
+    Mergeability => "mergeability",
+});
+
 repair_string_enum!(AgentWorkspaceRepairPhase {
     Requested => "requested",
     Dispatching => "dispatching",
@@ -222,6 +231,14 @@ pub struct AgentWorkspaceRepairAttempt {
     pub pr_autofix_dispatch_head_commit: Option<String>,
     /// Stable failing PR-health identity observed by the poller before dispatching a PR autofix.
     pub pr_autofix_health_fingerprint: Option<String>,
+    /// Blocker category this PR autofix was dispatched for; backend-observed, never model supplied.
+    #[serde(default)]
+    pub pr_autofix_issue_kind: Option<AgentWorkspacePrAutofixIssueKind>,
+    /// Local branch head produced by a backend-run base update inside this active pr_autofix
+    /// attempt. Unpublished-head evidence only — NOT completion acceptance (see
+    /// `repair_head_commit`, whose presence means a completion was already validated).
+    #[serde(default)]
+    pub base_update_head_commit: Option<String>,
     pub next_dispatch_at: Option<DateTime<Utc>>,
     pub repair_head_commit: Option<String>,
     pub summary: Option<String>,
@@ -277,6 +294,8 @@ impl AgentWorkspaceRepairAttempt {
             ci_rerun_fingerprint: None,
             pr_autofix_dispatch_head_commit: None,
             pr_autofix_health_fingerprint: None,
+            pr_autofix_issue_kind: None,
+            base_update_head_commit: None,
             next_dispatch_at: None,
             repair_head_commit: None,
             summary: None,
@@ -296,6 +315,29 @@ impl AgentWorkspaceRepairAttempt {
 
     pub fn is_unsettled(&self) -> bool {
         self.settled_at.is_none()
+    }
+
+    /// Local head that is not yet proven published, exactly as stored: the validated completion
+    /// head first, else the backend-recorded base-update head. Blank values yield `None`.
+    ///
+    /// Callers that compare against an equally verbatim remote head use this so the comparison
+    /// stays byte-exact; callers that build durable markers use [`Self::unpublished_local_head`],
+    /// which trims.
+    pub fn unpublished_local_head_raw(&self) -> Option<&str> {
+        self.repair_head_commit
+            .as_deref()
+            .filter(|head| !head.trim().is_empty())
+            .or_else(|| {
+                self.base_update_head_commit
+                    .as_deref()
+                    .filter(|head| !head.trim().is_empty())
+            })
+    }
+
+    /// Trimmed form of [`Self::unpublished_local_head_raw`], for durable markers and retry keys
+    /// where incidental padding must not fork the identity.
+    pub fn unpublished_local_head(&self) -> Option<&str> {
+        self.unpublished_local_head_raw().map(str::trim)
     }
 
     pub fn operation_snapshot(&self) -> AgentWorkspaceRepairOperationSnapshot {

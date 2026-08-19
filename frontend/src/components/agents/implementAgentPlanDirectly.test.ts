@@ -290,4 +290,45 @@ describe("implementAgentPlanDirectly", () => {
       planContextFingerprint,
     });
   });
+
+  it("appends the message of an Error rejection to the retry dialog", async () => {
+    const editWorkspace = workspace({ mode: "edit" });
+    activateAgentPlanDirectImplementationMock.mockResolvedValue({
+      workspace: editWorkspace,
+      artifactReferences: approvedArtifactReferences,
+      planContextFingerprint,
+    });
+    sendAgentMessageMock.mockRejectedValue(new Error("send failed"));
+
+    await expect(
+      implementAgentPlanDirectly({
+        projectId: "project-1",
+        workspace: workspace(),
+        queryClient: new QueryClient(),
+      }),
+    ).rejects.toThrow(/it will not switch modes again\. send failed$/);
+  });
+
+  it("surfaces plain string rejections from the backend", async () => {
+    const editWorkspace = workspace({ mode: "edit" });
+    activateAgentPlanDirectImplementationMock.mockResolvedValue({
+      workspace: editWorkspace,
+      artifactReferences: approvedArtifactReferences,
+      planContextFingerprint,
+    });
+    // Tauri rejects with plain strings, which an `instanceof Error` check silently drops.
+    sendAgentMessageMock.mockRejectedValue(
+      "Failed to resolve manual default for workspace_edit: A complete role runtime override cannot be mixed with legacy provider or model overrides",
+    );
+
+    await expect(
+      implementAgentPlanDirectly({
+        projectId: "project-1",
+        workspace: workspace(),
+        queryClient: new QueryClient(),
+      }),
+    ).rejects.toThrow(
+      /A complete role runtime override cannot be mixed with legacy provider or model overrides$/,
+    );
+  });
 });

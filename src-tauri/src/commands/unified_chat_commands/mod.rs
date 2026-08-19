@@ -47,11 +47,14 @@ pub use crate::application::agent_conversation_start_service::{
     AgentWorkspaceSourcePullRequestInput, StartAgentConversationInput,
 };
 use crate::application::agent_conversation_workspace::{
+    classify_agent_conversation_workspace_path,
+    classify_effective_agent_conversation_workspace_path,
     ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
     prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
     reject_persona_builder_workspace_mode, resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspacePrAutomationDefaults, AgentConversationWorkspaceSetupMode,
+    WorkspacePathResolution,
 };
 use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base,
@@ -94,6 +97,7 @@ use crate::application::agent_workspace_pr_reopen::{
 use crate::application::agent_workspace_pr_reopen_restore::ReopenLocalWorkspaceState;
 use crate::application::agent_workspace_pr_supervision_recovery::{
     build_agent_workspace_pr_supervision_recovery_deps,
+    pr_supervision_recovery_schedule_skip_reason,
     schedule_agent_workspace_durable_repair_reconciliation,
     schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps,
     AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryTrigger,
@@ -109,7 +113,8 @@ use crate::application::agent_workspace_publish_recovery::{
 };
 use crate::application::agent_workspace_publish_repair_state::{
     classify_agent_workspace_repair_delivery, last_human_repair_reason,
-    rerun_agent_workspace_ci_for_hold, reserve_agent_workspace_repair_dispatch,
+    record_agent_workspace_pr_autofix_base_update_head, rerun_agent_workspace_ci_for_hold,
+    reserve_agent_workspace_repair_dispatch,
     resume_current_agent_workspace_repair_publish, resume_ready_agent_workspace_repair_for_publish,
     retry_agent_workspace_pr_autofix_hold_override,
     retry_agent_workspace_publication_effect as retry_agent_workspace_publication_effect_service,
@@ -1180,10 +1185,7 @@ pub async fn agent_workspace_response_with_pr_supervision_for_state(
     // supervision scheduler rather than by the response request.
     schedule_pr_supervision_recovery_for_workspace(
         state,
-        crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
-            state,
-            Arc::clone(execution_state),
-        ),
+        execution_state,
         &workspace,
         AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
         false,
@@ -1313,14 +1315,49 @@ fn schedule_external_pr_reconciliation_for_workspace(
     );
 }
 
+/// Scheduling-time routing for a workspace recovery. Both arms still reach the durable repair
+/// coordinator — the first recovery authority — so this only decides whether the far more
+/// expensive PR-supervision runtime is worth constructing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrSupervisionScheduleRoute {
+    /// Full PR supervision, which lazily builds a `TaskTransitionService` + `ChatService`.
+    PrSupervision,
+    /// Durable repair reconciliation only. Constructs neither runtime service.
+    DurableOnly(&'static str),
+}
+
+/// Decides the route from the caller-held workspace record alone, so an ineligible workspace never
+/// pays for runtime construction. The record can be marginally stale; the authoritative in-run
+/// checks still re-read it on the PR-supervision arm.
+pub(crate) fn pr_supervision_schedule_route(
+    github_available: bool,
+    workspace: &AgentConversationWorkspace,
+) -> PrSupervisionScheduleRoute {
+    if !github_available {
+        return PrSupervisionScheduleRoute::DurableOnly("github_service_unavailable");
+    }
+    match pr_supervision_recovery_schedule_skip_reason(workspace) {
+        Some(reason) => PrSupervisionScheduleRoute::DurableOnly(reason),
+        None => PrSupervisionScheduleRoute::PrSupervision,
+    }
+}
+
 pub(crate) fn schedule_pr_supervision_recovery_for_workspace(
     state: &AppState,
-    runtime: crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime,
+    execution_state: &Arc<ExecutionState>,
     workspace: &AgentConversationWorkspace,
     trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
     force: bool,
 ) {
-    if state.github_service.is_none() {
+    if let PrSupervisionScheduleRoute::DurableOnly(reason) =
+        pr_supervision_schedule_route(state.github_service.is_some(), workspace)
+    {
+        tracing::debug!(
+            conversation_id = workspace.conversation_id.as_str(),
+            trigger = trigger.as_str(),
+            reason,
+            "PR supervision ineligible at scheduling; durable-only reconciliation"
+        );
         schedule_agent_workspace_durable_repair_reconciliation(
             state.clone(),
             workspace.conversation_id.clone(),
@@ -1331,13 +1368,20 @@ pub(crate) fn schedule_pr_supervision_recovery_for_workspace(
     }
     let resumer = state.agent_workspace_pr_fix_review_publish_resumer().ok();
     let recovery_state = state.clone();
+    let recovery_execution_state = Arc::clone(execution_state);
     schedule_agent_workspace_pr_supervision_recovery_with_lazy_deps(
         move || {
+            // Built inside the closure: `claim_recovery` throttles the vast majority of sidebar-
+            // driven schedules away, and an eagerly constructed runtime would be pure waste.
+            let runtime = crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
+                &recovery_state,
+                recovery_execution_state,
+            );
             build_agent_workspace_pr_supervision_recovery_deps(
                 &recovery_state,
-                Some(Arc::clone(&runtime.transition_service)),
-                Some(Arc::clone(&runtime.chat_service)),
-                resumer.clone(),
+                Some(runtime.transition_service),
+                Some(runtime.chat_service),
+                resumer,
             )
             .expect("github service was checked before scheduling PR supervision recovery")
         },
@@ -1391,10 +1435,7 @@ async fn schedule_pr_supervision_recovery_for_conversation_id(
 
     schedule_pr_supervision_recovery_for_workspace(
         state,
-        crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRuntime::from_state(
-            state,
-            Arc::clone(execution_state),
-        ),
+        execution_state,
         &workspace,
         trigger,
         force,
@@ -6755,6 +6796,72 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
     .await
 }
 
+/// Records the local head a base update just produced on the active `pr_autofix` attempt, so the
+/// existing held-head publish redrive can push it regardless of how the fixer later classifies its
+/// own completion.
+///
+/// Deliberately best effort: the git update already succeeded, so a failure here must degrade to a
+/// warning rather than fail the update or trip repair churn.
+async fn record_pr_autofix_base_update_head_evidence(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    worktree_path: &Path,
+    branch_name: &str,
+) {
+    let head_commit = match GitService::get_branch_sha(worktree_path, branch_name).await {
+        Ok(head_commit) => head_commit,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                %error,
+                "Could not read the branch head produced by a PR-autofix base update"
+            );
+            return;
+        }
+    };
+    let attempt = match state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(conversation_id)
+        .await
+    {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                %error,
+                "Could not load the repair attempt for PR-autofix base-update evidence"
+            );
+            return;
+        }
+    };
+    if attempt.source != AgentWorkspaceRepairSource::PrAutofix || !attempt.is_unsettled() {
+        return;
+    }
+    match record_agent_workspace_pr_autofix_base_update_head(
+        Arc::clone(&state.agent_workspace_repair_repo),
+        attempt,
+        &head_commit,
+    )
+    .await
+    {
+        Ok(AgentWorkspaceRepairTransitionOutcome::Applied(_)) => {}
+        Ok(_) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                "PR-autofix base-update head evidence lost its CAS race; the hold may need a manual re-drive"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                %error,
+                "Could not record PR-autofix base-update head evidence"
+            );
+        }
+    }
+}
+
 #[doc(hidden)]
 pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_caller(
     state: &AppState,
@@ -6806,37 +6913,12 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
     let explicit_base = normalize_explicit_publish_base_selection(selection)?;
     let repair_service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
 
-    if created_by_run_id.is_none()
-        && explicit_base.is_none()
-        && retry_blocked_agent_workspace_repair_for_explicit_user_action(
-            state,
-            &workspace,
-            &repair_service,
-            AgentWorkspacePostRepairAction::UpdateOnly,
-        )
-        .await
-    {
-        let refreshed = state
-            .agent_conversation_workspace_repo
-            .get_by_conversation_id(&conversation_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .unwrap_or(workspace);
-        return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
-            target_ref: refreshed.base_ref.clone(),
-            base_commit: refreshed.base_commit.clone().unwrap_or_default(),
-            workspace: agent_workspace_response_with_pr_supervision_for_state(
-                state,
-                execution_state,
-                refreshed,
-            )
-            .await?,
-            updated: false,
-            repair_started: true,
-            base_status: BaseStatus::Valid.as_str().to_string(),
-            effective_base_display_name: None,
-        });
-    }
+    // "Update from base" attempts the mechanical merge first, always. Dispatching a repair
+    // successor before trying is what let a repair-blocked workspace stay stranded on a stale base:
+    // the button restarted the fixer and never updated the branch, even when the merge was clean
+    // and would have restarted CI on its own. The retry is now the fallback for the one case where
+    // the mechanical path has nothing to offer — see `blocked_repair_retry` below.
+    let blocked_repair_retry_allowed = created_by_run_id.is_none();
 
     let project = state
         .project_repo
@@ -6849,7 +6931,18 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         match resolve_agent_workspace_publish_target(state, &project, &workspace).await {
             Ok(target) => target,
             Err(error) => {
-                if error.contains("Agent conversation workspace is missing") {
+                // Classify through the same effective resolver the publish target used: a
+                // linked-plan-branch workspace never evaluates its record path, so its record
+                // path must not decide whether the workspace is missing.
+                if matches!(
+                    classify_effective_agent_conversation_workspace_path(
+                        &project,
+                        &workspace,
+                        state.plan_branch_repo.as_ref(),
+                    )
+                    .await,
+                    Ok(WorkspacePathResolution::Missing { .. })
+                ) {
                     let _ = state
                         .agent_conversation_workspace_repo
                         .update_status(
@@ -6945,30 +7038,6 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             .create_or_update(workspace)
             .await
             .map_err(|e| e.to_string())?;
-        if created_by_run_id.is_none()
-            && retry_blocked_agent_workspace_repair_for_explicit_user_action(
-                state,
-                &workspace,
-                &repair_service,
-                AgentWorkspacePostRepairAction::UpdateOnly,
-            )
-            .await
-        {
-            return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
-                target_ref: workspace.base_ref.clone(),
-                base_commit: workspace.base_commit.clone().unwrap_or_default(),
-                workspace: agent_workspace_response_with_pr_supervision_for_state(
-                    state,
-                    execution_state,
-                    workspace,
-                )
-                .await?,
-                updated: false,
-                repair_started: true,
-                base_status: BaseStatus::Valid.as_str().to_string(),
-                effective_base_display_name: None,
-            });
-        }
         let retargeted_base = BaseResolutionResult {
             status: BaseStatus::Retargeted,
             old_base_ref: previous_base_ref,
@@ -7120,6 +7189,18 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
             return Err(message);
         }
     };
+
+    // A base update the fixer ran itself produced a real new HEAD that nothing has pushed. Record
+    // it now so the hold cannot depend on how the agent later classifies its own completion.
+    if preserve_pr_autofix_claim && updated {
+        record_pr_autofix_base_update_head_evidence(
+            state,
+            &workspace.conversation_id,
+            &publish_target.worktree_path,
+            &publish_target.branch_name,
+        )
+        .await;
+    }
 
     let mut push_status = "refreshed";
     if let Some(plan_branch) = publish_target.plan_branch.as_ref() {
@@ -7287,6 +7368,55 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state_with_ca
         .await
         .map_err(|e| e.to_string())?
         .unwrap_or(workspace);
+
+    // The mechanical merge has now run and its bookkeeping is durable. A blocked generation that
+    // survived it is still stranded on a target the user just changed, so retry it here — after
+    // the update rather than instead of it. Merge conflicts and operational failures never reach
+    // this point; they return early from the arms above, which dispatch their own successor.
+    if blocked_repair_retry_allowed
+        && retry_blocked_agent_workspace_repair_for_explicit_user_action(
+            state,
+            &refreshed,
+            &repair_service,
+            AgentWorkspacePostRepairAction::UpdateOnly,
+        )
+        .await
+    {
+        // Auto-review is deliberately skipped: a repair successor is about to change this
+        // workspace again, so reviewing it now would review a state nobody asked about.
+        let repaired = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&refreshed.conversation_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or(refreshed);
+        return Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
+            workspace: agent_workspace_response_with_pr_supervision_for_state(
+                state,
+                execution_state,
+                repaired,
+            )
+            .await?,
+            updated,
+            repair_started: true,
+            target_ref,
+            base_commit,
+            base_status: base_resolution
+                .as_ref()
+                .map(|resolution| resolution.status)
+                .unwrap_or(BaseStatus::Valid)
+                .as_str()
+                .to_string(),
+            effective_base_display_name: explicit_base
+                .as_ref()
+                .map(|selection| selection.display_name.clone())
+                .or_else(|| {
+                    base_resolution
+                        .as_ref()
+                        .and_then(|resolution| resolution.display_name.clone())
+                }),
+        });
+    }
 
     let workspace_changed_events = Arc::clone(&state.events);
     let workspace_changed_emitter =
@@ -8932,10 +9062,12 @@ async fn publish_agent_conversation_workspace_for_app_state_unlocked(
         match resolve_valid_agent_conversation_workspace_path(&project, &workspace).await {
             Ok(path) => path,
             Err(error) => {
-                if error
-                    .to_string()
-                    .contains("Agent conversation workspace is missing")
-                {
+                // `resolve_valid_…` resolves the record path, so the record classifier is the
+                // matching companion here.
+                if matches!(
+                    classify_agent_conversation_workspace_path(&project, &workspace),
+                    Ok(WorkspacePathResolution::Missing { .. })
+                ) {
                     let _ = state
                         .agent_conversation_workspace_repo
                         .update_status(
@@ -10788,7 +10920,11 @@ where
         worktree_path: Some(resolved.path),
     };
 
-    let error = compose_blocked_repair_retry_context(&attempt, &target.base_ref);
+    let error = compose_blocked_repair_retry_context(
+        &attempt,
+        &target.base_ref,
+        retry_workspace.base_commit.as_deref(),
+    );
     mark_agent_workspace_failure_with_routing_and_action_classified(
         state,
         &retry_workspace,
@@ -10834,9 +10970,15 @@ fn repair_handoff_verification_result(
 /// Successor context for a user-directed retry of a blocked repair. Prefer the previous fixer's
 /// blocker and human-authored reason before the durable delivery summary; machine markers in
 /// `pending_reasons` must never become the successor's only context.
+///
+/// `new_base_commit` is the freshly resolved tip of `new_base_ref`. It exists because a ref-name
+/// comparison alone misses a `main` → `main` retarget where only the commit moved, which is the
+/// exact shape that leaves a successor believing its stale base is current. An unreadable commit
+/// on either side is not evidence of a move, so the hint stays silent.
 fn compose_blocked_repair_retry_context(
     attempt: &AgentWorkspaceRepairAttempt,
     new_base_ref: &str,
+    new_base_commit: Option<&str>,
 ) -> String {
     let core = attempt
         .blocker
@@ -10866,6 +11008,21 @@ fn compose_blocked_repair_retry_context(
             " The base has since been updated from {} to {new_base_ref}; verify the workspace against the new base.",
             attempt.target_base_ref
         ));
+    } else if let (Some(previous_commit), Some(current_commit)) = (
+        attempt
+            .target_base_commit
+            .as_deref()
+            .map(str::trim)
+            .filter(|commit| !commit.is_empty()),
+        new_base_commit
+            .map(str::trim)
+            .filter(|commit| !commit.is_empty()),
+    ) {
+        if previous_commit != current_commit {
+            context.push_str(&format!(
+                " The base {new_base_ref} has since moved from {previous_commit} to {current_commit}; verify the workspace against the new base tip."
+            ));
+        }
     }
     context
 }

@@ -1246,7 +1246,7 @@ impl AppState {
     ) -> TaskTransitionService {
         let started_at = Instant::now();
         let deps = RuntimeFactoryDeps::from_app_state(self);
-        tracing::info!(
+        tracing::debug!(
             elapsed_ms = started_at.elapsed().as_millis(),
             "AppState transition service deps built"
         );
@@ -1260,7 +1260,7 @@ impl AppState {
                     self.notification_service(),
                 ),
             ));
-        tracing::info!(
+        tracing::debug!(
             elapsed_ms = started_at.elapsed().as_millis(),
             "AppState transition service built"
         );

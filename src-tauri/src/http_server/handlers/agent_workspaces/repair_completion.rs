@@ -10,6 +10,7 @@ use axum::{
 };
 
 use super::*;
+use crate::application::agent_workspace_ci_rerun::{transient_ci_rerun_plan, TransientCiPlan};
 use crate::application::agent_workspace_publish_repair_state::{
     block_agent_workspace_repair_completion, block_agent_workspace_repair_needs_human,
     classify_agent_workspace_repair_completion_authority,
@@ -20,11 +21,14 @@ use crate::application::agent_workspace_publish_repair_state::{
     reserve_agent_workspace_pre_existing_on_base,
     reserve_agent_workspace_repair_completion_validation,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairTransitionOutcome,
-    PublishAuthority,
+    PublishAuthority, MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES,
+};
+use crate::application::agent_workspace_review::{
+    complete_workspace_review_fixer_run, WorkspaceReviewFixerCompletionOutcome,
 };
 use crate::application::publish_resilience::continue_agent_workspace_repair_publish;
 use crate::domain::entities::{
-    AgentRunId, AgentRunStatus, AgentWorkspaceRepairAttempt,
+    AgentRunId, AgentRunStatus, AgentWorkspacePrAutofixIssueKind, AgentWorkspaceRepairAttempt,
     AgentWorkspaceRepairCompletionAuthority, AgentWorkspaceRepairPhase, AgentWorkspaceRepairSource,
 };
 
@@ -411,6 +415,90 @@ fn authority_response(
     }
 }
 
+/// Detail for a run that carries no durable repair lineage at all, kept distinct from
+/// [`authority_response`]'s message so the two failure classes are self-diagnosing.
+const NO_REPAIR_ASSIGNMENT_DETAIL: &str =
+    "This run has no durable workspace repair assignment for this workspace.";
+
+/// Completion channel for Workspace Review fixers, which never own a durable repair attempt.
+///
+/// Returns `Ok(None)` when the run has durable repair lineage, leaving the caller on its normal
+/// authority response. Returns the sharpened 409 when the run has neither an attempt row nor the
+/// active fixer linkage.
+async fn workspace_review_fixer_completion_fallback(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    run_id: &AgentRunId,
+    summary: &str,
+    blocker: Option<&str>,
+    resolution: Option<AgentWorkspacePrFixResolution>,
+) -> Result<Option<Json<CompleteAgentWorkspaceRepairResponse>>, JsonError> {
+    let has_attempt_row = state
+        .app_state
+        .agent_workspace_repair_repo
+        .get_repair_attempt_for_run(conversation_id, run_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .is_some();
+    if has_attempt_row {
+        return Ok(None);
+    }
+
+    // PR-autofix classifications have no meaning for a Review fixer; reject before settling.
+    if matches!(
+        resolution,
+        Some(
+            AgentWorkspacePrFixResolution::TransientCi
+                | AgentWorkspacePrFixResolution::PreExistingOnBase
+        )
+    ) {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "transient_ci and pre_existing_on_base are only valid for PR autofix repair attempts.",
+            None,
+        ));
+    }
+    // `needs_human` from a fixer is a blocker report; its detail lives in the summary.
+    let effective_blocker = blocker.or_else(|| {
+        matches!(resolution, Some(AgentWorkspacePrFixResolution::NeedsHuman)).then_some(summary)
+    });
+
+    let outcome = complete_workspace_review_fixer_run(
+        state.app_state.as_ref(),
+        conversation_id,
+        run_id,
+        effective_blocker,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    Ok(Some(match outcome {
+        WorkspaceReviewFixerCompletionOutcome::Accepted => completion_response(
+            "accepted",
+            "Review fix recorded. End the run; RalphX will run a fresh local Workspace Review before publishing can proceed.",
+        ),
+        WorkspaceReviewFixerCompletionOutcome::Blocked => completion_response(
+            "blocked",
+            "The Workspace Review fixer blocker was recorded on the review gate.",
+        ),
+        WorkspaceReviewFixerCompletionOutcome::AlreadySettled => completion_response(
+            "already_completed",
+            "This Workspace Review fixer attempt was already settled.",
+        ),
+        WorkspaceReviewFixerCompletionOutcome::Superseded => completion_response(
+            "superseded",
+            "A newer Workspace Review fixer attempt is already active.",
+        ),
+        WorkspaceReviewFixerCompletionOutcome::NotFixerRun => {
+            return Err(json_error(
+                StatusCode::CONFLICT,
+                NO_REPAIR_ASSIGNMENT_DETAIL,
+                None,
+            ));
+        }
+    }))
+}
+
 /// Re-read durable completion authority after an optimistic transition loses its exact snapshot.
 /// A same-run handoff may already have recorded a blocker or accepted continuation, while only a
 /// different current generation/run is superseded.
@@ -522,6 +610,18 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
             (attempt, true)
         }
         authority => {
+            if let Some(response) = Box::pin(workspace_review_fixer_completion_fallback(
+                state,
+                &conversation_id,
+                &run_id,
+                req.summary.trim(),
+                req.blocker.as_deref(),
+                req.resolution,
+            ))
+            .await?
+            {
+                return Ok(response);
+            }
             return Ok(authority_response(authority)?.expect("non-current authority responds"));
         }
     };
@@ -548,6 +648,11 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
         req.resolution,
         Some(AgentWorkspacePrFixResolution::NeedsHuman)
     ) {
+        if let Some(rejection) =
+            needs_human_rejection_for_rerunnable_ci(state, &attempt, &workspace).await
+        {
+            return Err(json_error(StatusCode::CONFLICT, rejection, None));
+        }
         return match block_agent_workspace_repair_needs_human(
             Arc::clone(&state.app_state.agent_workspace_repair_repo),
             Arc::clone(&state.app_state.branch_update_repo),
@@ -581,6 +686,53 @@ pub(crate) async fn complete_agent_workspace_repair_for_trusted_run(
                 "pre_existing_on_base is only valid for PR autofix repair attempts.",
                 None,
             ));
+        }
+        // Fail closed when the backend's own durable facts contradict the claim. This hold can
+        // never self-release once entered (its fingerprint cannot change while the repaired head
+        // is unpublished), so a wrong classification here is a permanent park. Ordered
+        // cheap-durable-first; none of these branches transition the attempt, so the run stays
+        // authorized to re-complete honestly.
+        if attempt.base_update_head_commit.is_some() {
+            return Err(json_error(
+                StatusCode::CONFLICT,
+                "A base update in this repair attempt already produced a new branch head. Verify the worktree, then report resolution 'fixed' with the current HEAD — the base-update merge commit is a real fix.",
+                None,
+            ));
+        }
+        if attempt.pr_autofix_issue_kind == Some(AgentWorkspacePrAutofixIssueKind::Mergeability) {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "pre_existing_on_base is not valid for mergeability blockers (behind/conflicting cannot be pre-existing on the base). Run update_agent_workspace_from_base and report 'fixed', or report 'needs_human'.",
+                None,
+            ));
+        }
+        if let Some(dispatch_head) = attempt.pr_autofix_dispatch_head_commit.as_deref() {
+            // Best effort: on an inspection error the hold is the safe state, and durable
+            // base-update evidence still guarantees an eventual redrive.
+            match Box::pin(inspect_agent_workspace_repair_completion(
+                state.app_state.as_ref(),
+                &workspace,
+                &attempt.target_base_ref,
+                attempt.target_base_commit.as_deref(),
+            ))
+            .await
+            {
+                Ok(validation) if validation.repair_head_commit != dispatch_head => {
+                    return Err(json_error(
+                        StatusCode::CONFLICT,
+                        "The branch head moved since this repair was dispatched, so the outcome is not 'pre-existing on base'. Report resolution 'fixed' with the current HEAD.",
+                        None,
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = conversation_id.as_str(),
+                        %error,
+                        "Could not verify the branch head before accepting a pre_existing_on_base completion"
+                    );
+                }
+            }
         }
         return match reserve_agent_workspace_pre_existing_on_base(
             Arc::clone(&state.app_state.agent_workspace_repair_repo),
@@ -904,4 +1056,57 @@ async fn complete_reserved_agent_workspace_repair(
         "accepted",
         "Workspace repair verified; RalphX will continue the stored workflow.",
     ))
+}
+
+/// Rejects a `needs_human` escalation that RalphX can still resolve on its own.
+///
+/// Scoped to PR-autofix repair attempts only. `transient_ci` is a PR-CI classification; steering a
+/// publish or update repair fixer toward it when the actual blocker is a merge conflict or worktree
+/// problem would park the attempt on evidence that cannot resolve it.
+///
+/// A `needs_human` marker is an absolute fence on automation, so escalating "rerun this once the
+/// workflow completes" strands the workspace until a person intervenes. When fresh health shows the
+/// current head is only waiting on in-flight runs, or carries transient failures RalphX is still
+/// budgeted to rerun, `transient_ci` is the correct classification and RalphX performs the rerun
+/// itself.
+///
+/// Fails open in every unknown case — an absent GitHub service, an unresolvable PR target, a failed
+/// health fetch, or an exhausted rerun budget. A GitHub outage must never trap a fixer that
+/// legitimately needs human input, and once RalphX has spent its automatic remedies a human really
+/// is the next step.
+async fn needs_human_rejection_for_rerunnable_ci(
+    state: &HttpServerState,
+    attempt: &AgentWorkspaceRepairAttempt,
+    workspace: &AgentConversationWorkspace,
+) -> Option<String> {
+    if attempt.source != AgentWorkspaceRepairSource::PrAutofix {
+        return None;
+    }
+    if attempt.ci_rerun_count >= MAX_AGENT_WORKSPACE_CI_RERUN_RETRIES {
+        return None;
+    }
+    let github = state.app_state.github_service.as_ref()?;
+    let target = resolve_agent_workspace_pr_fix_target(state.app_state.as_ref(), workspace)
+        .await
+        .ok()
+        .flatten()?;
+    let health = github
+        .fetch_pr_health(&target.working_dir, target.pr_number)
+        .await
+        .ok()?;
+
+    match transient_ci_rerun_plan(&health) {
+        TransientCiPlan::AwaitRuns(_) => Some(
+            "Rejected `needs_human`: fresh PR health reports the current head is still waiting on in-progress GitHub Actions runs, so no user action is required yet. Complete with `transient_ci` instead — RalphX holds the attempt and reruns the run automatically once it finishes."
+                .to_string(),
+        ),
+        TransientCiPlan::Rerun { .. } => Some(
+            "Rejected `needs_human`: fresh PR health reports only infrastructure failures at the current head, which RalphX can still rerun. Complete with `transient_ci` instead."
+                .to_string(),
+        ),
+        TransientCiPlan::MissingHead
+        | TransientCiPlan::NoObservedFailure
+        | TransientCiPlan::NoFailuresAtHead
+        | TransientCiPlan::DeterministicFailures(_) => None,
+    }
 }
