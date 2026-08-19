@@ -1150,9 +1150,14 @@ async fn retry_safe_blocked_agent_workspace_repair(
             }
         }
     }
+    let mut retargeted_base: Option<String> = None;
     let carryover_pr_autofix_evidence = if current.source == AgentWorkspaceRepairSource::PrAutofix {
         match evaluate_pr_autofix_successor(state, &current, &workspace).await {
             PrAutofixSuccessorDecision::Proceed(carryover) => carryover,
+            PrAutofixSuccessorDecision::ProceedRetargeted { observed_base_commit } => {
+                retargeted_base = Some(observed_base_commit);
+                None
+            }
             PrAutofixSuccessorDecision::RedrivePublish => {
                 return redrive_blocked_repair_publish(state, current, &workspace).await;
             }
@@ -1181,13 +1186,17 @@ async fn retry_safe_blocked_agent_workspace_repair(
             source: current.source,
             continuation: current.continuation,
             target_base_ref: workspace.base_ref,
-            // workspace.base_commit is the diff baseline and deliberately lags an
-            // observed-but-unmerged base on supersede/defer routes; the predecessor attempt's
-            // own target is what this retry is contractually required to integrate.
-            target_base_commit: current
-                .target_base_commit
-                .clone()
-                .filter(|commit| !commit.trim().is_empty())
+            // retargeted_base carries the observed OID when the base moved (ProceedRetargeted);
+            // the predecessor's own target is the fallback for ordinary retries so completion
+            // validates against the right base. workspace.base_commit is the diff baseline and
+            // deliberately lags an observed-but-unmerged base on supersede/defer routes.
+            target_base_commit: retargeted_base
+                .or_else(|| {
+                    current
+                        .target_base_commit
+                        .clone()
+                        .filter(|commit| !commit.trim().is_empty())
+                })
                 .or(workspace.base_commit),
             verified_newer_base: false,
             reason: marker,

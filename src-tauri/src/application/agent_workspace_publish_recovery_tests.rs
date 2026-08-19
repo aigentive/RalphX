@@ -6199,9 +6199,13 @@ async fn pr_autofix_successor_proceeds_when_the_repair_base_moved() {
     // The attempt targets the older base; GitHub now reports a newer one.
     attempt.target_base_commit = Some("original-base-a".to_string());
 
+    // ProceedRetargeted carries the observed OID so the successor is targeted at it; without
+    // that retarget the same base movement would re-authorize a successor on every evaluation.
     assert_eq!(
         evaluate_pr_autofix_successor(&state, &attempt, &workspace).await,
-        PrAutofixSuccessorDecision::Proceed(None)
+        PrAutofixSuccessorDecision::ProceedRetargeted {
+            observed_base_commit: "observed-base-b".to_string()
+        }
     );
 }
 
@@ -10091,5 +10095,127 @@ async fn blocked_repair_with_an_open_pull_request_creation_keeps_its_retry_withh
         .await
         .expect("read the retry admission after recovery"),
         "an unproven pull-request creation must never be re-admitted for replay"
+    );
+}
+
+#[tokio::test]
+async fn base_advanced_successor_targets_the_observed_base() {
+    // Validates the ProceedRetargeted path: when the base moves, the successor must carry the
+    // observed OID as its target_base_commit so the next evaluation's repair_base_advanced check
+    // returns false and does not re-authorize another generation.
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(206).await;
+
+    start_blocked_pr_autofix_generation(&state, &conversation_id).await;
+
+    // Build health with a failing check and a base that differs from the attempt's target.
+    let mut health = failing_check_pr_health("head-sha", "Rust Tests");
+    let fingerprint = health_fingerprint(684, &health);
+    health.sync_state.base_ref_oid = Some("observed-base-b".to_string());
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    state.github_service = Some(github as Arc<dyn crate::domain::services::GithubServiceTrait>);
+
+    // Block the attempt with a fingerprint set and a stale target, aged past the backoff.
+    let attempt = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt exists");
+    let expected_updated_at = attempt.updated_at;
+    let expected_phase = attempt.phase;
+    let mut blocked = attempt;
+    blocked.source = AgentWorkspaceRepairSource::PrAutofix;
+    blocked.phase = AgentWorkspaceRepairPhase::Blocked;
+    blocked.pr_autofix_health_fingerprint = Some(fingerprint);
+    blocked.target_base_commit = Some("original-base-a".to_string());
+    blocked.blocker = Some("transient_ci".to_string());
+    blocked.updated_at = chrono::Utc::now() - chrono::Duration::seconds(1_000);
+    let blocked = match state
+        .agent_workspace_repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: blocked,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("block attempt")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(a) => a,
+        outcome => panic!("must apply, got {outcome:?}"),
+    };
+
+    let workspace_before = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+    let original_workspace_base = workspace_before.base_commit.clone();
+
+    recover_agent_workspace_repair_attempts_for_state(&state)
+        .await
+        .expect("recovery pass runs");
+
+    let successor = state
+        .agent_workspace_repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load successor")
+        .expect("successor exists");
+    assert_ne!(successor.id, blocked.id, "a new generation must have been started");
+    assert_eq!(
+        successor.target_base_commit.as_deref(),
+        Some("observed-base-b"),
+        "successor must target the observed base, not the predecessor's stale target"
+    );
+
+    let workspace_after = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace after")
+        .expect("workspace exists");
+    assert_eq!(
+        workspace_after.base_commit, original_workspace_base,
+        "workspace.base_commit must not be mutated by the recovery pass"
+    );
+}
+
+#[tokio::test]
+async fn base_advance_authorizes_exactly_one_successor() {
+    // Once the successor is retargeted to the observed base, evaluating its state with identical
+    // health must return HoldUnchanged — proving exactly one successor is authorized per advance.
+    let (mut state, conversation_id, _worktree_parent, _project_dir) =
+        seed_pr_autofix_health_workspace(207).await;
+
+    let mut health = failing_check_pr_health("head-sha", "Rust Tests");
+    let fingerprint = health_fingerprint(684, &health);
+    // GitHub reports the same base the successor was retargeted onto — no further movement.
+    health.sync_state.base_ref_oid = Some("observed-base-b".to_string());
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    state.github_service = Some(github as Arc<dyn crate::domain::services::GithubServiceTrait>);
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+
+    // Simulate the successor that was retargeted: its target now matches what GitHub reports,
+    // so repair_base_advanced returns false and the fingerprint comparison governs.
+    let mut successor = blocked_pr_autofix_attempt(&conversation_id, &fingerprint);
+    successor.target_base_commit = Some("observed-base-b".to_string());
+
+    assert_eq!(
+        evaluate_pr_autofix_successor(&state, &successor, &workspace).await,
+        PrAutofixSuccessorDecision::HoldUnchanged,
+        "identical health with a matching target must park, not authorize another successor"
     );
 }

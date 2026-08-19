@@ -86,6 +86,10 @@ pub(crate) enum PrAutofixSuccessorDecision {
     /// A successor is authorized. Carries freshly observed PR evidence when GitHub could be read,
     /// so downstream fingerprint suppression has something to compare on the next round.
     Proceed(Option<PrAutofixCarryover>),
+    /// The base GitHub reports has moved past what this generation targeted. The successor is
+    /// authorized and must adopt the observed base, or the same movement re-authorizes a successor
+    /// on every later evaluation.
+    ProceedRetargeted { observed_base_commit: String },
     /// The prior generation produced a validated local repair head that has not reached the PR.
     /// Re-drive the durable publish continuation instead of holding or buying another fixer run:
     /// GitHub health cannot change until that head is published.
@@ -244,10 +248,15 @@ pub(crate) async fn evaluate_pr_autofix_successor(
     // The comparison is against the live GitHub-observed base, not workspace.base_commit: after
     // the supersede/defer routes, workspace.base_commit stays at the branch point while the
     // attempt carries the observed base, so a workspace comparison would be permanently true.
-    if repair_base_advanced(current, health.sync_state.base_ref_oid.as_deref())
-        && current.base_update_head_commit.is_none()
-    {
-        return PrAutofixSuccessorDecision::Proceed(None);
+    // ProceedRetargeted carries the observed OID so the successor is targeted at it; without
+    // that retarget the same base movement would re-authorize a successor on every evaluation.
+    if let Some(observed) = health.sync_state.base_ref_oid.as_deref() {
+        if repair_base_advanced(current, Some(observed)) && current.base_update_head_commit.is_none()
+        {
+            return PrAutofixSuccessorDecision::ProceedRetargeted {
+                observed_base_commit: observed.to_string(),
+            };
+        }
     }
     let Some(issue) = classify_agent_workspace_pr_autofix_issue(pr_number, &health) else {
         // Nothing is failing on the PR any more. A fixer generation dispatched now would have
