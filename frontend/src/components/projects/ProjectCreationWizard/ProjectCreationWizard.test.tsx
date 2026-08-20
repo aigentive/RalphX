@@ -12,8 +12,9 @@ import { ProjectCreationWizard } from "./ProjectCreationWizard";
 // CloneStep depends on useCloneJob (EventProvider context) and the GitHub
 // auth hooks (react-query context). The shell test only exercises step
 // routing/dismissal, so both are stubbed rather than wired with real providers.
-// `start` is a no-op: it never resolves job.status, which is exactly what a
-// dismissal-guard test needs (the step stays in the "running" phase).
+// `start` resolves true (simulating a successful clone-job start) and never
+// resolves job.status, which is exactly what a dismissal-guard test needs
+// (the step stays in the "running" phase).
 vi.mock("@/hooks/useCloneJob", () => ({
   useCloneJob: () => ({
     phase: null,
@@ -24,7 +25,7 @@ vi.mock("@/hooks/useCloneJob", () => ({
     status: null,
     error: null,
     cleanedUp: null,
-    start: vi.fn(),
+    start: vi.fn().mockResolvedValue(true),
     cancel: vi.fn(),
     reset: vi.fn(),
   }),
