@@ -33,6 +33,8 @@ Component doesn't render in web mode?
 └─ NEVER log "blocked" and skip — FIX IT
 ```
 
+**Two mock layers — cover both.** Web mode swaps the whole `api` object for `mockApi` (`src/lib/tauri.ts` → `src/api-mock/`), so anything reached as `api.<domain>.<method>` NEVER hits the invoke-level mocks in `src/mocks/tauri-api-core.ts`. A new command consumed both ways needs a handler in `tauri-api-core.ts` AND a method on the matching `mock*Api`; the api-level one returns the camelCase frontend type, because the real Zod transform is bypassed too. ❌ Symptom: the prop arrives `undefined` and the feature silently no-ops in web mode.
+
 ## File Patterns
 
 | Type | Pattern | Location | Example |

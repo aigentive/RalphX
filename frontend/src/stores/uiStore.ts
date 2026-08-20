@@ -75,6 +75,52 @@ function saveKanbanCardDisplayMode(mode: KanbanCardDisplayMode): void {
     /* ignore write errors */
   }
 }
+
+// ============================================================================
+// Recent Repositories Persistence (Project Creation Wizard - Add Existing)
+// ============================================================================
+
+const RECENT_REPOSITORIES_KEY = "ralphx-recent-repositories";
+const RECENT_REPOSITORIES_CAP = 8;
+
+export interface RecentRepository {
+  path: string;
+  name: string;
+  lastUsedAt: string;
+}
+
+function isRecentRepository(value: unknown): value is RecentRepository {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as RecentRepository).path === "string" &&
+    typeof (value as RecentRepository).name === "string" &&
+    typeof (value as RecentRepository).lastUsedAt === "string"
+  );
+}
+
+function loadRecentRepositories(): RecentRepository[] {
+  try {
+    const saved = localStorage.getItem(RECENT_REPOSITORIES_KEY);
+    if (saved !== null) {
+      const parsed: unknown = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(isRecentRepository).slice(0, RECENT_REPOSITORIES_CAP);
+      }
+    }
+  } catch {
+    /* ignore parse errors */
+  }
+  return [];
+}
+
+function saveRecentRepositories(entries: RecentRepository[]): void {
+  try {
+    localStorage.setItem(RECENT_REPOSITORIES_KEY, JSON.stringify(entries));
+  } catch {
+    /* ignore write errors */
+  }
+}
 import { useProjectStore } from "@/stores/projectStore";
 
 enableMapSet();
@@ -274,6 +320,8 @@ interface UiState {
   autoAcceptPlans: boolean;
   /** Per-session auto-accept: bypass confirmation for specific sessions (in-memory, resets on restart) */
   autoAcceptSessions: Set<string>;
+  /** Recently used local repository paths, most-recent-first (persisted to localStorage) */
+  recentRepositories: RecentRepository[];
 }
 
 // ============================================================================
@@ -405,6 +453,8 @@ interface UiActions {
   addAutoAcceptSession: (sessionId: string) => void;
   /** Remove a session from per-session auto-accept set */
   removeAutoAcceptSession: (sessionId: string) => void;
+  /** Record a repository as recently used (dedupes by path, caps at 8, most-recent-first) */
+  recordRecentRepository: (path: string, name: string) => void;
 }
 
 // ============================================================================
@@ -466,6 +516,7 @@ export const useUiStore = create<UiState & UiActions>()(
     pendingConfirmationQueue: [],
     autoAcceptPlans: false,
     autoAcceptSessions: new Set<string>(),
+    recentRepositories: loadRecentRepositories(),
 
     // Actions
     toggleSidebar: () =>
@@ -852,6 +903,14 @@ export const useUiStore = create<UiState & UiActions>()(
     removeAutoAcceptSession: (sessionId) =>
       set((state) => {
         state.autoAcceptSessions.delete(sessionId);
+      }),
+
+    recordRecentRepository: (path, name) =>
+      set((state) => {
+        const deduped = state.recentRepositories.filter((entry) => entry.path !== path);
+        deduped.unshift({ path, name, lastUsedAt: new Date().toISOString() });
+        state.recentRepositories = deduped.slice(0, RECENT_REPOSITORIES_CAP);
+        saveRecentRepositories(state.recentRepositories);
       }),
 
   }))

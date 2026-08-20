@@ -333,6 +333,7 @@ fn test_transient_patterns_constant_coverage() {
 fn git_command_lane_labels_are_stable() {
     assert_eq!(GitCommandLane::Foreground.as_str(), "foreground");
     assert_eq!(GitCommandLane::Background.as_str(), "background");
+    assert_eq!(GitCommandLane::Clone.as_str(), "clone");
 }
 
 #[test]
@@ -685,4 +686,227 @@ async fn authorized_mutation_persists_process_authority_until_git_exits() {
         .unwrap()
         .active_mutation()
         .is_none());
+}
+
+// ── Clone lane + streaming ───────────────────────────────────────────────────
+
+/// `GIT_CLONE_PERMITS` is a process-wide static, so clone-lane tests must not
+/// run concurrently or they starve each other rather than the behavior under test.
+static CLONE_LANE_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Proof obligation 8: the whole point of the dedicated clone lane is that a
+/// minutes-long clone cannot head-of-line-block the single-permit background
+/// lane that every workspace automation queues behind.
+#[tokio::test]
+async fn in_flight_clone_lane_work_does_not_delay_background_work() {
+    let _lane_lock = CLONE_LANE_MUTEX.lock().await;
+    let repo = tempfile::tempdir().expect("temporary directory should exist");
+    let args = vec!["--version".to_string()];
+
+    // Saturate the clone lane, exactly as two concurrent clones would.
+    let first = acquire_git_admission(GitCommandLane::Clone, "test", &args, repo.path())
+        .await
+        .expect("first clone admission should be granted");
+    let second = acquire_git_admission(GitCommandLane::Clone, "test", &args, repo.path())
+        .await
+        .expect("second clone admission should be granted");
+
+    let background = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_background(&["--version"], repo.path()),
+    )
+    .await;
+
+    drop(second);
+    drop(first);
+
+    let background = background.expect("background work must not wait behind clone-lane work");
+    assert!(
+        background.is_ok(),
+        "background git --version should still succeed: {background:?}"
+    );
+}
+
+#[tokio::test]
+async fn clone_lane_admission_is_capped_at_its_own_permits() {
+    let _lane_lock = CLONE_LANE_MUTEX.lock().await;
+    let repo = tempfile::tempdir().expect("temporary directory should exist");
+    let args = vec!["--version".to_string()];
+
+    let first = acquire_git_admission(GitCommandLane::Clone, "test", &args, repo.path())
+        .await
+        .expect("first clone admission should be granted");
+    let second = acquire_git_admission(GitCommandLane::Clone, "test", &args, repo.path())
+        .await
+        .expect("second clone admission should be granted");
+
+    let third = tokio::time::timeout(
+        Duration::from_millis(250),
+        acquire_git_admission(GitCommandLane::Clone, "test", &args, repo.path()),
+    )
+    .await;
+
+    assert!(
+        third.is_err(),
+        "a third concurrent clone must queue behind the clone permits"
+    );
+
+    drop(second);
+    drop(first);
+}
+
+#[test]
+fn progress_segments_split_on_carriage_returns_and_newlines() {
+    let lines = std::cell::RefCell::new(Vec::new());
+    let mut pending = Vec::new();
+    let mut push = |line: &str| lines.borrow_mut().push(line.to_string());
+
+    // `git clone --progress` separates in-place progress updates with `\r`;
+    // splitting only on `\n` would starve the callback until a phase ended.
+    pending.extend_from_slice(b"Receiving objects:  10%\rReceiving objects:  50%\r");
+    emit_complete_segments(&mut pending, &mut push);
+    assert_eq!(
+        *lines.borrow(),
+        vec![
+            "Receiving objects:  10%".to_string(),
+            "Receiving objects:  50%".to_string()
+        ]
+    );
+
+    pending.extend_from_slice(b"Resolving deltas: 100%\ndone");
+    emit_complete_segments(&mut pending, &mut push);
+    assert_eq!(
+        lines.borrow().len(),
+        3,
+        "the newline-terminated segment should emit"
+    );
+
+    emit_pending_segment(&mut pending, &mut push);
+    assert_eq!(
+        lines.borrow().last().map(String::as_str),
+        Some("done"),
+        "the unterminated tail should flush at EOF"
+    );
+}
+
+#[test]
+fn progress_segments_hold_back_partial_reads() {
+    let lines = std::cell::RefCell::new(Vec::new());
+    let mut pending = Vec::new();
+    let mut push = |line: &str| lines.borrow_mut().push(line.to_string());
+
+    pending.extend_from_slice(b"Receiving objec");
+    emit_complete_segments(&mut pending, &mut push);
+    assert!(
+        lines.borrow().is_empty(),
+        "a partial segment must not be emitted"
+    );
+
+    pending.extend_from_slice(b"ts: 100%\r");
+    emit_complete_segments(&mut pending, &mut push);
+    assert_eq!(*lines.borrow(), vec!["Receiving objects: 100%".to_string()]);
+}
+
+#[tokio::test]
+async fn spawn_streaming_delivers_stderr_and_reports_exit_status() {
+    let _lane_lock = CLONE_LANE_MUTEX.lock().await;
+    let directory = tempfile::tempdir().expect("temporary directory should exist");
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let collected = Arc::clone(&lines);
+
+    let outcome = spawn_streaming(
+        &["status", "--porcelain"],
+        directory.path(),
+        30,
+        &[],
+        std::future::pending::<()>(),
+        |line| collected.lock().unwrap().push(line.to_string()),
+    )
+    .await
+    .expect("streaming a git command should not error");
+
+    let StreamedGitOutcome::Completed(status) = outcome else {
+        panic!("expected a completed outcome, got {outcome:?}");
+    };
+    assert!(
+        !status.success(),
+        "git status outside a repository should fail"
+    );
+    let lines = lines.lock().unwrap();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("not a git repository")),
+        "stderr should reach the callback, got {lines:?}"
+    );
+}
+
+#[tokio::test]
+async fn spawn_streaming_reports_cancellation() {
+    let _lane_lock = CLONE_LANE_MUTEX.lock().await;
+    let directory = tempfile::tempdir().expect("temporary directory should exist");
+
+    let outcome = spawn_streaming(
+        &["status", "--porcelain"],
+        directory.path(),
+        30,
+        &[],
+        std::future::ready(()),
+        |_line| {},
+    )
+    .await
+    .expect("cancellation should be an outcome, not an error");
+
+    assert!(matches!(outcome, StreamedGitOutcome::Cancelled));
+}
+
+#[tokio::test]
+async fn spawn_streaming_reports_its_own_deadline() {
+    let _lane_lock = CLONE_LANE_MUTEX.lock().await;
+    let directory = tempfile::tempdir().expect("temporary directory should exist");
+
+    let outcome = spawn_streaming(
+        &["status", "--porcelain"],
+        directory.path(),
+        0,
+        &[],
+        std::future::pending::<()>(),
+        |_line| {},
+    )
+    .await
+    .expect("a deadline should be an outcome, not an error");
+
+    assert!(matches!(outcome, StreamedGitOutcome::TimedOut));
+}
+
+#[tokio::test]
+async fn spawn_streaming_applies_caller_supplied_env() {
+    let _lane_lock = CLONE_LANE_MUTEX.lock().await;
+    let directory = tempfile::tempdir().expect("temporary directory should exist");
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let collected = Arc::clone(&lines);
+
+    // `GIT_CONFIG_GLOBAL` pointing at nothing is observable through `git config`
+    // output, proving caller env reaches the spawned process.
+    let outcome = spawn_streaming(
+        &["config", "--global", "--get", "user.name"],
+        directory.path(),
+        30,
+        &[(
+            "GIT_CONFIG_GLOBAL".to_string(),
+            "/nonexistent/gitconfig".to_string(),
+        )],
+        std::future::pending::<()>(),
+        |line| collected.lock().unwrap().push(line.to_string()),
+    )
+    .await
+    .expect("streaming should not error");
+
+    let StreamedGitOutcome::Completed(status) = outcome else {
+        panic!("expected a completed outcome, got {outcome:?}");
+    };
+    assert!(
+        !status.success(),
+        "with an empty global config there is no user.name to read"
+    );
 }

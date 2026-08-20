@@ -108,6 +108,7 @@ style={{ boxShadow: "none", outline: "none" }}
 - **Plan Verification** — Adversarial review loop for ideation plans. `docs/features/plan-verification.md` | `.claude/rules/ideation-verification-architecture.md`
 - **Agent Personas** — Conversation-bound prompt-only profiles. `docs/features/agent-personas.md`
 - **Atlassian MCP Access** — Role-tiered Jira/Confluence tools. `docs/features/atlassian-mcp-access.md`
+- **Project Creation Intents** — Clone / Create New / Add Existing chooser, preflight probe, cancellable clone. `docs/features/project-creation.md`
 
 ## Git Conventions
 ❌ git init/push/remotes | Prefixes: `docs:` | `feat:` | `fix:` | `chore:`

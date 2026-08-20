@@ -117,6 +117,8 @@ New pattern → add one-liner here. Pattern name + rule only.
 | PreMergeCleanup | Kill agents + kill_worktree_processes BEFORE git worktree ops (TOCTOU race prevention) |
 | MergeDeadline | `attempt_programmatic_merge` wraps cleanup + strategy in bounded deadline (`attempt_merge_deadline_secs`) |
 | No Inline Timeout Consts | All durations → `runtime_config` + `config/ralphx.yaml`, never Rust `const` |
+| Dedicated long-running git lane | Minutes-scale git work gets its own `GitCommandLane` (today `Clone`) with its own permits and its own config-owned deadline. ❌ `GitCommandLane::Background` — it is a single global permit shared by review, publish, recovery, and cleanup, so one long command head-of-line-blocks all of them |
+| Re-readable terminal job state | Long-running job UIs must be able to re-read a terminal outcome by id (`CloneJobRegistry` + `get_clone_job_status`); `TauriEventBus` cannot recover an emit that preceded listener registration, so events-only completion strands the UI forever |
 | Rust test runner split | Local agents use targeted `cargo test` filters and targeted `cargo nextest --test ... -E ...`; broad Rust runs are CI/manual-diagnostic only; fixture rules and commands live in `.claude/rules/rust-test-execution.md` |
 | Tauri test-utils gate | Tauri mock-app helpers require `--features test-utils`; keep root lib/IPC CI lanes feature-on until later phases remove lib-side `tauri::test` users |
 | Worktree-safe Rust helper | `scripts/test-rust-fast.sh` bundles selected CI lanes for explicit manual diagnosis; ordinary agent handoff never runs its broad `pr`/`main` modes |
