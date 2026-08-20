@@ -63,7 +63,7 @@ import {
 } from "@/lib/navigation";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 import type { StartupStatus } from "@/api/startup";
-import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
+import { api } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
 import type { RunningWorkspaceSession } from "@/api/running-processes";
 import { githubApi } from "@/api/github";
@@ -888,7 +888,10 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
       ensureCreatedProjectVisibleInAgentFilters(newProject.id);
       setIsProjectWizardOpen(false);
     } catch (error) {
-      setProjectCreationError(error instanceof Error ? error.message : "Failed to create project");
+      const normalizedError = error instanceof Error ? error : new Error("Failed to create project");
+      setProjectCreationError(normalizedError.message);
+      // Re-throw so callers (e.g. NewRepositoryStep) can roll back a prepared directory.
+      throw normalizedError;
     } finally {
       setIsCreatingProject(false);
     }
@@ -899,12 +902,12 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
     setFocusedAgentProject,
   ]);
 
-  const handleBrowseFolder = useCallback(async (): Promise<string | null> => {
+  const handleBrowseFolder = useCallback(async (options?: { title?: string }): Promise<string | null> => {
     try {
       const selected = await openDialog({
         directory: true,
         multiple: false,
-        title: "Select Project Folder",
+        title: options?.title ?? "Select Project Folder",
       });
       // selected is string | string[] | null for directories
       if (typeof selected === "string") {
@@ -914,20 +917,6 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
     } catch {
       return null;
     }
-  }, []);
-
-  const handleFetchBranches = useCallback(async (workingDirectory: string): Promise<string[]> => {
-    try {
-      const branches = await getGitBranches(workingDirectory);
-      return branches;
-    } catch {
-      return [];
-    }
-  }, []);
-
-  const handleDetectDefaultBranch = useCallback(async (workingDirectory: string): Promise<string> => {
-    // Use backend detection with fallback chain (origin/HEAD -> main -> master -> first branch)
-    return getGitDefaultBranch(workingDirectory);
   }, []);
 
   // Handler for closing manually-opened welcome screen
@@ -1214,8 +1203,9 @@ function AppContent({ backgroundSettled }: { backgroundSettled: boolean }) {
         onClose={handleCloseProjectWizard}
         onCreate={handleCreateProject}
         onBrowseFolder={handleBrowseFolder}
-        onFetchBranches={handleFetchBranches}
-        onDetectDefaultBranch={handleDetectDefaultBranch}
+        onInspectCandidate={api.projects.inspectProjectCandidate}
+        onPrepareDirectory={api.projects.prepareNewProjectDirectory}
+        onDiscardDirectory={api.projects.discardPreparedProjectDirectory}
         isCreating={isCreatingProject}
         error={projectCreationError}
         isFirstRun={hasNoProjects}

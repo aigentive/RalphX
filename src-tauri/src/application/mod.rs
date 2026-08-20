@@ -135,6 +135,10 @@ pub mod chat_resumption;
 pub mod completion_correlation;
 pub mod chat_service;
 pub mod clickup_git_association;
+pub mod clone_job_registry;
+pub mod clone_job_runner;
+#[cfg(test)]
+mod clone_job_registry_tests;
 pub mod clickup_integration_service;
 pub mod conversation_folder_reference_service;
 #[cfg(test)]

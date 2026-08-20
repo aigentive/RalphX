@@ -57,3 +57,69 @@ describe("mockProjectsApi PR templates", () => {
     });
   });
 });
+
+/**
+ * Web mode swaps the whole `api` object for `mockApi` (src/lib/tauri.ts), so
+ * every `api.projects.*` method App.tsx hands to a component must exist here.
+ * The invoke-level mocks in src/mocks/tauri-api-core.ts do NOT cover this path.
+ */
+describe("mockProjectsApi project-creation probes", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("exposes every api.projects method the project creation wizard consumes", () => {
+    expect(typeof mockProjectsApi.inspectProjectCandidate).toBe("function");
+    expect(typeof mockProjectsApi.prepareNewProjectDirectory).toBe("function");
+    expect(typeof mockProjectsApi.discardPreparedProjectDirectory).toBe("function");
+  });
+
+  it("returns a camelCase repository verdict, not the snake_case wire shape", async () => {
+    await expect(
+      mockProjectsApi.inspectProjectCandidate("/Users/test/projects/test-project"),
+    ).resolves.toEqual({
+      kind: "repository",
+      repositoryRoot: "/Users/test/projects/test-project",
+      currentBranch: "main",
+      defaultBranch: "main",
+      branches: ["main", "develop"],
+      hasCommits: true,
+      isDirty: false,
+      capability: { kind: "localOnly" },
+      alreadyRegisteredAs: null,
+    });
+  });
+
+  it("reports an already-registered folder so the wizard can block it", async () => {
+    const created = await mockProjectsApi.create({
+      name: "Existing",
+      workingDirectory: "/Users/test/projects/already-added",
+    });
+
+    await expect(
+      mockProjectsApi.inspectProjectCandidate("/Users/test/projects/already-added"),
+    ).resolves.toMatchObject({
+      kind: "repository",
+      alreadyRegisteredAs: { id: created.id, name: "Existing" },
+    });
+  });
+
+  it("returns notFound for an empty path", async () => {
+    await expect(mockProjectsApi.inspectProjectCandidate("")).resolves.toEqual({
+      kind: "notFound",
+    });
+  });
+
+  it("composes the prepared destination path", async () => {
+    await expect(
+      mockProjectsApi.prepareNewProjectDirectory({
+        parentDirectory: "/Users/test/projects",
+        folderName: "my-app",
+      }),
+    ).resolves.toEqual({ path: "/Users/test/projects/my-app", created: true });
+
+    await expect(
+      mockProjectsApi.discardPreparedProjectDirectory("/Users/test/projects/my-app"),
+    ).resolves.toBeUndefined();
+  });
+});

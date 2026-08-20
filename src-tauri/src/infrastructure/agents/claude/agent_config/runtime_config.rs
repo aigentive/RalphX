@@ -739,6 +739,13 @@ impl Default for ReconciliationConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GitRuntimeConfig {
     pub cmd_timeout_secs: u64,
+    /// Deadline for a whole `git clone`, which is minutes-scale work rather than
+    /// a short command and therefore cannot share `cmd_timeout_secs`.
+    ///
+    /// The struct comment above is historical: fields added after it carry serde
+    /// defaults so already-installed `config/ralphx.yaml` copies keep loading.
+    #[serde(default = "default_git_clone_timeout_secs")]
+    pub clone_timeout_secs: u64,
     pub startup_auth_preflight_timeout_secs: u64,
     pub max_retries: u64,
     pub retry_backoff_secs: Vec<u64>,
@@ -852,6 +859,7 @@ impl Default for GitRuntimeConfig {
     fn default() -> Self {
         Self {
             cmd_timeout_secs: 60,
+            clone_timeout_secs: default_git_clone_timeout_secs(),
             startup_auth_preflight_timeout_secs: 10,
             max_retries: 3,
             retry_backoff_secs: vec![1, 2, 4],
@@ -922,6 +930,12 @@ fn default_agent_workspace_publish_recovery_interval_secs() -> u64 {
 
 fn default_workspace_freshness_full_scope_cache_ttl_ms() -> u64 {
     30_000
+}
+
+/// 15 minutes — long enough for a large repository on a slow link, short enough
+/// that a wedged clone still releases its lane.
+fn default_git_clone_timeout_secs() -> u64 {
+    900
 }
 
 fn default_workspace_pr_poll_base_secs() -> u64 {
@@ -1490,6 +1504,7 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
 
     // Git
     env_u64!(cfg.git.cmd_timeout_secs, "RALPHX_GIT_CMD_TIMEOUT_SECS");
+    env_u64!(cfg.git.clone_timeout_secs, "RALPHX_GIT_CLONE_TIMEOUT_SECS");
     env_u64!(
         cfg.git.startup_auth_preflight_timeout_secs,
         "RALPHX_GIT_STARTUP_AUTH_PREFLIGHT_TIMEOUT_SECS"

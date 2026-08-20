@@ -28,10 +28,16 @@ use tokio::time::timeout;
 const SLOW_GIT_COMMAND_MS: u64 = 500;
 const GIT_PROCESS_CONCURRENCY: usize = 4;
 const GIT_BACKGROUND_CONCURRENCY: usize = 1;
+/// Clones are minutes-scale, so they get their own permits rather than sharing
+/// the single background permit that every workspace automation queues behind.
+const GIT_CLONE_CONCURRENCY: usize = 2;
 const GIT_ADMISSION_WAIT_LOG_MS: u128 = 50;
+/// Read size for streamed progress output.
+const GIT_STREAM_CHUNK_BYTES: usize = 4096;
 
 static GIT_PROCESS_PERMITS: Semaphore = Semaphore::const_new(GIT_PROCESS_CONCURRENCY);
 static GIT_BACKGROUND_PERMITS: Semaphore = Semaphore::const_new(GIT_BACKGROUND_CONCURRENCY);
+static GIT_CLONE_PERMITS: Semaphore = Semaphore::const_new(GIT_CLONE_CONCURRENCY);
 static GIT_FOREGROUND_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static GIT_COMMANDS_QUEUED: AtomicUsize = AtomicUsize::new(0);
 static GIT_COMMANDS_EXECUTING: AtomicUsize = AtomicUsize::new(0);
@@ -44,6 +50,12 @@ tokio::task_local! {
 pub(crate) enum GitCommandLane {
     Foreground,
     Background,
+    /// Long-running network work (currently only `git clone`).
+    ///
+    /// Takes a global process permit but never registers as foreground and never
+    /// takes a background permit, so a 15-minute clone cannot head-of-line-block
+    /// review, publish, recovery, or cleanup work.
+    Clone,
 }
 
 #[derive(Clone)]
@@ -96,6 +108,7 @@ impl GitCommandLane {
         match self {
             Self::Foreground => "foreground",
             Self::Background => "background",
+            Self::Clone => "clone",
         }
     }
 }
@@ -104,6 +117,7 @@ struct GitAdmissionGuard {
     lane: GitCommandLane,
     _global: SemaphorePermit<'static>,
     _background: Option<SemaphorePermit<'static>>,
+    _clone: Option<SemaphorePermit<'static>>,
 }
 
 impl Drop for GitAdmissionGuard {
@@ -617,6 +631,161 @@ pub(crate) fn run_in_lane<'a>(
     }
 }
 
+/// How a streamed git command ended.
+#[derive(Debug)]
+pub(crate) enum StreamedGitOutcome {
+    Completed(std::process::ExitStatus),
+    TimedOut,
+    Cancelled,
+}
+
+/// Run a long git command on the clone lane, delivering stderr progress
+/// incrementally instead of buffering it until exit.
+///
+/// Deliberately bypasses `exec_with_retry_async`: a partially written
+/// destination must never be silently retried. The caller supplies its own
+/// deadline because clone-scale work does not fit `cmd_timeout_secs`.
+///
+/// `git` writes `--progress` updates separated by carriage returns, so segments
+/// are split on both `\r` and `\n`; without that the callback would only fire
+/// once per completed phase.
+///
+/// # Errors
+/// Returns `Err` when the process cannot be spawned or its output cannot be read.
+pub(crate) async fn spawn_streaming<C, F>(
+    args: &[&str],
+    cwd: &Path,
+    timeout_secs: u64,
+    env: &[(String, String)],
+    cancel: C,
+    mut on_stderr_line: F,
+) -> AppResult<StreamedGitOutcome>
+where
+    C: std::future::Future<Output = ()>,
+    F: FnMut(&str),
+{
+    use tokio::io::AsyncReadExt;
+
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    let lane = current_git_command_lane(GitCommandLane::Clone);
+    let _admission = acquire_git_admission(lane, "spawn_streaming", &args, cwd).await?;
+    let started = Instant::now();
+
+    let mut command = build_git_command(&args, cwd, env);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|error| {
+        AppError::GitOperation(format!("git {} failed to spawn: {error}", args.join(" ")))
+    })?;
+    let mut stderr = child.stderr.take().ok_or_else(|| {
+        AppError::GitOperation("streamed git command has no stderr pipe".to_string())
+    })?;
+
+    let deadline = tokio::time::sleep(Duration::from_secs(timeout_secs));
+    tokio::pin!(deadline);
+    tokio::pin!(cancel);
+
+    let mut chunk = [0u8; GIT_STREAM_CHUNK_BYTES];
+    let mut pending = Vec::<u8>::new();
+    let outcome = loop {
+        tokio::select! {
+            biased;
+            () = &mut cancel => break StreamedGitOutcome::Cancelled,
+            () = &mut deadline => break StreamedGitOutcome::TimedOut,
+            read = stderr.read(&mut chunk) => {
+                let read = read.map_err(|error| {
+                    AppError::GitOperation(format!(
+                        "git {} stderr read failed: {error}",
+                        args.join(" ")
+                    ))
+                })?;
+                if read == 0 {
+                    emit_pending_segment(&mut pending, &mut on_stderr_line);
+                    break StreamedGitOutcome::Completed(wait_for_streamed_exit(
+                        &mut child,
+                        &args,
+                        &mut deadline,
+                        &mut cancel,
+                    ).await?);
+                }
+                pending.extend_from_slice(&chunk[..read]);
+                emit_complete_segments(&mut pending, &mut on_stderr_line);
+            }
+        }
+    };
+
+    // `kill_on_drop(true)` handles the process on every early exit, but killing
+    // explicitly keeps the child from outliving this frame while the admission
+    // permit is still being released.
+    if !matches!(outcome, StreamedGitOutcome::Completed(_)) {
+        let _ = child.start_kill();
+    }
+
+    tracing::debug!(
+        lane = lane.as_str(),
+        command = %args.join(" "),
+        cwd = %cwd.display(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        outcome = ?outcome,
+        "Streamed git command finished"
+    );
+
+    Ok(outcome)
+}
+
+/// Wait for exit after stderr closed, still honoring the deadline and cancel.
+async fn wait_for_streamed_exit<C>(
+    child: &mut tokio::process::Child,
+    args: &[String],
+    deadline: &mut std::pin::Pin<&mut tokio::time::Sleep>,
+    cancel: &mut std::pin::Pin<&mut C>,
+) -> AppResult<std::process::ExitStatus>
+where
+    C: std::future::Future<Output = ()>,
+{
+    tokio::select! {
+        biased;
+        () = cancel.as_mut() => Err(AppError::GitOperation(format!(
+            "git {} was cancelled while exiting",
+            args.join(" ")
+        ))),
+        () = deadline.as_mut() => Err(AppError::GitOperation(format!(
+            "git {} timed out while exiting",
+            args.join(" ")
+        ))),
+        status = child.wait() => status.map_err(|error| {
+            AppError::GitOperation(format!("git {} failed: {error}", args.join(" ")))
+        }),
+    }
+}
+
+fn emit_complete_segments<F: FnMut(&str)>(pending: &mut Vec<u8>, on_line: &mut F) {
+    while let Some(index) = pending
+        .iter()
+        .position(|byte| *byte == b'\n' || *byte == b'\r')
+    {
+        let segment: Vec<u8> = pending.drain(..=index).collect();
+        emit_segment(&segment[..segment.len() - 1], on_line);
+    }
+}
+
+fn emit_pending_segment<F: FnMut(&str)>(pending: &mut Vec<u8>, on_line: &mut F) {
+    if !pending.is_empty() {
+        let segment = std::mem::take(pending);
+        emit_segment(&segment, on_line);
+    }
+}
+
+fn emit_segment<F: FnMut(&str)>(segment: &[u8], on_line: &mut F) {
+    let text = String::from_utf8_lossy(segment);
+    let trimmed = text.trim();
+    if !trimmed.is_empty() {
+        on_line(trimmed);
+    }
+}
+
 /// Run a git command with additional environment variables.
 ///
 /// Uses `tokio::process::Command` with `kill_on_drop(true)`.
@@ -785,6 +954,7 @@ async fn acquire_git_admission(
                 lane,
                 _global: global,
                 _background: None,
+                _clone: None,
             })
         }
         GitCommandLane::Background => {
@@ -800,6 +970,29 @@ async fn acquire_git_admission(
                 lane,
                 _global: global,
                 _background: Some(background),
+                _clone: None,
+            })
+        }
+        GitCommandLane::Clone => {
+            let clone = GIT_CLONE_PERMITS
+                .acquire()
+                .await
+                .map_err(|_| AppError::GitOperation("git clone admission closed".to_string()))?;
+            // Deliberately not the background yield loop: a clone writes only
+            // into a brand-new destination, so it contends with no existing
+            // repository or worktree operation and must not wait for the whole
+            // foreground queue to drain before it can start.
+            let global = GIT_PROCESS_PERMITS
+                .acquire()
+                .await
+                .map_err(|_| AppError::GitOperation("git global admission closed".to_string()))?;
+            queue_guard.admitted();
+            log_git_admission_wait(operation, lane, args, cwd, started);
+            Ok(GitAdmissionGuard {
+                lane,
+                _global: global,
+                _background: None,
+                _clone: Some(clone),
             })
         }
     }
