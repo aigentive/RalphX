@@ -2,7 +2,7 @@ use super::{git_cmd, GitService};
 use crate::error::{AppError, AppResult};
 use crate::utils::path_safety::validate_absolute_non_root_path;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const DEFAULT_BASE_BRANCH: &str = "main";
 const BOOTSTRAP_COMMIT_MESSAGE: &str = "Initial commit (auto-created by RalphX)";
@@ -133,26 +133,10 @@ async fn ensure_repository_root(repository: &Path, git_metadata_path: &Path) -> 
         ))
     })?;
 
-    let output = git_cmd::run(&["rev-parse", "--show-toplevel"], repository).await?;
-    if !output.status.success() {
-        return Err(AppError::Validation(format!(
+    let canonical_top_level = repository_top_level(repository).await?.ok_or_else(|| {
+        AppError::Validation(format!(
             "Git metadata exists but is invalid at {}",
             git_metadata_path.display()
-        )));
-    }
-
-    let top_level = String::from_utf8(output.stdout).map_err(|error| {
-        AppError::GitOperation(format!(
-            "Git reported a non-UTF-8 repository root for {}: {error}",
-            repository.display()
-        ))
-    })?;
-    let top_level = top_level.trim_end_matches(['\r', '\n']);
-    let top_level = validate_absolute_non_root_path(Path::new(top_level), "Git repository root")?;
-    let canonical_top_level = top_level.canonicalize().map_err(|error| {
-        AppError::GitOperation(format!(
-            "Failed to canonicalize Git repository root {}: {error}",
-            top_level.display()
         ))
     })?;
     if canonical_top_level != canonical_repository {
@@ -163,6 +147,39 @@ async fn ensure_repository_root(repository: &Path, git_metadata_path: &Path) -> 
     }
 
     Ok(())
+}
+
+/// Resolve the canonical repository root that owns `directory`, or `None` when
+/// the directory is not inside a Git work tree.
+///
+/// Shared by bootstrap's own root check and the project-candidate probe, which
+/// needs the root itself to tell "this *is* a repository" apart from "this sits
+/// inside someone else's repository".
+///
+/// # Errors
+/// Returns `Err` when Git reports a root that cannot be decoded or canonicalized.
+pub(crate) async fn repository_top_level(directory: &Path) -> AppResult<Option<PathBuf>> {
+    let output = git_cmd::run(&["rev-parse", "--show-toplevel"], directory).await?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let top_level = String::from_utf8(output.stdout).map_err(|error| {
+        AppError::GitOperation(format!(
+            "Git reported a non-UTF-8 repository root for {}: {error}",
+            directory.display()
+        ))
+    })?;
+    let top_level = top_level.trim_end_matches(['\r', '\n']);
+    let top_level = validate_absolute_non_root_path(Path::new(top_level), "Git repository root")?;
+    let canonical_top_level = top_level.canonicalize().map_err(|error| {
+        AppError::GitOperation(format!(
+            "Failed to canonicalize Git repository root {}: {error}",
+            top_level.display()
+        ))
+    })?;
+
+    Ok(Some(canonical_top_level))
 }
 
 async fn validate_branch_name(repository: &Path, branch: &str) -> AppResult<()> {
@@ -176,21 +193,29 @@ async fn validate_branch_name(repository: &Path, branch: &str) -> AppResult<()> 
     }
 }
 
-async fn symbolic_branch(repository: &Path) -> AppResult<String> {
+/// Read the repository's current symbolic branch, or `None` on a detached HEAD.
+///
+/// The probe surfaces detached HEAD as its own verdict rather than an error, so
+/// it needs the unopinionated read; bootstrap keeps the strict wrapper below.
+///
+/// # Errors
+/// Returns `Err` when the underlying Git command cannot run.
+pub(crate) async fn symbolic_branch_opt(repository: &Path) -> AppResult<Option<String>> {
     let output = git_cmd::run(&["symbolic-ref", "--quiet", "--short", "HEAD"], repository).await?;
     if !output.status.success() {
-        return Err(AppError::Validation(
-            "Project repository must have a symbolic branch; detached HEAD is unsupported"
-                .to_string(),
-        ));
+        return Ok(None);
     }
     let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if branch.is_empty() {
-        return Err(AppError::Validation(
-            "Project repository has an empty symbolic branch".to_string(),
-        ));
-    }
-    Ok(branch)
+    Ok((!branch.is_empty()).then_some(branch))
+}
+
+async fn symbolic_branch(repository: &Path) -> AppResult<String> {
+    symbolic_branch_opt(repository).await?.ok_or_else(|| {
+        AppError::Validation(
+            "Project repository must have a symbolic branch; detached HEAD is unsupported"
+                .to_string(),
+        )
+    })
 }
 
 async fn ensure_branch_exists(repository: &Path, branch: &str) -> AppResult<()> {

@@ -2,7 +2,7 @@
  * ProjectCreationWizard sub-components
  */
 
-import type { GitMode } from "@/types/project";
+import type { ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -11,14 +11,18 @@ import { cn } from "@/lib/utils";
 // ============================================================================
 
 interface RadioOptionProps {
-  value: GitMode;
+  value: string;
   selected: boolean;
-  onSelect: (value: GitMode) => void;
+  onSelect: (value: string) => void;
   label: string;
   description: string;
+  /** Radio group name — required so callers control keyboard arrow-key nav grouping. */
+  name: string;
   warning?: string;
   testId: string;
-  children?: React.ReactNode;
+  /** Optional leading icon shown instead of the plain radio dot. */
+  icon?: ReactNode;
+  children?: ReactNode;
 }
 
 export function RadioOption({
@@ -27,8 +31,10 @@ export function RadioOption({
   onSelect,
   label,
   description,
+  name,
   warning,
   testId,
+  icon,
   children,
 }: RadioOptionProps) {
   return (
@@ -37,6 +43,7 @@ export function RadioOption({
       data-selected={selected ? "true" : "false"}
       className={cn(
         "flex gap-3 p-3 rounded-lg cursor-pointer transition-colors",
+        "focus-within:ring-2 focus-within:ring-[var(--accent-primary)] focus-within:ring-offset-2 focus-within:ring-offset-[var(--bg-base)]",
         selected
           ? "bg-[var(--bg-elevated)] border-[var(--accent-primary)]"
           : "bg-transparent border-[var(--border-subtle)] hover:bg-[var(--bg-hover)]"
@@ -47,25 +54,31 @@ export function RadioOption({
     >
       <input
         type="radio"
-        name="gitMode"
+        name={name}
         value={value}
         checked={selected}
         onChange={() => onSelect(value)}
-        className="sr-only"
+        className="sr-only peer"
       />
-      <span
-        className="mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0"
-        style={{
-          borderColor: selected ? "var(--accent-primary)" : "var(--border-subtle)",
-        }}
-      >
-        {selected && (
-          <span
-            className="w-2 h-2 rounded-full"
-            style={{ backgroundColor: "var(--accent-primary)" }}
-          />
-        )}
-      </span>
+      {icon ? (
+        <span className="mt-0.5 flex-shrink-0 peer-focus-visible:ring-2 peer-focus-visible:ring-[var(--accent-primary)] peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-[var(--bg-base)] rounded">
+          {icon}
+        </span>
+      ) : (
+        <span
+          className="mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 peer-focus-visible:ring-2 peer-focus-visible:ring-[var(--accent-primary)] peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-[var(--bg-base)]"
+          style={{
+            borderColor: selected ? "var(--accent-primary)" : "var(--border-subtle)",
+          }}
+        >
+          {selected && (
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{ backgroundColor: "var(--accent-primary)" }}
+            />
+          )}
+        </span>
+      )}
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium text-[var(--text-primary)]">
           {label}

@@ -11,6 +11,18 @@ import {
   mockGetGitBranches,
   mockGetGitCurrentBranch,
   mockGetGitDefaultBranch,
+  mockInspectProjectCandidate,
+  mockPrepareNewProjectDirectory,
+  mockDiscardPreparedProjectDirectory,
+  mockValidateCloneTarget,
+  mockStartProjectClone,
+  mockCancelProjectClone,
+  mockGetCloneJobStatus,
+  mockValidateWorktreeParent,
+  mockListGithubRepositories,
+  type MockPrepareNewProjectDirectoryInput,
+  type MockValidateCloneTargetInput,
+  type MockStartProjectCloneInput,
 } from "@/api-mock/projects";
 import { mockTasksApi } from "@/api-mock/tasks";
 import { getStore } from "@/api-mock/store";
@@ -1317,6 +1329,26 @@ const commandHandlers: Record<
 
   // Project commands
   list_projects: async () => mockProjectsApi.list(),
+  inspect_project_candidate: async (args) =>
+    mockInspectProjectCandidate(args.path as string),
+  prepare_new_project_directory: async (args) =>
+    mockPrepareNewProjectDirectory(args.input as MockPrepareNewProjectDirectoryInput),
+  discard_prepared_project_directory: async (args) =>
+    mockDiscardPreparedProjectDirectory(args.path as string),
+  validate_clone_target: async (args) =>
+    mockValidateCloneTarget(args.input as MockValidateCloneTargetInput),
+  start_project_clone: async (args) =>
+    mockStartProjectClone(args.input as MockStartProjectCloneInput),
+  cancel_project_clone: async (args) => mockCancelProjectClone(args.jobId as string),
+  get_clone_job_status: async (args) => mockGetCloneJobStatus(args.jobId as string),
+  validate_worktree_parent: async (args) =>
+    mockValidateWorktreeParent({
+      path: args.path as string,
+      ...(typeof args.repositoryRoot === "string" && {
+        repositoryRoot: args.repositoryRoot,
+      }),
+    }),
+  list_github_repositories: async () => mockListGithubRepositories(),
   search_agent_composer_entries: async (args) => {
     const input = args.input as { query?: string; limit?: number } | undefined;
     const query = input?.query?.toLowerCase() ?? "";

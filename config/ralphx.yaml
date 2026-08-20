@@ -272,6 +272,8 @@ reconciliation:
 git:
   # git_service/git_cmd.rs — per-command timeout to prevent hung git processes
   cmd_timeout_secs: 60 # Env: RALPHX_GIT_CMD_TIMEOUT_SECS
+  # git_service/clone.rs — deadline for a whole project clone (minutes-scale, own lane)
+  clone_timeout_secs: 900 # Env: RALPHX_GIT_CLONE_TIMEOUT_SECS
   # startup_git_auth_preflight.rs — total budget for each startup Git/GitHub auth probe
   startup_auth_preflight_timeout_secs: 10 # Env: RALPHX_GIT_STARTUP_AUTH_PREFLIGHT_TIMEOUT_SECS
   # git_service/git_cmd.rs — max retry attempts for transient git failures
