@@ -25,6 +25,8 @@ const mockCloneJob = vi.hoisted(() => ({
   start: vi.fn(),
   cancel: vi.fn(),
   pendingStatus: null as CloneJobStatus | null,
+  startResult: true as boolean,
+  startError: null as string | null,
 }));
 
 const mockAuth = vi.hoisted(() => ({
@@ -36,12 +38,20 @@ vi.mock("@/hooks/useCloneJob", () => ({
   useCloneJob: () => {
     const [status, setStatus] = useState<CloneJobStatus | null>(null);
 
+    const [startError, setStartError] = useState<string | null>(null);
+
     const start = useCallback(async (input: StartProjectCloneInput) => {
       mockCloneJob.start(input);
       setStatus(null);
+      if (!mockCloneJob.startResult) {
+        setStartError(mockCloneJob.startError);
+        return false;
+      }
+      setStartError(null);
       if (mockCloneJob.pendingStatus) {
         setStatus(mockCloneJob.pendingStatus);
       }
+      return true;
     }, []);
 
     const cancel = useCallback(async () => {
@@ -54,7 +64,7 @@ vi.mock("@/hooks/useCloneJob", () => ({
         ? "We lost track of this clone. Try again."
         : status?.state === "failed"
           ? status.message
-          : null;
+          : startError;
 
     return {
       phase: status === null ? "receiving" : null,
@@ -142,6 +152,8 @@ describe("CloneStep", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCloneJob.pendingStatus = null;
+    mockCloneJob.startResult = true;
+    mockCloneJob.startError = null;
     mockAuth.isAuthenticated = false;
     mockValidateCloneTarget.mockResolvedValue(READY_PLAN);
     vi.useFakeTimers();
@@ -199,6 +211,21 @@ describe("CloneStep", () => {
 
     expect(screen.getByTestId("clone-start-button")).not.toBeDisabled();
     expect(screen.queryByText("stale response")).not.toBeInTheDocument();
+  });
+
+  it("returns to configure with an error banner when start_project_clone rejects", async () => {
+    mockCloneJob.startResult = false;
+    mockCloneJob.startError = "Folder name cannot contain '/'";
+    const onActiveChange = vi.fn();
+    renderCloneStep({ onActiveChange });
+    await fillReadyForm();
+
+    await clickAndFlush(screen.getByTestId("clone-start-button"));
+
+    expect(screen.getByTestId("clone-url-input")).toBeInTheDocument();
+    expect(screen.queryByTestId("clone-progress")).not.toBeInTheDocument();
+    expect(screen.getByText("Folder name cannot contain '/'")).toBeInTheDocument();
+    expect(onActiveChange).toHaveBeenLastCalledWith(false);
   });
 
   it("wires the cancel button through to useCloneJob.cancel", async () => {

@@ -37,7 +37,7 @@ export interface UseCloneJobResult {
   status: CloneJobStatus | null;
   error: string | null;
   cleanedUp: boolean | null;
-  start: (input: StartProjectCloneInput) => Promise<void>;
+  start: (input: StartProjectCloneInput) => Promise<boolean>;
   cancel: () => Promise<void>;
   reset: () => void;
 }
@@ -203,7 +203,7 @@ export function useCloneJob(): UseCloneJobResult {
         jobId = response.jobId;
       } catch (invokeError) {
         setError(invokeError instanceof Error ? invokeError.message : START_FAILED_MESSAGE);
-        return;
+        return false;
       }
 
       activeJobIdRef.current = jobId;
@@ -211,6 +211,7 @@ export function useCloneJob(): UseCloneJobResult {
       pollTimerRef.current = setInterval(() => {
         void pollStatus(jobId);
       }, POLL_INTERVAL_MS);
+      return true;
     },
     [clearJobState, pollStatus]
   );

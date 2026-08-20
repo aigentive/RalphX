@@ -182,7 +182,8 @@ export function CloneStep({
       ...(recurseSubmodules && { recurseSubmodules: true }),
     };
     setPhase("running");
-    await job.start(input);
+    const started = await job.start(input);
+    if (!started) setPhase("configure");
   }, [plan, parentDirectory, folderName, url, depth, singleBranch, recurseSubmodules, job]);
 
   const handleCancel = useCallback(async () => {

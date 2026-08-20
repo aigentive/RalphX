@@ -217,6 +217,26 @@ describe("useCloneJob", () => {
     expect(mockGetCloneJobStatus).toHaveBeenCalledTimes(callsAtSettle);
   });
 
+  it("resolves start() to false and never assigns a job id when startProjectClone rejects", async () => {
+    mockStartProjectClone.mockRejectedValueOnce(new Error("Folder name cannot contain '/'"));
+
+    const { result } = renderHook(() => useCloneJob(), { wrapper });
+
+    let started: boolean | undefined;
+    await act(async () => {
+      started = await result.current.start(INPUT);
+    });
+
+    expect(started).toBe(false);
+    expect(result.current.error).toBe("Folder name cannot contain '/'");
+    expect(mockGetCloneJobStatus).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(mockGetCloneJobStatus).not.toHaveBeenCalled();
+  });
+
   it("cancel() calls cancelProjectClone with the active job id", async () => {
     mockStartProjectClone.mockResolvedValueOnce({ jobId: "job-cancel-me" });
     mockCancelProjectClone.mockResolvedValueOnce(true);

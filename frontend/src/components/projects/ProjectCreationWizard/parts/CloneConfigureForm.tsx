@@ -147,7 +147,7 @@ export function CloneConfigureForm({
           <p className="text-xs text-[var(--text-muted)]">Clone cancelled.</p>
         )}
 
-        {jobStatus?.state === "unknown" && jobError && <ErrorBanner text={jobError} />}
+        {jobError && !isAuthFailure && !otherFailure && <ErrorBanner text={jobError} />}
 
         {!isAuthFailure && submitted && plan?.problem && <ErrorBanner text={plan.problem} />}
 
