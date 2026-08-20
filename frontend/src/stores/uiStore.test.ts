@@ -1037,4 +1037,47 @@ describe("uiStore", () => {
     });
   });
 
+  describe("recentRepositories", () => {
+    beforeEach(() => {
+      useUiStore.setState({ recentRepositories: [] });
+      localStorage.clear();
+    });
+
+    it("records a repository as most-recent-first", () => {
+      useUiStore.getState().recordRecentRepository("/Users/dev/app-a", "app-a");
+      useUiStore.getState().recordRecentRepository("/Users/dev/app-b", "app-b");
+
+      const recents = useUiStore.getState().recentRepositories;
+      expect(recents.map((r) => r.path)).toEqual(["/Users/dev/app-b", "/Users/dev/app-a"]);
+    });
+
+    it("dedupes by path, moving the existing entry to the front", () => {
+      useUiStore.getState().recordRecentRepository("/Users/dev/app-a", "app-a");
+      useUiStore.getState().recordRecentRepository("/Users/dev/app-b", "app-b");
+      useUiStore.getState().recordRecentRepository("/Users/dev/app-a", "app-a");
+
+      const recents = useUiStore.getState().recentRepositories;
+      expect(recents.map((r) => r.path)).toEqual(["/Users/dev/app-a", "/Users/dev/app-b"]);
+      expect(recents).toHaveLength(2);
+    });
+
+    it("caps the list at 8 entries", () => {
+      for (let i = 0; i < 10; i += 1) {
+        useUiStore.getState().recordRecentRepository(`/Users/dev/app-${i}`, `app-${i}`);
+      }
+
+      const recents = useUiStore.getState().recentRepositories;
+      expect(recents).toHaveLength(8);
+      expect(recents[0]?.path).toBe("/Users/dev/app-9");
+    });
+
+    it("persists recents to localStorage under the recent-repositories key", () => {
+      useUiStore.getState().recordRecentRepository("/Users/dev/app-a", "app-a");
+
+      const saved = JSON.parse(localStorage.getItem("ralphx-recent-repositories") ?? "[]");
+      expect(saved).toHaveLength(1);
+      expect(saved[0].path).toBe("/Users/dev/app-a");
+    });
+  });
+
 });

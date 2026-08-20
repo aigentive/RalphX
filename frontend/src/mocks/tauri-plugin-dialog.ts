@@ -33,8 +33,19 @@ export interface ConfirmDialogOptions {
   kind?: "info" | "warning" | "error";
 }
 
+const DEFAULT_REPOSITORY_DIRECTORY_PATH = "/Users/test/projects/test-project";
+const DEFAULT_PARENT_DIRECTORY_PATH = "/Users/test/projects";
+
 /**
- * Mock open dialog - returns a test path for directory selection
+ * Mock open dialog - returns a test path for directory selection.
+ *
+ * The wizard opens this dialog for two different purposes: picking an
+ * existing repository folder (or a new-repository destination folder) vs.
+ * picking a parent folder (`NewRepositoryStep`'s "Select Parent Folder",
+ * or the worktree-parent browse button). Callers only distinguish these by
+ * `title`, so this mock keys off the same signal, following the
+ * `window.__mockGhAuthStatus`-style override pattern for Playwright specs
+ * that need a specific path: set `window.__mockDialogDirectoryPath`.
  */
 export async function open(
   options?: OpenDialogOptions
@@ -43,7 +54,18 @@ export async function open(
 
   // For directory selection (used by ProjectCreationWizard), return a test path
   if (options?.directory) {
-    const testPath = "/Users/test/projects/test-project";
+    const override = (
+      window as Window & { __mockDialogDirectoryPath?: string }
+    ).__mockDialogDirectoryPath;
+    if (override) {
+      console.debug(`[mock] Returning overridden directory: ${override}`);
+      return override;
+    }
+
+    const isParentPicker = /parent/i.test(options.title ?? "");
+    const testPath = isParentPicker
+      ? DEFAULT_PARENT_DIRECTORY_PATH
+      : DEFAULT_REPOSITORY_DIRECTORY_PATH;
     console.debug(`[mock] Returning test directory: ${testPath}`);
     return testPath;
   }
