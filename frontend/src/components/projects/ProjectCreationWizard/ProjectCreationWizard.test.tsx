@@ -1,15 +1,59 @@
 /**
- * Tests for ProjectCreationWizard component
+ * Tests for the ProjectCreationWizard shell (Dialog + step router).
+ * Per-step form/probe/submission behavior is covered by the co-located
+ * steps/*.test.tsx files.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProjectCreationWizard } from "./ProjectCreationWizard";
 
-// ============================================================================
-// Test Setup
-// ============================================================================
+// CloneStep depends on useCloneJob (EventProvider context) and the GitHub
+// auth hooks (react-query context). The shell test only exercises step
+// routing/dismissal, so both are stubbed rather than wired with real providers.
+// `start` resolves true (simulating a successful clone-job start) and never
+// resolves job.status, which is exactly what a dismissal-guard test needs
+// (the step stays in the "running" phase).
+vi.mock("@/hooks/useCloneJob", () => ({
+  useCloneJob: () => ({
+    phase: null,
+    percent: null,
+    received: null,
+    total: null,
+    lines: [],
+    status: null,
+    error: null,
+    cleanedUp: null,
+    start: vi.fn().mockResolvedValue(true),
+    cancel: vi.fn(),
+    reset: vi.fn(),
+  }),
+}));
+
+vi.mock("@/hooks/useGithubSettings", () => ({
+  useGhAuthStatus: () => ({ data: false, isLoading: false }),
+  useLoginGhWithBrowser: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
+vi.mock("@/api/projects", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/projects")>();
+  return {
+    ...actual,
+    projectsApi: {
+      ...actual.projectsApi,
+      validateCloneTarget: vi.fn().mockResolvedValue({
+        normalizedUrl: "https://github.com/o/r.git",
+        folderName: "r",
+        branch: null,
+        suggestedSshUrl: null,
+        destination: "/tmp/dest/r",
+        ready: true,
+        problem: null,
+      }),
+    },
+  };
+});
 
 const defaultProps = {
   isOpen: true,
@@ -26,9 +70,9 @@ describe("ProjectCreationWizard", () => {
     vi.clearAllMocks();
   });
 
-  // ==========================================================================
-  // Rendering Tests
-  // ==========================================================================
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   describe("rendering", () => {
     it("renders nothing when isOpen is false", () => {
@@ -41,363 +85,162 @@ describe("ProjectCreationWizard", () => {
       expect(screen.getByTestId("project-creation-wizard")).toBeInTheDocument();
     });
 
-    it("renders with correct title", () => {
+    it("lands on the intent chooser by default", () => {
       renderWizard();
-      expect(screen.getByText("Create New Project")).toBeInTheDocument();
+      expect(screen.getByTestId("intent-clone")).toBeInTheDocument();
+      expect(screen.getByTestId("intent-create")).toBeInTheDocument();
+      expect(screen.getByTestId("intent-existing")).toBeInTheDocument();
     });
 
-    it("renders project name input", () => {
+    it("does not show the back button on the intent step", () => {
       renderWizard();
-      expect(screen.getByTestId("project-name-input")).toBeInTheDocument();
-    });
-
-    it("renders folder input", () => {
-      renderWizard();
-      expect(screen.getByTestId("folder-input")).toBeInTheDocument();
-    });
-
-    it("renders Browse button when onBrowseFolder is provided", () => {
-      renderWizard({ onBrowseFolder: vi.fn() });
-      expect(screen.getByTestId("browse-button")).toBeInTheDocument();
-    });
-
-    it("does not render Browse button when onBrowseFolder is not provided", () => {
-      renderWizard();
-      expect(screen.queryByTestId("browse-button")).not.toBeInTheDocument();
-    });
-
-    it("renders git settings with base branch", () => {
-      renderWizard();
-      expect(screen.getByText("Git Settings")).toBeInTheDocument();
-      expect(screen.getByTestId("base-branch-select")).toBeInTheDocument();
-    });
-
-    it("renders cancel and create buttons", () => {
-      renderWizard();
-      expect(screen.getByTestId("cancel-button")).toBeInTheDocument();
-      expect(screen.getByTestId("create-button")).toBeInTheDocument();
+      expect(screen.queryByTestId("wizard-back-button")).not.toBeInTheDocument();
     });
 
     it("renders close button (shadcn dialog has default close)", () => {
       renderWizard();
-      // shadcn Dialog has a close button with sr-only "Close" text
       expect(screen.getByRole("button", { name: /close/i })).toBeInTheDocument();
     });
   });
 
-  // ==========================================================================
-  // Git Settings Tests
-  // ==========================================================================
-
-  describe("git settings", () => {
-    it("shows base branch select and worktree path by default", () => {
-      renderWizard();
-
-      expect(screen.getByTestId("base-branch-select")).toBeInTheDocument();
-      expect(screen.getByTestId("worktree-path-display")).toBeInTheDocument();
-    });
-
-    it("shows advanced settings trigger", () => {
-      renderWizard();
-      expect(screen.getByTestId("advanced-settings-trigger")).toBeInTheDocument();
-    });
-  });
-
-  // ==========================================================================
-  // Validation Tests
-  // ==========================================================================
-
-  describe("validation", () => {
-    it("shows error when working directory is empty on submit", async () => {
+  describe("intent navigation", () => {
+    it("selecting Add Existing Repository shows the existing-repository step", async () => {
       const user = userEvent.setup();
       renderWizard();
-
-      // Try to submit without filling location
-      await user.click(screen.getByTestId("create-button"));
-
-      // Wait for error to appear after state update
-      await waitFor(() => {
-        expect(screen.getByTestId("folder-input-error")).toBeInTheDocument();
-      });
-      expect(screen.getByText("Location is required")).toBeInTheDocument();
+      await user.click(screen.getByTestId("intent-existing"));
+      expect(screen.getByTestId("folder-input")).toBeInTheDocument();
+      expect(screen.getByTestId("wizard-back-button")).toBeInTheDocument();
     });
 
-    it("does not call onCreate when form has errors", async () => {
+    it("selecting Create New Repository shows the new-repository step", async () => {
       const user = userEvent.setup();
-      const mockOnCreate = vi.fn();
-      renderWizard({ onCreate: mockOnCreate });
+      renderWizard();
+      await user.click(screen.getByTestId("intent-create"));
+      expect(screen.getByTestId("new-project-parent-input")).toBeInTheDocument();
+      expect(screen.getByTestId("new-project-folder-name-input")).toBeInTheDocument();
+    });
 
-      // Try to submit empty form
-      await user.click(screen.getByTestId("create-button"));
+    it("selecting Clone Repository shows the clone step", async () => {
+      const user = userEvent.setup();
+      renderWizard();
+      await user.click(screen.getByTestId("intent-clone"));
+      expect(screen.getByTestId("clone-url-input")).toBeInTheDocument();
+      expect(screen.getByTestId("wizard-back-button")).toBeInTheDocument();
+    });
 
-      expect(mockOnCreate).not.toHaveBeenCalled();
+    it("the back button returns to the intent chooser", async () => {
+      const user = userEvent.setup();
+      renderWizard();
+      await user.click(screen.getByTestId("intent-existing"));
+      await user.click(screen.getByTestId("wizard-back-button"));
+      expect(screen.getByTestId("intent-existing")).toBeInTheDocument();
+      expect(screen.queryByTestId("folder-input")).not.toBeInTheDocument();
+    });
+
+    it("reopening the dialog resets to the intent chooser", () => {
+      const { rerender } = renderWizard();
+      rerender(<ProjectCreationWizard {...defaultProps} isOpen={false} />);
+      rerender(<ProjectCreationWizard {...defaultProps} isOpen={true} />);
+      expect(screen.getByTestId("intent-existing")).toBeInTheDocument();
     });
   });
-
-  // ==========================================================================
-  // Submission Tests
-  // ==========================================================================
-
-  describe("submission", () => {
-    it("calls onCreate with worktree mode project data", async () => {
-      const user = userEvent.setup();
-      const mockOnCreate = vi.fn();
-      const mockBrowse = vi.fn().mockResolvedValue("/Users/dev/my-app");
-      renderWizard({ onCreate: mockOnCreate, onBrowseFolder: mockBrowse });
-
-      // Browse for folder (auto-fills project name from folder)
-      await user.click(screen.getByTestId("browse-button"));
-      await waitFor(() => {
-        expect(screen.getByTestId("folder-input")).toHaveValue("/Users/dev/my-app");
-      });
-
-      // Submit
-      await user.click(screen.getByTestId("create-button"));
-
-      expect(mockOnCreate).toHaveBeenCalledWith({
-        name: "my-app", // auto-inferred from folder
-        workingDirectory: "/Users/dev/my-app",
-        gitMode: "worktree",
-        baseBranch: "main",
-        worktreeParentDirectory: "~/ralphx-worktrees",
-      });
-    });
-
-    it("calls onCreate with custom project name", async () => {
-      const user = userEvent.setup();
-      const mockOnCreate = vi.fn();
-      const mockBrowse = vi.fn().mockResolvedValue("/Users/dev/my-app");
-      renderWizard({ onCreate: mockOnCreate, onBrowseFolder: mockBrowse });
-
-      // Browse for folder
-      await user.click(screen.getByTestId("browse-button"));
-      await waitFor(() => {
-        expect(screen.getByTestId("folder-input")).toHaveValue("/Users/dev/my-app");
-      });
-
-      // Override with custom name
-      await user.clear(screen.getByTestId("project-name-input"));
-      await user.type(screen.getByTestId("project-name-input"), "Custom Project Name");
-
-      // Submit
-      await user.click(screen.getByTestId("create-button"));
-
-      expect(mockOnCreate).toHaveBeenCalledWith({
-        name: "Custom Project Name",
-        workingDirectory: "/Users/dev/my-app",
-        gitMode: "worktree",
-        baseBranch: "main",
-        worktreeParentDirectory: "~/ralphx-worktrees",
-      });
-    });
-
-    it("trims whitespace from form values", async () => {
-      const user = userEvent.setup();
-      const mockOnCreate = vi.fn();
-      const mockBrowse = vi.fn().mockResolvedValue("  /Users/dev/my-app  ");
-      renderWizard({ onCreate: mockOnCreate, onBrowseFolder: mockBrowse });
-
-      // Browse for folder
-      await user.click(screen.getByTestId("browse-button"));
-      await waitFor(() => {
-        expect(screen.getByTestId("folder-input")).toHaveValue("  /Users/dev/my-app  ");
-      });
-
-      // Override with custom name with whitespace
-      await user.clear(screen.getByTestId("project-name-input"));
-      await user.type(screen.getByTestId("project-name-input"), "  My Project  ");
-
-      // Submit
-      await user.click(screen.getByTestId("create-button"));
-
-      expect(mockOnCreate).toHaveBeenCalledWith({
-        name: "My Project",
-        workingDirectory: "/Users/dev/my-app",
-        gitMode: "worktree",
-        baseBranch: "main",
-        worktreeParentDirectory: "~/ralphx-worktrees",
-      });
-    });
-
-    it("shows creating state when isCreating is true", () => {
-      renderWizard({ isCreating: true });
-
-      expect(screen.getByText("Creating...")).toBeInTheDocument();
-    });
-
-    it("disables form inputs when isCreating is true", () => {
-      renderWizard({ isCreating: true });
-
-      expect(screen.getByTestId("project-name-input")).toBeDisabled();
-      expect(screen.getByTestId("folder-input")).toBeDisabled();
-      expect(screen.getByTestId("cancel-button")).toBeDisabled();
-    });
-  });
-
-  // ==========================================================================
-  // Browse Folder Tests
-  // ==========================================================================
-
-  describe("browse folder", () => {
-    it("calls onBrowseFolder when Browse button is clicked", async () => {
-      const user = userEvent.setup();
-      const mockBrowse = vi.fn().mockResolvedValue(null);
-      renderWizard({ onBrowseFolder: mockBrowse });
-
-      await user.click(screen.getByTestId("browse-button"));
-
-      expect(mockBrowse).toHaveBeenCalled();
-    });
-
-    it("updates working directory when folder is selected", async () => {
-      const user = userEvent.setup();
-      const mockBrowse = vi.fn().mockResolvedValue("/Users/selected/path");
-      renderWizard({ onBrowseFolder: mockBrowse });
-
-      await user.click(screen.getByTestId("browse-button"));
-
-      await waitFor(() => {
-        expect(screen.getByTestId("folder-input")).toHaveValue("/Users/selected/path");
-      });
-    });
-
-    it("auto-infers project name from selected folder", async () => {
-      const user = userEvent.setup();
-      const mockBrowse = vi.fn().mockResolvedValue("/Users/selected/my-awesome-app");
-      renderWizard({ onBrowseFolder: mockBrowse });
-
-      await user.click(screen.getByTestId("browse-button"));
-
-      await waitFor(() => {
-        expect(screen.getByTestId("project-name-input")).toHaveValue("my-awesome-app");
-      });
-    });
-
-    it("does not update working directory when folder selection is cancelled", async () => {
-      const user = userEvent.setup();
-      const mockBrowse = vi.fn().mockResolvedValue(null);
-      renderWizard({ onBrowseFolder: mockBrowse });
-
-      await user.click(screen.getByTestId("browse-button"));
-
-      expect(screen.getByTestId("folder-input")).toHaveValue("");
-    });
-  });
-
-  // ==========================================================================
-  // Close/Cancel Tests
-  // ==========================================================================
 
   describe("close and cancel", () => {
-    it("calls onClose when cancel button is clicked", async () => {
+    it("calls onClose when the dialog close button is clicked", async () => {
       const user = userEvent.setup();
-      const mockOnClose = vi.fn();
-      renderWizard({ onClose: mockOnClose });
-
-      await user.click(screen.getByTestId("cancel-button"));
-
-      expect(mockOnClose).toHaveBeenCalled();
+      const onClose = vi.fn();
+      renderWizard({ onClose });
+      await user.click(screen.getByRole("button", { name: /close/i }));
+      expect(onClose).toHaveBeenCalled();
     });
 
-    it("calls onClose when close button is clicked", async () => {
+    it("calls onClose when cancel is clicked from a step", async () => {
       const user = userEvent.setup();
-      const mockOnClose = vi.fn();
-      renderWizard({ onClose: mockOnClose });
+      const onClose = vi.fn();
+      renderWizard({ onClose });
+      await user.click(screen.getByTestId("intent-existing"));
+      await user.click(screen.getByTestId("cancel-button"));
+      expect(onClose).toHaveBeenCalled();
+    });
 
-      // shadcn Dialog close button has sr-only "Close" text
-      await user.click(screen.getByRole("button", { name: /close/i }));
+    it("blocks Escape and disables Back while a clone is running", async () => {
+      // Debounced validate_clone_target runs under fake timers; interactions
+      // use raw DOM events wrapped in `act` (userEvent + fake timers hangs -
+      // see CloneStep.test.tsx for the same convention).
+      vi.useFakeTimers();
+      const onClose = vi.fn();
+      const onBrowseFolder = vi.fn().mockResolvedValue("/tmp/dest");
+      renderWizard({ onClose, onBrowseFolder });
 
-      expect(mockOnClose).toHaveBeenCalled();
+      await act(async () => {
+        screen.getByTestId("intent-clone").click();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        fireEvent.change(screen.getByTestId("clone-url-input"), {
+          target: { value: "https://github.com/o/r.git" },
+        });
+      });
+      await act(async () => {
+        screen.getByTestId("browse-parent-button").click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(screen.getByText("/tmp/dest/r")).toBeInTheDocument();
+
+      await act(async () => {
+        screen.getByTestId("clone-start-button").click();
+        await Promise.resolve();
+      });
+      expect(screen.getByTestId("clone-progress")).toBeInTheDocument();
+      expect(screen.getByTestId("wizard-back-button")).toBeDisabled();
+
+      await act(async () => {
+        fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
+      });
+      expect(onClose).not.toHaveBeenCalled();
     });
   });
-
-  // ==========================================================================
-  // First-Run Mode Tests
-  // ==========================================================================
 
   describe("first-run mode", () => {
-    it("hides cancel button in first-run mode", () => {
+    it("hides the close button in first-run mode", () => {
       renderWizard({ isFirstRun: true });
-      expect(screen.queryByTestId("cancel-button")).not.toBeInTheDocument();
-    });
-
-    it("hides close button in first-run mode", () => {
-      renderWizard({ isFirstRun: true });
-      // The close button should be hidden
       expect(screen.queryByRole("button", { name: /close/i })).not.toBeInTheDocument();
     });
-  });
 
-  // ==========================================================================
-  // Error Display Tests
-  // ==========================================================================
-
-  describe("error display", () => {
-    it("displays error message when provided", () => {
-      renderWizard({ error: "Failed to create project" });
-
-      expect(screen.getByTestId("wizard-error")).toBeInTheDocument();
-      expect(screen.getByText("Failed to create project")).toBeInTheDocument();
-    });
-
-    it("does not display error message when not provided", () => {
-      renderWizard();
-
-      expect(screen.queryByTestId("wizard-error")).not.toBeInTheDocument();
-    });
-
-    it("does not display error message when null", () => {
-      renderWizard({ error: null });
-
-      expect(screen.queryByTestId("wizard-error")).not.toBeInTheDocument();
-    });
-  });
-
-  // ==========================================================================
-  // Form Reset Tests
-  // ==========================================================================
-
-  describe("form reset", () => {
-    it("resets form when modal reopens", async () => {
+    it("still allows Back to the intent chooser in first-run mode", async () => {
       const user = userEvent.setup();
-      const mockBrowse = vi.fn().mockResolvedValue("/Users/dev/my-app");
-      const { rerender } = renderWizard({ onBrowseFolder: mockBrowse });
-
-      // Browse for folder
-      await user.click(screen.getByTestId("browse-button"));
-      await waitFor(() => {
-        expect(screen.getByTestId("folder-input")).toHaveValue("/Users/dev/my-app");
-      });
-
-      // Close and reopen
-      rerender(
-        <ProjectCreationWizard {...defaultProps} isOpen={false} onBrowseFolder={mockBrowse} />
-      );
-      rerender(
-        <ProjectCreationWizard {...defaultProps} isOpen={true} onBrowseFolder={mockBrowse} />
-      );
-
-      // Check form is reset
-      expect(screen.getByTestId("project-name-input")).toHaveValue("");
-      expect(screen.getByTestId("folder-input")).toHaveValue("");
+      renderWizard({ isFirstRun: true });
+      await user.click(screen.getByTestId("intent-existing"));
+      await user.click(screen.getByTestId("wizard-back-button"));
+      expect(screen.getByTestId("intent-existing")).toBeInTheDocument();
     });
 
-    it("resets base branch when modal reopens", async () => {
-      const { rerender } = renderWizard();
+    it("does not show a cancel button on the existing-repository step in first-run mode", async () => {
+      const user = userEvent.setup();
+      renderWizard({ isFirstRun: true });
+      await user.click(screen.getByTestId("intent-existing"));
+      expect(screen.queryByTestId("cancel-button")).not.toBeInTheDocument();
+    });
+  });
 
-      // Base branch should be "main" by default
-      expect(screen.getByTestId("base-branch-select")).toBeInTheDocument();
+  describe("error and creating state pass-through", () => {
+    it("surfaces the error prop inside the active step", async () => {
+      const user = userEvent.setup();
+      renderWizard({ error: "Failed to create project" });
+      await user.click(screen.getByTestId("intent-existing"));
+      expect(screen.getByTestId("wizard-error")).toHaveTextContent("Failed to create project");
+    });
 
-      // Close and reopen
-      rerender(
-        <ProjectCreationWizard {...defaultProps} isOpen={false} />
-      );
-      rerender(
-        <ProjectCreationWizard {...defaultProps} isOpen={true} />
-      );
-
-      // Check git settings are still present
-      expect(screen.getByTestId("base-branch-select")).toBeInTheDocument();
+    it("disables inputs on the active step while creating", async () => {
+      const user = userEvent.setup();
+      renderWizard({ isCreating: true });
+      await user.click(screen.getByTestId("intent-existing"));
+      expect(screen.getByTestId("folder-input")).toBeDisabled();
+      expect(screen.getByTestId("create-button")).toBeDisabled();
     });
   });
 });
