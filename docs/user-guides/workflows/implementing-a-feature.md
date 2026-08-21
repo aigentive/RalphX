@@ -13,6 +13,10 @@ Use the direct delivery path to turn an approved plan bundle into a branch with 
 5. Keep the approved artifacts open as the source of intent for the branch.
 6. Return to planning instead if you need to change to **Create Proposals** and tracked delivery.
 
+> **Worked example — starting the build.** Continuing the **RalphX Release Companion** feature from [Planning a feature](planning-a-feature.md): with *"Block publishing until the release checklist is complete"* approved, clicking **Implement Directly** moved the conversation into an **Agent** workspace on its own branch.
+>
+> The plan's "where the gate lives" decision is what the agent implemented against — the check went into the publish action, not the button's disabled state. That is the value of having argued it out during planning: the implementing agent did not have to guess, and you have something specific to check the result against.
+
 ## Follow the implementation
 
 1. Read progress updates as RalphX works through the plan.
@@ -26,6 +30,12 @@ Use the direct delivery path to turn an approved plan bundle into a branch with 
 6. Ask RalphX to explain a change when you need to decide whether it still fits the plan.
 7. Keep unrelated requests out of this branch.
 8. Return to planning if the feature itself must be redefined.
+
+> **Worked example — a correction mid-run.** The progress updates showed the agent adding the gate and also rewording two unrelated checklist labels it happened to pass. That is exactly the moment step 7 exists for. The correction sent into the conversation:
+>
+> *"Leave the checklist item labels alone — they're out of scope for this change. Keep just the publish gate and the outstanding-items list."*
+>
+> Small scope drift is normal and cheap to correct while the branch is still open. Left alone it becomes a review finding later, which costs more.
 
 ## Hand off to local review
 

@@ -1,14 +1,22 @@
 # Planning a feature with RalphX
 
-Use a planning conversation to turn an idea into an implementation-ready plan bundle before code changes begin. You will finish with a verified, approved Plan Overview and Implementation Blueprint, then choose how to deliver the work.
+Use a planning conversation to turn an idea into an implementation-ready *plan bundle* — the Plan Overview and Implementation Blueprint pair described in [RalphX concepts](../concepts.md) — before code changes begin. You will finish with a verified, approved bundle, then choose how to deliver the work.
 
 **Before you start:** [Finding your way around](../02-tour-of-the-app.md)
+
+> **Worked example.** One invented feature runs through all five workflow guides, so you can see the same piece of work from first prompt to merged pull request. The project is **RalphX Release Companion** and the feature is *"Block publishing until the release checklist is complete"*. Neither is real — they are the example, not an instruction.
 
 ## Start the planning conversation
 
 1. Open the project you want to change and start a conversation in **Plan**.
 2. Describe the outcome, who it helps, relevant existing behavior, and constraints.
 3. State what must not change, then send the request.
+
+> **Worked example — the opening prompt.** Typed into the composer of a new **Plan** conversation in **RalphX Release Companion**:
+>
+> *"Right now anyone can publish a release even when checklist items are still open, and we keep shipping with unfinished sign-off. I want to block publishing until the release checklist is complete, and show which items are outstanding so people know what to finish. Don't change how the checklist itself is edited, and don't touch the existing publish permissions."*
+>
+> Note what that prompt does: it states the outcome, the reason, and two explicit non-goals. The non-goals matter as much as the goal — they are what stops a plan from growing.
 
 ## Clarify the scope
 
@@ -27,6 +35,14 @@ Use a planning conversation to turn an idea into an implementation-ready plan bu
 
 4. Return to the conversation to correct missing behavior, remove out-of-scope work, or add a needed acceptance criterion.
 5. Re-read both artifacts after a material change.
+
+> **Worked example — what came back.** The Plan Overview for *"Block publishing until the release checklist is complete"* opened with a goal, a scope boundary, and a decision the plan had to make:
+>
+> *"**Goal.** Publishing is blocked while any checklist item is open, and the publish surface names the outstanding items.*
+> *"**Out of scope.** Checklist editing and publish permissions are unchanged.*
+> *"**Decision — where the gate lives.** The check belongs in the publish action rather than in the button's disabled state, so an API caller is gated too and not only the UI."*
+>
+> That third entry is the useful part. A plan that only said "disable the button" would have read fine and shipped a hole. Reading the Overview for the decisions — not just the summary — is what makes this step worth your time.
 
 ## Verify and approve the plan
 

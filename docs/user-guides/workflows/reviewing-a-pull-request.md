@@ -32,6 +32,14 @@ Use the Review PR workflow to inspect a linked remote GitHub pull request at its
 5. Click **Skip** when you do not want RalphX to take the proposed action.
 6. Nothing reaches GitHub until you press the applicable action.
 
+> **Worked example — the end of the line.** The **RalphX Release Companion** branch for *"Block publishing until the release checklist is complete"* is now a pull request, and this is where the example that began in [Planning a feature](planning-a-feature.md) finishes.
+>
+> RalphX read the PR at its current head and proposed **Submit Comment** rather than **Approve PR**, with one observation:
+>
+> *"The gate and the outstanding-items list both re-read the checklist, which resolves the stale-read case. There is no test covering the second tab scenario the earlier review raised."*
+>
+> Two things are worth noticing. RalphX proposed the weaker action on its own — it is not biased toward approving. And that comment reached GitHub only after **Submit Comment** was pressed; leaving the screen at that point would have sent nothing at all.
+
 ## Re-review a new head
 
 1. Check the monitor after the PR author pushes a new commit.

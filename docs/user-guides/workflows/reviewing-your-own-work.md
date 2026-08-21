@@ -24,6 +24,12 @@ Use Workspace Review to check the local changes RalphX made in your workspace be
 4. Compare each finding with the branch changes and approved plan.
 5. Click **View transcript** when you need the reviewer's reasoning.
 
+> **Worked example — a real finding.** Reviewing the **RalphX Release Companion** branch for *"Block publishing until the release checklist is complete"*, **Requested Changes** carried one blocking item:
+>
+> *"The publish action rejects an incomplete checklist, but the outstanding-items list is built from the checklist state loaded when the page rendered. If an item is completed in another tab, the publish attempt is refused and the list shows nothing outstanding. Re-read the checklist at the point of the check."*
+>
+> This is the kind of finding worth the gate: not a style note, but a stale-read the plan did not anticipate and a quick read of the diff would probably miss. It also shows why step 4 matters — the finding only makes sense held against what the plan said the feature should do.
+
 ## Resolve findings
 
 1. Click **Fix Issues** when you want RalphX to address actionable findings in the workspace.
@@ -48,6 +54,8 @@ Use Workspace Review to check the local changes RalphX made in your workspace be
 
 3. Publish only when the local review outcome and branch contents are acceptable to you.
 4. Use the separate Review PR workflow for a GitHub pull-request review.
+
+> **Worked example — closing the loop.** **Fix Issues** re-read the checklist inside the publish check, **Run again** came back clean, and the **RalphX Release Companion** branch was published. It becomes the pull request in [Reviewing a pull request](reviewing-a-pull-request.md) — the last stop for this example.
 
 ## What you have now
 

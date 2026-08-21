@@ -15,10 +15,19 @@ Use an Ask conversation when you want read-only help understanding a codebase, a
 ## Add useful context
 
 1. Type `@` in the composer to reference relevant project context.
+
+   A menu opens as soon as you type it. Keep typing to filter, then pick the entry you want — the reference is inserted into your message and RalphX loads that context when it answers.
+
 2. Reference the file, artifact, or conversation context that makes the question precise.
 3. Ask one focused question at a time when you need a dependable answer.
 4. Include an example of the behavior you are trying to understand when it is ambiguous.
 5. Ask a follow-up when the answer identifies an unfamiliar term or an important tradeoff.
+
+> **Worked example — an `@` reference in practice.** The other four workflow guides follow one feature through **RalphX Release Companion**: *"Block publishing until the release checklist is complete"*. Here it is approached as a question instead of a change — the step before you decide to build anything. Rather than asking "how does publishing work", which invites a tour of the whole flow:
+>
+> *"@publish-service.ts What stops a release from being published today? I'm trying to work out where a checklist gate would have to live to also cover API callers, not just the button."*
+>
+> The `@` reference is what makes this answerable. Without it RalphX has to guess which of several publish paths you mean; with it, the answer is grounded in the file you are actually looking at. Naming the decision you are trying to make — gate placement — is the other half, because it tells RalphX which details matter.
 
 ## Keep the conversation read-only
 
