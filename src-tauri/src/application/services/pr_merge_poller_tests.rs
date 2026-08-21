@@ -13568,6 +13568,274 @@ fn needs_human_held(attempt: &AgentWorkspaceRepairAttempt) -> bool {
     })
 }
 
+/// Health for a blocked `needs_human` generation whose PR GitHub now reports fully green: mergeable,
+/// nothing behind, and one settled successful check. `merge_state_status` is `Clean` rather than
+/// `Behind`, so no base-staleness disposition can preempt the green-release branch.
+fn fully_green_health(head_oid: &str, observed_base_oid: &str) -> PrHealth {
+    let mut health = open_pr_health(head_oid);
+    health.sync_state.base_ref_oid = Some(observed_base_oid.to_string());
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Clean);
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("success".to_string()),
+        details_url: None,
+    });
+    health
+}
+
+/// The user-reported class: the PR is green on GitHub but the workspace still renders
+/// "Repair blocked". Green evidence at the current head proves the escalated CI failure no longer
+/// exists, so the hold is released with no human action and no head movement required.
+#[tokio::test]
+async fn blocked_needs_human_is_released_when_health_is_fully_green() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-green-release", None, true).await;
+    let health = fully_green_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+
+    let (routed, github, chat) = route_blocked_supersession(&fixture, health).await;
+
+    assert!(
+        !routed,
+        "releasing a hold on green evidence must not also dispatch a fixer generation"
+    );
+    assert_eq!(
+        github.state().push_branch_calls,
+        0,
+        "green health needs no branch write to prove the escalated evidence stale"
+    );
+    assert!(chat.get_sent_messages().await.is_empty());
+
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load released attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.id, fixture.attempt.id);
+    assert!(
+        !needs_human_held(&current),
+        "fresh green CI must supersede the repair-blocked state"
+    );
+    assert_eq!(
+        current.phase,
+        AgentWorkspaceRepairPhase::Ready,
+        "clearing the needs_human hold must atomically promote the attempt to Ready"
+    );
+    assert!(
+        !crate::application::agent_workspace_publish_recovery::is_blocked_and_not_auto_retryable(
+            &current
+        ),
+        "the sidebar's blocked badge keys on this predicate, so it must be false after the release"
+    );
+}
+
+/// The mandatory in-flight guard. A workflow that is still running is not proof that the escalated
+/// evidence is stale — it is proof that the evidence is not yet settled.
+#[tokio::test]
+async fn blocked_needs_human_is_not_released_while_a_run_is_in_flight() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-green-in-flight", None, true).await;
+    let mut health = fully_green_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+    health.checks.push(PrHealthCheck {
+        name: "Clippy".to_string(),
+        status: Some("in_progress".to_string()),
+        conclusion: None,
+        details_url: None,
+    });
+
+    let (_routed, github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+    assert_eq!(github.state().push_branch_calls, 0);
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(needs_human_held(&current));
+}
+
+/// Fail-closed on degraded evidence: a health snapshot reporting zero checks tells us nothing about
+/// whether the escalated failure still exists, so it is not green.
+#[tokio::test]
+async fn blocked_needs_human_is_not_released_on_an_empty_checks_list() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-green-no-checks", None, true).await;
+    let mut health = fully_green_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+    health.checks.clear();
+
+    let (_routed, _github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(needs_human_held(&current));
+}
+
+/// The escalated evidence still describes reality, so the hold is exactly right. This locks the
+/// contract the pre-existing early return protects, viewed from the new branch's angle.
+#[tokio::test]
+async fn blocked_needs_human_is_not_released_while_a_check_still_fails() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-green-still-failing", None, true).await;
+    let mut health = fully_green_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+    health.checks.push(PrHealthCheck {
+        name: "Frontend tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: None,
+    });
+
+    let (_routed, _github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(needs_human_held(&current));
+}
+
+/// Green checks are not the whole picture. A reviewer asking for changes is a live PR blocker, so
+/// the classified autofix issue keeps the fence even with a perfect check run.
+#[tokio::test]
+async fn blocked_needs_human_is_not_released_on_changes_requested() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-green-changes-requested", None, true)
+            .await;
+    let mut health = fully_green_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+    health.review_decision = Some("CHANGES_REQUESTED".to_string());
+
+    let (_routed, _github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(needs_human_held(&current));
+}
+
+/// Without a known head there is no "current head" for green evidence to be green *at*, so the
+/// release has no anchor and must fail closed.
+#[tokio::test]
+async fn blocked_needs_human_is_not_released_on_blank_head() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-green-blank-head", None, true).await;
+    let mut health = fully_green_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+    health.sync_state.head_ref_oid = None;
+
+    let (_routed, _github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(needs_human_held(&current));
+}
+
+/// The admission gate is unchanged by this branch: a fixer that committed real work before
+/// escalating is never admitted, so green health cannot reach the release at all.
+#[tokio::test]
+async fn blocked_needs_human_with_a_repair_head_is_not_green_released() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-green-repair-head", None, true).await;
+    let mut with_repair_head = fixture.attempt.clone();
+    with_repair_head.repair_head_commit = Some("a-real-fix-commit".to_string());
+    with_repair_head.updated_at += chrono::Duration::microseconds(1);
+    match fixture
+        .repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: with_repair_head,
+            expected_phase: AgentWorkspaceRepairPhase::Blocked,
+            expected_updated_at: fixture.attempt.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Blocked,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist repair head")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(_) => {}
+        outcome => panic!("repair head must apply, got {outcome:?}"),
+    }
+    let health = fully_green_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+
+    let (_routed, _github, _chat) = route_blocked_supersession(&fixture, health).await;
+
+    let current = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt")
+        .expect("attempt remains current");
+    assert_eq!(current.phase, AgentWorkspaceRepairPhase::Blocked);
+    assert!(
+        needs_human_held(&current),
+        "local repair work at risk must keep the workspace waiting for a human"
+    );
+}
+
+/// Documents the exact post-release lifecycle rather than assuming one. The released generation is
+/// Ready and still *current* — the poller does not settle it, because its own settlement path is
+/// gated on a health/CI hold marker a canonical `needs_human` attempt never carries. Settlement is
+/// owned by durable recovery's `Ready` arm, which is the same handoff the shipped base-update
+/// release relies on. What matters for the user-visible bug is that no fence and no blocked phase
+/// survive this tick.
+#[tokio::test]
+async fn blocked_needs_human_green_release_does_not_strand_the_generation() {
+    let fixture =
+        blocked_needs_human_supersession_fixture("blocked-green-no-strand", None, true).await;
+    let health = fully_green_health(&fixture.dispatch_head, &fixture.observed_base_oid);
+
+    route_blocked_supersession(&fixture, health.clone()).await;
+
+    let after_release = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load released attempt")
+        .expect("the released generation stays current until durable recovery settles it");
+    assert_eq!(after_release.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(after_release.settled_at.is_none());
+
+    // A second identical tick must be idempotent: the fence is already gone, so the release cannot
+    // re-fire, and the still-current Ready generation must not be settled or re-blocked here.
+    let (routed, github, chat) = route_blocked_supersession(&fixture, health).await;
+
+    assert!(!routed, "a green PR has nothing for a fixer to repair");
+    assert_eq!(github.state().push_branch_calls, 0);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let after_second_tick = fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("load attempt after the second tick")
+        .expect("attempt remains current");
+    assert_eq!(after_second_tick.id, after_release.id);
+    assert_eq!(after_second_tick.phase, AgentWorkspaceRepairPhase::Ready);
+    assert!(!needs_human_held(&after_second_tick));
+    assert!(
+        !crate::application::agent_workspace_publish_recovery::is_blocked_and_not_auto_retryable(
+            &after_second_tick
+        ),
+        "the workspace must not fall back into a blocked, non-auto-retryable repair"
+    );
+}
+
 /// The incident replay (PR #1038). A CI-only `needs_human` escalation with no local repair work
 /// stranded the workspace for ~19h while `main` moved. Base staleness must supersede it: RalphX
 /// merges the current base, pushes (restarting CI), and clears the hold head-scoped so the
