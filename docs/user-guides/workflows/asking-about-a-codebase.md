@@ -7,10 +7,14 @@ Use an Ask conversation when you want read-only help understanding a codebase, a
 ## Start an Ask conversation
 
 1. Start a conversation in **Ask**.
-2. Use **Ask** when you need an explanation, investigation, or orientation rather than a code change.
-3. Start without a project when your question does not need project context.
-4. Select a project when its codebase is necessary to answer the question.
-5. State the question directly and include the outcome you need from the answer.
+
+   **Ask** answers questions and changes nothing. That is the whole distinction from the other modes, and it is why you can use it on unfamiliar code without care.
+
+2. Select a project when its codebase is needed to answer the question, or start without one when it is not.
+
+   **Ask** is one of only two modes that work without a project selected, so a general technical question does not need you to pick a repository first.
+
+3. State the question directly and include the outcome you need from the answer.
 
    Answers usually arrive in under a minute, though a question that sends RalphX reading widely across the project takes longer.
 
@@ -35,12 +39,15 @@ Use an Ask conversation when you want read-only help understanding a codebase, a
 >
 > The `@` reference is what makes this answerable. Without it RalphX has to guess which of several publish paths you mean; with it, the answer is grounded in the file you are actually looking at. Naming the decision you are trying to make — gate placement — is the other half, because it tells RalphX which details matter.
 
-## Keep the conversation read-only
+## When the question turns into work
 
-1. Use **Ask** to explore the codebase before deciding whether to make a change.
-2. Treat the answer as read-only guidance, not an implementation request.
-3. Start a **Plan** conversation when your question becomes a feature you want to build.
-4. Keep the original Ask conversation for future reference when it explains a decision or area of the codebase.
+1. Start a **Plan** conversation when the answer convinces you to build something.
+
+   Asking RalphX to make the change here will not work — **Ask** has no branch and no worktree to make it in. Take what you learned into a new **Plan** conversation, where [Planning a feature](planning-a-feature.md) picks up.
+
+2. Keep the original Ask conversation.
+
+   Conversations persist, and one that explains why an area of the codebase works the way it does is worth more later than it was when you asked. It is also the cheapest thing to re-read before planning against that area again.
 
 ## What you have now
 

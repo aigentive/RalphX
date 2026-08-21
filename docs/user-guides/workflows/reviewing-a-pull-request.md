@@ -64,6 +64,11 @@ You have reviewed a remote GitHub pull request at its current head, with the rev
 
 ## Next
 
-- [RalphX User Guides](../README.md)
+You have now been through the whole main path: install, tour, plan, implement, review your own work, and review a pull request. There is no next guide in the chain — from here you pick what your work needs.
+
+- **Make RalphX fit your project better** — [Teaching RalphX about your project](../configure/project-setup-and-validation.md) so agents can build and validate it, then [Controlling how much runs at once](../configure/capacity-and-concurrency.md)
+- **Work from your tracker** — [Connecting RalphX to Jira and Confluence](../integrations/connect-jira-and-confluence.md), [Linear](../integrations/connect-linear.md), or [ClickUp](../integrations/connect-clickup.md)
+- **Take on something larger than one plan** — [Delivering large projects with automated, supervised goals](../advanced/delivering-large-projects.md)
+- **Track delivery on a board** — [Tracked delivery with Tasks](../advanced/task-managed-delivery.md), off by default
 
 If this did not look right — the PR would not load, the monitor is stuck on an old head, or a GitHub action was refused — see [When something goes wrong](../troubleshooting.md).

@@ -36,29 +36,29 @@ Use an automation when a project goal is too large for one plan-and-implement cy
 
 ### Plan approval
 
-2. Set **Plan approval** to **Manual** when you want to approve every run plan yourself.
+1. Set **Plan approval** to **Manual** when you want to approve every run plan yourself.
 
    Manual is the default.
 
    Every run plans before it implements, then waits at the plan gate for the current plan to be approved.
 
-3. Choose **Automatic (judge)** only when you want RalphX's plan judge to assess each plan against the goal item.
+2. Choose **Automatic (judge)** only when you want RalphX's plan judge to assess each plan against the goal item.
 
    A judge failure pauses the automation for your review; it never treats the failed check as approval.
 
 ### PR merge
 
-4. Set **PR merge** to **Manual** when you want to merge each pull request yourself.
+1. Set **PR merge** to **Manual** when you want to merge each pull request yourself.
 
    Manual is the default.
 
-5. Choose **Automatic** only when GitHub should arm its native squash auto-merge for the run pull request after publication.
+2. Choose **Automatic** only when GitHub should arm its native squash auto-merge for the run pull request after publication.
 
    Keep GitHub access connected and use manual merge if you need a deliberate merge decision for each item.
 
 ### Deep plan verification
 
-6. Leave **Deep plan verification** off unless you want the extra adversarial plan-verification loop.
+1. Leave **Deep plan verification** off unless you want the extra adversarial plan-verification loop.
 
    It is off by default.
 

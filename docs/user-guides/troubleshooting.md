@@ -44,7 +44,7 @@ Recover from common RalphX setup and run problems without guessing. This guide h
 
    Read the failed command and its output before changing the project configuration.
 
-2. Follow [Configuring project setup and validation](configure/project-setup-and-validation.md) to correct the command, working directory, or prerequisites it needs.
+2. Follow [Teaching RalphX about your project](configure/project-setup-and-validation.md) to correct the command, working directory, or prerequisites it needs.
 
    Run the validation again only after fixing the reported problem.
 
