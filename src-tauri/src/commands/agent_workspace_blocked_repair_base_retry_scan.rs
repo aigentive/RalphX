@@ -210,6 +210,26 @@ async fn process_blocked_repair_base_retry_candidate(
         return Ok(false);
     }
 
+    // The reviewer runs in a child conversation, so the active-run gate above cannot see it. This
+    // retry merges from base into the same worktree, so it must stand down for review-owned work.
+    match crate::application::agent_workspace_review::workspace_review_owns_worktree(
+        state.agent_conversation_workspace_repo.as_ref(),
+        conversation_id,
+    )
+    .await
+    {
+        Ok(true) => return Ok(false),
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Skipping blocked repair base retry: Workspace Review gate failed closed"
+            );
+            return Ok(false);
+        }
+    }
+
     let project = state
         .project_repo
         .get_by_id(&workspace.project_id)

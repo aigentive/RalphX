@@ -9280,3 +9280,110 @@ async fn fixer_completion_reports_supersession_when_the_settle_cas_is_lost() {
 
     assert_eq!(outcome, WorkspaceReviewFixerCompletionOutcome::Superseded);
 }
+
+// ---------------------------------------------------------------------------
+// `workspace_review_owns_worktree` — the read helper every unattended mutating
+// actor consults before touching a workspace worktree.
+// ---------------------------------------------------------------------------
+
+/// Persists a review monitor carrying the given status/fixer state, then reports what the
+/// exclusion helper concludes about it.
+async fn review_owns_worktree_for(
+    status: AgentWorkspaceReviewMonitorStatus,
+    review_fixer_status: Option<&str>,
+) -> bool {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), ProjectId::new());
+    monitor.status = status;
+    monitor.review_fixer_status = review_fixer_status.map(str::to_string);
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    workspace_review_owns_worktree(
+        state.agent_conversation_workspace_repo.as_ref(),
+        &conversation_id,
+    )
+    .await
+    .expect("a readable monitor must not error")
+}
+
+#[tokio::test]
+async fn review_owns_worktree_while_the_reviewer_is_running() {
+    assert!(review_owns_worktree_for(AgentWorkspaceReviewMonitorStatus::Reviewing, None).await);
+}
+
+#[tokio::test]
+async fn review_owns_worktree_for_every_active_fixer_status() {
+    // A settled monitor status must not mask a fixer that is still holding the worktree.
+    for fixer_status in [
+        WORKSPACE_REVIEW_FIXER_STATUS_ROUTING,
+        WORKSPACE_REVIEW_FIXER_STATUS_QUEUED,
+        WORKSPACE_REVIEW_FIXER_STATUS_RUNNING,
+    ] {
+        assert!(
+            review_owns_worktree_for(
+                AgentWorkspaceReviewMonitorStatus::Blocked,
+                Some(fixer_status),
+            )
+            .await,
+            "fixer status {fixer_status} must own the worktree"
+        );
+    }
+}
+
+#[tokio::test]
+async fn review_does_not_own_worktree_when_idle_ready_or_blocked_without_a_fixer() {
+    for status in [
+        AgentWorkspaceReviewMonitorStatus::Idle,
+        AgentWorkspaceReviewMonitorStatus::Ready,
+        AgentWorkspaceReviewMonitorStatus::Blocked,
+    ] {
+        assert!(
+            !review_owns_worktree_for(status, None).await,
+            "{status} without an active fixer must leave the worktree free"
+        );
+    }
+}
+
+#[tokio::test]
+async fn review_does_not_own_worktree_for_a_cycle_capped_fixer() {
+    // `cycle_capped` is terminal: the loop stopped, so unattended actors may proceed.
+    assert!(
+        !review_owns_worktree_for(
+            AgentWorkspaceReviewMonitorStatus::Blocked,
+            Some(WORKSPACE_REVIEW_FIXER_STATUS_CYCLE_CAPPED),
+        )
+        .await
+    );
+}
+
+#[tokio::test]
+async fn review_does_not_own_worktree_when_no_monitor_exists() {
+    let state = AppState::new_test();
+    let owns = workspace_review_owns_worktree(
+        state.agent_conversation_workspace_repo.as_ref(),
+        &ChatConversationId::new(),
+    )
+    .await
+    .expect("a missing monitor is not an error");
+    assert!(!owns);
+}
+
+/// The helper itself propagates; each caller owns its fail-closed posture.
+#[tokio::test]
+async fn review_owns_worktree_propagates_monitor_read_failures() {
+    let workspace_repo = FailingMonitorReadRepository {
+        inner: Arc::new(
+            crate::infrastructure::memory::MemoryAgentConversationWorkspaceRepository::new(),
+        ),
+        should_fail: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    };
+
+    let result = workspace_review_owns_worktree(&workspace_repo, &ChatConversationId::new()).await;
+
+    assert!(matches!(result, Err(AppError::Infrastructure(_))));
+}

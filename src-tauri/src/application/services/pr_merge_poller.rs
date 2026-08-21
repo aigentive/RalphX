@@ -4088,18 +4088,79 @@ fn attempt_admits_base_staleness_supersession(
         && workspace.publication_pr_number.is_some()
 }
 
+/// Why an unattended actor must not mutate this workspace's worktree right now, or `None` when it
+/// is genuinely idle. Every read fails closed: a gate that cannot be read reports busy, because an
+/// unreadable gate must never authorize a concurrent mutation.
+async fn agent_workspace_worktree_busy_reason(
+    workspace: &AgentConversationWorkspace,
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    agent_run_repo: Option<&Arc<dyn AgentRunRepository>>,
+) -> Option<&'static str> {
+    if let Some(agent_run_repo) = agent_run_repo {
+        match agent_run_repo
+            .get_active_for_conversation(&workspace.conversation_id)
+            .await
+        {
+            Ok(Some(_)) => return Some("active_agent_run"),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    error = %error,
+                    "Treating workspace as busy: active-run read failed closed"
+                );
+                return Some("active_run_read_failed");
+            }
+        }
+    }
+    match crate::application::agent_workspace_review::workspace_review_owns_worktree(
+        workspace_repo,
+        &workspace.conversation_id,
+    )
+    .await
+    {
+        Ok(true) => Some("review_owns_worktree"),
+        Ok(false) => None,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = workspace.conversation_id.as_str(),
+                error = %error,
+                "Treating workspace as busy: Workspace Review state read failed closed"
+            );
+            Some("review_state_read_failed")
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn drive_agent_workspace_behind_base_update(
     github: &dyn GithubServiceTrait,
     working_dir: &Path,
     project: &Project,
     workspace: &AgentConversationWorkspace,
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    agent_run_repo: Option<&Arc<dyn AgentRunRepository>>,
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     attempt: AgentWorkspaceRepairAttempt,
     observed_base_oid: &str,
     summary: &str,
     preserve_blocked_phase: bool,
 ) -> crate::AppResult<BehindBaseUpdateRoute> {
+    // This merges from base into the live worktree, so it must never run under an active run or
+    // in-flight review work. `Rejected` is the only correct busy exit: it writes nothing, so the
+    // whole route re-evaluates cleanly on the next tick. `DeferToAgent` would settle the attempt
+    // and hand the base update to a fixer that the PR-autofix gate is simultaneously withholding,
+    // silently dropping the assignment while durable state claimed a deferral nobody received.
+    if let Some(busy_reason) =
+        agent_workspace_worktree_busy_reason(workspace, workspace_repo, agent_run_repo).await
+    {
+        tracing::debug!(
+            conversation_id = workspace.conversation_id.as_str(),
+            busy_reason,
+            "PR base update withheld: the worktree is not idle"
+        );
+        return Ok(BehindBaseUpdateRoute::Rejected);
+    }
     let reserved = if preserve_blocked_phase {
         match reserve_agent_workspace_base_update_preserving_phase(
             Arc::clone(&repair_repo),
@@ -4491,6 +4552,8 @@ async fn route_agent_workspace_pr_autofix_for_target(
                         working_dir,
                         project,
                         &workspace,
+                        workspace_repo.as_ref(),
+                        agent_run_repo.as_ref(),
                         Arc::clone(repair_repo),
                         attempt.clone(),
                         &observed_base_oid,
@@ -5505,6 +5568,37 @@ async fn dispatch_agent_workspace_pr_autofix(
     auto_merge_before_reservation: Option<bool>,
     dispatch: AgentWorkspacePrAutofixDispatch<'_>,
 ) -> crate::AppResult<bool> {
+    // Withhold before *any* effect: no attempt started or reserved, no auto-merge disarm, no
+    // preallocated run, no publication event. A `DeferredQueued` settlement after the reservation
+    // would stamp a misleading "waiting for the conversation" summary and emit one `deferred`
+    // event per re-drive for the whole review. Nothing is lost by not persisting — the CI failure
+    // is GitHub-side state, so the next tick after the review settles re-detects and dispatches it.
+    match crate::application::agent_workspace_review::workspace_review_owns_worktree(
+        workspace_repo.as_ref(),
+        conversation_id,
+    )
+    .await
+    {
+        Ok(true) => {
+            tracing::debug!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                "PR autofix dispatch withheld: Workspace Review work owns the worktree"
+            );
+            return Ok(false);
+        }
+        Ok(false) => {}
+        Err(error) => {
+            // Fail closed: a gate that cannot be read never authorizes a concurrent mutation.
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                error = %error,
+                "PR autofix dispatch withheld: Workspace Review state read failed closed"
+            );
+            return Ok(false);
+        }
+    }
     let Some(repair_repo) = repair_repo else {
         #[cfg(test)]
         return dispatch_agent_workspace_pr_autofix_legacy(

@@ -265,6 +265,28 @@ pub async fn start_guarded_agent_workspace_review_with_runtime_override(
     let phase_started = Instant::now();
     let (preview, revalidated_target) = match origin {
         WorkspaceReviewStartOrigin::Manual => {
+            // A fixer run owns the worktree, so any review started now would be invalidated by its
+            // very first commit. Reject with guidance rather than burn a reviewer generation. The
+            // reviewer's own child run lives in a different conversation and never trips this.
+            // Automated origins are deliberately excluded: they already defer through their own
+            // routing seams, and the backend AwaitingReview start fires only after the fixer run
+            // has completed.
+            if state
+                .agent_run_repo
+                .get_active_for_conversation(&workspace.conversation_id)
+                .await
+                .map_err(|error| {
+                    AppError::Conflict(format!(
+                        "workspace Review start could not confirm the workspace is idle: {error}"
+                    ))
+                })?
+                .is_some()
+            {
+                return Err(AppError::Conflict(
+                    "An agent run (fixer) is active in this workspace. Start the review after it completes."
+                        .to_string(),
+                ));
+            }
             let manual_preview =
                 preview_manual_workspace_review_start(state.as_ref(), workspace).await?;
             let Some(confirmation) = confirmation else {

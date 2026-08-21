@@ -14581,3 +14581,946 @@ async fn blocked_needs_human_deferred_merge_dispatches_successor() {
     // Either a chat message was dispatched or none was — the key invariant is no promotion to Ready.
     let _ = sent;
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Review-owned worktree exclusion — PR autofix dispatch
+// ────────────────────────────────────────────────────────────────────
+
+/// Full durable-dispatch fixture (repair repo + branch update repo) with the Workspace Review
+/// monitor seeded to the supplied state. Returns whether the route dispatched a fixer plus the
+/// repos needed to assert that nothing was written.
+struct ReviewExclusionFixture {
+    routed: bool,
+    conversation_id: ChatConversationId,
+    workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    chat: Arc<MockChatService>,
+    github: Arc<MockGithubService>,
+    _worktree: tempfile::TempDir,
+}
+
+async fn seed_review_monitor(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    conversation_id: &ChatConversationId,
+    project_id: crate::domain::entities::ProjectId,
+    status: crate::domain::entities::AgentWorkspaceReviewMonitorStatus,
+    review_fixer_status: Option<&str>,
+) {
+    let mut monitor = crate::domain::entities::AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        project_id,
+    );
+    monitor.status = status;
+    monitor.review_fixer_status = review_fixer_status.map(str::to_string);
+    workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("review monitor should persist");
+}
+
+async fn route_autofix_with_review_monitor(
+    label: &str,
+    status: crate::domain::entities::AgentWorkspaceReviewMonitorStatus,
+    review_fixer_status: Option<&str>,
+) -> ReviewExclusionFixture {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(label, &format!("project-{label}"), worktree.path());
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some(format!("base-{label}"));
+    let conversation_id = workspace.conversation_id.clone();
+    let project_id = workspace.project_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    seed_review_monitor(
+        workspace_repo.as_ref(),
+        &conversation_id,
+        project_id,
+        status,
+        review_fixer_status,
+    )
+    .await;
+
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+
+    let mut health = open_pr_health(&format!("{label}-head"));
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/7".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo.clone(),
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+    )
+    .await
+    .expect("review exclusion must never surface as a routing error");
+
+    ReviewExclusionFixture {
+        routed,
+        conversation_id,
+        workspace_repo,
+        repair_repo,
+        chat,
+        github,
+        _worktree: worktree,
+    }
+}
+
+/// Proof obligation 1: while the reviewer is in flight the dispatch performs **zero** writes.
+/// A CI-fixer commit here would invalidate the running review and burn a reviewer generation.
+#[tokio::test]
+async fn pr_autofix_dispatch_is_withheld_while_the_reviewer_is_running() {
+    let fixture = route_autofix_with_review_monitor(
+        "review-running",
+        crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Reviewing,
+        None,
+    )
+    .await;
+
+    assert!(!fixture.routed, "a running review must withhold the fixer");
+    assert!(
+        fixture.chat.get_sent_messages().await.is_empty(),
+        "no fixer instruction may be sent"
+    );
+    assert!(
+        fixture
+            .repair_repo
+            .get_current_repair_attempt(&fixture.conversation_id)
+            .await
+            .expect("repair lookup should succeed")
+            .is_none(),
+        "no repair attempt may be created or reserved"
+    );
+    assert!(
+        fixture
+            .workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .expect("events should list")
+            .is_empty(),
+        "a withheld dispatch must not write a publication event"
+    );
+    assert_eq!(
+        fixture.github.state().disable_pr_auto_merge_calls,
+        0,
+        "auto-merge must not be disarmed for a dispatch that never happens"
+    );
+}
+
+/// The review fixer holds the same worktree, so it excludes the CI fixer just as the reviewer does.
+#[tokio::test]
+async fn pr_autofix_dispatch_is_withheld_while_a_review_fixer_is_active() {
+    let fixture = route_autofix_with_review_monitor(
+        "review-fixer-active",
+        crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Blocked,
+        Some(crate::domain::entities::WORKSPACE_REVIEW_FIXER_STATUS_RUNNING),
+    )
+    .await;
+
+    assert!(!fixture.routed);
+    assert!(fixture.chat.get_sent_messages().await.is_empty());
+    assert!(fixture
+        .repair_repo
+        .get_current_repair_attempt(&fixture.conversation_id)
+        .await
+        .expect("repair lookup should succeed")
+        .is_none());
+}
+
+/// The gate must not disturb the ordinary path: a settled monitor dispatches exactly as before.
+#[tokio::test]
+async fn pr_autofix_dispatch_proceeds_when_review_work_does_not_own_the_worktree() {
+    for (label, status) in [
+        (
+            "review-idle",
+            crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Idle,
+        ),
+        (
+            "review-ready",
+            crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Ready,
+        ),
+    ] {
+        let fixture = route_autofix_with_review_monitor(label, status, None).await;
+        assert!(
+            fixture.routed,
+            "{status} must leave the CI fixer free to dispatch"
+        );
+        assert!(
+            fixture
+                .repair_repo
+                .get_current_repair_attempt(&fixture.conversation_id)
+                .await
+                .expect("repair lookup should succeed")
+                .is_some(),
+            "{status} must still reserve a repair attempt"
+        );
+    }
+}
+
+/// Proof obligation 2 (Gap 6): the withheld CI fix is delayed, never lost. Driving the *same*
+/// workspace twice shows that a review-held tick creates no durable state at all, and that the
+/// first re-drive after the review settles dispatches the fixer for the same CI failure — the
+/// poller re-classifies PR health every tick, so nothing needs to be persisted across the hold.
+#[tokio::test]
+async fn a_withheld_ci_fix_is_dispatched_on_the_first_re_drive_after_the_review_settles() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let label = "withheld-then-dispatched";
+    let mut workspace = supervised_workspace(label, &format!("project-{label}"), worktree.path());
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some(format!("base-{label}"));
+    let conversation_id = workspace.conversation_id.clone();
+    let project_id = workspace.project_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+
+    async fn drive(
+        label: &str,
+        worktree_path: &std::path::Path,
+        conversation_id: &ChatConversationId,
+        workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+        repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    ) -> (bool, Arc<MockChatService>) {
+        let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+            Arc::new(MemoryBranchUpdateRepository::new());
+        let agent_run_repo = seeded_latest_pr_fixer_run_repo(conversation_id).await;
+        let mut health = open_pr_health(&format!("{label}-head"));
+        health.checks.push(PrHealthCheck {
+            name: "Rust tests".to_string(),
+            status: Some("completed".to_string()),
+            conclusion: Some("failure".to_string()),
+            details_url: Some("https://github.com/owner/repo/actions/runs/7".to_string()),
+        });
+        let github = Arc::new(MockGithubService::new());
+        github.state().fetch_pr_health_result = Some(Ok(health));
+        let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+            &agent_run_repo,
+        )));
+        let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+            Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            worktree_path,
+            101,
+            conversation_id,
+            workspace_repo,
+            Some(agent_run_repo),
+            Some(repair_repo),
+            Some(branch_update_repo),
+            chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+            None,
+        )
+        .await
+        .expect("routing should not error");
+        (routed, chat)
+    }
+
+    // Tick 1 — the reviewer owns the worktree.
+    seed_review_monitor(
+        workspace_repo.as_ref(),
+        &conversation_id,
+        project_id.clone(),
+        crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Reviewing,
+        None,
+    )
+    .await;
+    let (routed, chat) = drive(
+        label,
+        worktree.path(),
+        &conversation_id,
+        workspace_repo.clone(),
+        Arc::clone(&repair_repo),
+    )
+    .await;
+    assert!(!routed, "the review must withhold this dispatch");
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert!(
+        repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("repair lookup should succeed")
+            .is_none(),
+        "the hold must leave no durable attempt behind"
+    );
+    assert!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("events should list")
+            .is_empty(),
+        "the hold must emit no publication events, however many ticks it spans"
+    );
+
+    // Tick 2 — the review has settled; the same CI failure is still on the PR.
+    seed_review_monitor(
+        workspace_repo.as_ref(),
+        &conversation_id,
+        project_id,
+        crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Ready,
+        None,
+    )
+    .await;
+    let (routed_after, _chat_after) = drive(
+        label,
+        worktree.path(),
+        &conversation_id,
+        workspace_repo.clone(),
+        Arc::clone(&repair_repo),
+    )
+    .await;
+
+    assert!(
+        routed_after,
+        "the first tick after the review settles must dispatch the withheld fixer"
+    );
+    assert!(
+        repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("repair lookup should succeed")
+            .is_some(),
+        "the resumed dispatch must reserve its repair attempt"
+    );
+}
+
+/// Proof obligation 1, second call site: gating lives inside `dispatch_agent_workspace_pr_autofix`
+/// precisely so the PR review-feedback route is covered by the same check as the PR-health route.
+#[tokio::test]
+async fn review_feedback_dispatch_is_withheld_while_review_work_owns_the_worktree() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "review-feedback-review-hold",
+        "project-review-feedback-hold",
+        worktree.path(),
+    );
+    workspace.pr_auto_merge_current = Some(true);
+    let conversation_id = workspace.conversation_id.clone();
+    let project_id = workspace.project_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    seed_review_monitor(
+        workspace_repo.as_ref(),
+        &conversation_id,
+        project_id,
+        crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Reviewing,
+        None,
+    )
+    .await;
+
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_review_feedback(PrReviewFeedback {
+        review_id: "review-hold-1".to_string(),
+        author: "reviewer".to_string(),
+        submitted_at: Some("2026-05-17T12:00:00Z".to_string()),
+        body: Some("Please handle the edge case.".to_string()),
+        comments: Vec::new(),
+    });
+    github.state().fetch_pr_health_result = Some(Ok(open_pr_health("review-feedback-hold-head")));
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_review_feedback_if_present(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Some(Arc::clone(&agent_run_repo)),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("a held review-feedback route must not error");
+
+    assert!(!routed, "review-feedback dispatch must be withheld too");
+    assert!(
+        chat.get_sent_messages().await.is_empty(),
+        "no fixer instruction may be sent for review feedback during a review"
+    );
+}
+
+/// Wraps the memory workspace repo and fails only the Workspace Review monitor read, so the
+/// dispatch gate's fail-closed posture can be observed without disturbing any other repo call.
+struct WorkspaceReviewMonitorReadErrorRepository {
+    inner: Arc<MemoryAgentConversationWorkspaceRepository>,
+}
+
+#[async_trait]
+impl AgentConversationWorkspaceRepository for WorkspaceReviewMonitorReadErrorRepository {
+    async fn get_workspace_review_monitor(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<crate::domain::entities::AgentWorkspaceReviewMonitor>> {
+        Err(repo_error())
+    }
+
+    async fn create_or_update(
+        &self,
+        workspace: AgentConversationWorkspace,
+    ) -> AppResult<AgentConversationWorkspace> {
+        self.inner.create_or_update(workspace).await
+    }
+    async fn get_by_conversation_id(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        self.inner.get_by_conversation_id(conversation_id).await
+    }
+    async fn get_by_project_id(
+        &self,
+        project_id: &crate::domain::entities::ProjectId,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.inner.get_by_project_id(project_id).await
+    }
+    async fn list_active_direct_published_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.inner.list_active_direct_published_workspaces().await
+    }
+    async fn list_active_unpublished_edit_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.inner.list_active_unpublished_edit_workspaces().await
+    }
+    async fn list_active_needs_agent_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.inner.list_active_needs_agent_workspaces().await
+    }
+    async fn update_links(
+        &self,
+        conversation_id: &ChatConversationId,
+        ideation_session_id: Option<&crate::domain::entities::IdeationSessionId>,
+        plan_branch_id: Option<&crate::domain::entities::PlanBranchId>,
+    ) -> AppResult<()> {
+        self.inner
+            .update_links(conversation_id, ideation_session_id, plan_branch_id)
+            .await
+    }
+    async fn update_publication(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: Option<i64>,
+        pr_url: Option<&str>,
+        pr_status: Option<&str>,
+        push_status: Option<&str>,
+    ) -> AppResult<()> {
+        self.inner
+            .update_publication(conversation_id, pr_number, pr_url, pr_status, push_status)
+            .await
+    }
+    async fn update_pr_supervision_preferences(
+        &self,
+        conversation_id: &ChatConversationId,
+        autofix_enabled: bool,
+        auto_merge_desired: bool,
+        auto_merge_method: &str,
+    ) -> AppResult<()> {
+        self.inner
+            .update_pr_supervision_preferences(
+                conversation_id,
+                autofix_enabled,
+                auto_merge_desired,
+                auto_merge_method,
+            )
+            .await
+    }
+    async fn set_last_blocked_pr_health_fingerprint(
+        &self,
+        conversation_id: &ChatConversationId,
+        fingerprint: Option<&str>,
+    ) -> AppResult<()> {
+        self.inner
+            .set_last_blocked_pr_health_fingerprint(conversation_id, fingerprint)
+            .await
+    }
+    async fn set_stale_base_detected_at(
+        &self,
+        conversation_id: &ChatConversationId,
+        detected_at: Option<DateTime<Utc>>,
+    ) -> AppResult<()> {
+        self.inner
+            .set_stale_base_detected_at(conversation_id, detected_at)
+            .await
+    }
+    async fn set_review_automation_override(
+        &self,
+        conversation_id: &ChatConversationId,
+        value: Option<bool>,
+    ) -> AppResult<()> {
+        self.inner
+            .set_review_automation_override(conversation_id, value)
+            .await
+    }
+    async fn update_status(
+        &self,
+        conversation_id: &ChatConversationId,
+        status: AgentConversationWorkspaceStatus,
+    ) -> AppResult<()> {
+        self.inner.update_status(conversation_id, status).await
+    }
+    async fn save_pr_description(
+        &self,
+        conversation_id: &ChatConversationId,
+        description: crate::domain::entities::AgentWorkspacePrDescription,
+    ) -> AppResult<()> {
+        self.inner
+            .save_pr_description(conversation_id, description)
+            .await
+    }
+    async fn get_pr_description(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<crate::domain::entities::AgentWorkspacePrDescription>> {
+        self.inner.get_pr_description(conversation_id).await
+    }
+    async fn clear_pr_description(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
+        self.inner.clear_pr_description(conversation_id).await
+    }
+    async fn append_publication_event(
+        &self,
+        event: AgentConversationWorkspacePublicationEvent,
+    ) -> AppResult<()> {
+        self.inner.append_publication_event(event).await
+    }
+    async fn list_publication_events(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentConversationWorkspacePublicationEvent>> {
+        self.inner.list_publication_events(conversation_id).await
+    }
+    async fn set_pr_review_auto_approve_enabled(
+        &self,
+        conversation_id: &ChatConversationId,
+        enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        self.inner
+            .set_pr_review_auto_approve_enabled(conversation_id, enabled)
+            .await
+    }
+    async fn mark_pr_review_first_action_resolved(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        self.inner
+            .mark_pr_review_first_action_resolved(conversation_id)
+            .await
+    }
+    async fn claim_pending_pr_review_action(&self, action_id: &str) -> AppResult<bool> {
+        self.inner.claim_pending_pr_review_action(action_id).await
+    }
+    async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
+        self.inner.delete(conversation_id).await
+    }
+}
+
+/// Proof obligation 7: an unreadable gate never authorizes a concurrent worktree mutation.
+#[tokio::test]
+async fn pr_autofix_dispatch_fails_closed_when_the_review_monitor_cannot_be_read() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let label = "monitor-read-error";
+    let mut workspace = supervised_workspace(label, &format!("project-{label}"), worktree.path());
+    init_repair_dispatch_repo(worktree.path(), &workspace.branch_name);
+    workspace.base_commit = Some(format!("base-{label}"));
+    let conversation_id = workspace.conversation_id.clone();
+    let inner = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    inner
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = inner.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(WorkspaceReviewMonitorReadErrorRepository {
+            inner: Arc::clone(&inner),
+        });
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+
+    let mut health = open_pr_health(&format!("{label}-head"));
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/7".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed_with_repair_repo(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        workspace_repo,
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+    )
+    .await
+    .expect("an unreadable gate must withhold, not error out of the poller tick");
+
+    assert!(!routed, "an unreadable gate must withhold the dispatch");
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert!(
+        repair_repo
+            .get_current_repair_attempt(&conversation_id)
+            .await
+            .expect("repair lookup should succeed")
+            .is_none(),
+        "a fail-closed withhold must not reserve an attempt"
+    );
+}
+
+/// Observable effects of a behind-base drive, used to prove the idle gate performs no mutation.
+struct BehindBaseGateOutcome {
+    push_branch_calls: u32,
+    base_update_target_commit: Option<String>,
+    attempt_phase: AgentWorkspaceRepairPhase,
+    attempt_updated_at: DateTime<Utc>,
+    expected_attempt_updated_at: DateTime<Utc>,
+    base_update_events: usize,
+}
+
+impl BehindBaseGateOutcome {
+    /// Every durable and remote effect of the base update is absent.
+    fn assert_no_base_update(&self, context: &str) {
+        assert_eq!(
+            self.push_branch_calls, 0,
+            "{context}: a busy worktree must never be pushed"
+        );
+        assert!(
+            self.base_update_target_commit.is_none(),
+            "{context}: no base update may be reserved on the attempt"
+        );
+        assert_eq!(
+            self.base_update_events, 0,
+            "{context}: `Rejected` must write no base-update route event"
+        );
+        assert_eq!(
+            self.attempt_phase,
+            AgentWorkspaceRepairPhase::Ready,
+            "{context}: the attempt phase must not move"
+        );
+        assert_eq!(
+            self.attempt_updated_at, self.expected_attempt_updated_at,
+            "{context}: the gate must perform zero writes on the attempt"
+        );
+    }
+}
+
+/// Drives the behind-base route with the worktree marked busy in the requested way, and reports
+/// whether the base update actually happened. Mirrors
+/// `live_pr_autofix_ci_rerun_hold_behind_base_updates_before_waiting`, which proves the same
+/// fixture performs a real merge+push when the workspace is idle.
+async fn behind_base_update_with_busy_worktree(
+    label: &str,
+    review_status: crate::domain::entities::AgentWorkspaceReviewMonitorStatus,
+    review_fixer_status: Option<&str>,
+    seed_active_run: bool,
+    fail_monitor_read: bool,
+) -> BehindBaseGateOutcome {
+    let fixture = tempfile::tempdir().expect("fixture root");
+    let remote = fixture.path().join("remote.git");
+    let worktree = fixture.path().join("worktree");
+    let remote_arg = remote.to_string_lossy().to_string();
+    let worktree_arg = worktree.to_string_lossy().to_string();
+    run_git(fixture.path(), &["init", "--bare", &remote_arg]);
+    run_git(fixture.path(), &["clone", &remote_arg, &worktree_arg]);
+    run_git(&worktree, &["config", "user.email", "test@example.com"]);
+    run_git(&worktree, &["config", "user.name", "Test User"]);
+    run_git(&worktree, &["checkout", "-b", "main"]);
+    std::fs::write(worktree.join("README.md"), "initial\n").expect("write initial file");
+    run_git(&worktree, &["add", "."]);
+    run_git(&worktree, &["commit", "-m", "initial"]);
+    run_git(&worktree, &["push", "-u", "origin", "main"]);
+    let attempt_base_oid = git_stdout(&worktree, &["rev-parse", "main"]);
+
+    let mut workspace = supervised_workspace(label, &format!("project-{label}"), &worktree);
+    run_git(&worktree, &["checkout", "-b", &workspace.branch_name]);
+    run_git(&worktree, &["push", "-u", "origin", &workspace.branch_name]);
+    run_git(&worktree, &["checkout", "main"]);
+    std::fs::write(worktree.join("BASE.md"), "advanced base\n").expect("advance base");
+    run_git(&worktree, &["add", "."]);
+    run_git(&worktree, &["commit", "-m", "advance base"]);
+    run_git(&worktree, &["push", "origin", "main"]);
+    let observed_base_oid = git_stdout(&worktree, &["rev-parse", "main"]);
+    run_git(&worktree, &["checkout", &workspace.branch_name]);
+
+    workspace.base_commit = Some(observed_base_oid.clone());
+    let conversation_id = workspace.conversation_id.clone();
+    let mut project = Project::new(
+        "Behind base CI rerun direct update".to_string(),
+        worktree.to_string_lossy().to_string(),
+    );
+    project.id = workspace.project_id.clone();
+    project.base_branch = Some("main".to_string());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    seed_review_monitor(
+        workspace_repo.as_ref(),
+        &conversation_id,
+        workspace.project_id.clone(),
+        review_status,
+        review_fixer_status,
+    )
+    .await;
+    let repair_repo: Arc<dyn AgentWorkspaceRepairRepository> = workspace_repo.clone();
+    let branch_update_repo: Arc<dyn BranchUpdateRepository> =
+        Arc::new(MemoryBranchUpdateRepository::new());
+    let agent_run_repo = seeded_latest_pr_fixer_run_repo(&conversation_id).await;
+    if seed_active_run {
+        let mut active = AgentRun::new(conversation_id.clone());
+        active.status = AgentRunStatus::Running;
+        agent_run_repo
+            .create(active)
+            .await
+            .expect("active run should persist");
+    }
+    // Only the route's workspace-repo view fails the monitor read; the repair repo stays intact so
+    // the failure is observed purely as the gate's fail-closed posture.
+    let route_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> = if fail_monitor_read {
+        Arc::new(WorkspaceReviewMonitorReadErrorRepository {
+            inner: Arc::clone(&workspace_repo),
+        })
+    } else {
+        workspace_repo.clone()
+    };
+    let ci_fingerprint = &format!("ci-hold:v1:{label}-head:925");
+    let mut health = open_pr_health(&format!("{label}-head"));
+    health.sync_state.base_ref_oid = Some(observed_base_oid.clone());
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Behind);
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests / cancelled".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("cancelled".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/925/jobs/1".to_string()),
+    });
+    health.checks.push(PrHealthCheck {
+        name: "Rust tests / sibling".to_string(),
+        status: Some("in_progress".to_string()),
+        conclusion: None,
+        details_url: Some("https://github.com/owner/repo/actions/runs/925/jobs/2".to_string()),
+    });
+    let held =
+        reserve_pending_ci_rerun_attempt(repair_repo.as_ref(), &conversation_id, ci_fingerprint)
+            .await;
+    let mut targeted = held.clone();
+    targeted.target_base_commit = Some(attempt_base_oid);
+    targeted.updated_at += chrono::Duration::microseconds(1);
+    let targeted = match repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: targeted,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at: held.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("persist held base authority")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt,
+        outcome => panic!("held base authority must apply, got {outcome:?}"),
+    };
+    let target_identity = GitService::canonical_target_identity(&worktree, &workspace.branch_name)
+        .await
+        .expect("resolve direct-update target identity");
+    let AcquireGitTargetLeaseOutcome::Acquired { fencing_epoch } = branch_update_repo
+        .acquire_target_lease(AcquireGitTargetLease {
+            identity: target_identity.clone(),
+            owner: GitTargetLeaseOwner::agent_workspace_repair(targeted.id.as_str()),
+        })
+        .await
+        .expect("acquire direct-update target lease")
+    else {
+        panic!("direct update fixture should acquire its target lease");
+    };
+    let mut leased = targeted.clone();
+    leased.git_common_dir = Some(
+        target_identity
+            .git_common_dir()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    leased.target_ref = Some(target_identity.full_ref().to_string());
+    leased.target_identity_version = Some(AGENT_WORKSPACE_REPAIR_TARGET_IDENTITY_VERSION);
+    leased.target_lease_epoch = Some(fencing_epoch);
+    leased.updated_at += chrono::Duration::microseconds(1);
+    let leased_updated_at = match repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt: leased,
+            expected_phase: AgentWorkspaceRepairPhase::Ready,
+            expected_updated_at: targeted.updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .expect("checkpoint direct-update target lease")
+    {
+        AgentWorkspaceRepairAttemptTransitionOutcome::Applied(attempt) => attempt.updated_at,
+        outcome => panic!("direct-update target lease must apply, got {outcome:?}"),
+    };
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::with_agent_run_repo(Arc::clone(
+        &agent_run_repo,
+    )));
+
+    let _routed = super::route_agent_workspace_pr_autofix_if_needed_with_notifications(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        &worktree,
+        101,
+        &conversation_id,
+        route_workspace_repo,
+        Some(agent_run_repo),
+        Some(Arc::clone(&repair_repo)),
+        Some(branch_update_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        None,
+        Some(&project),
+        None,
+    )
+    .await
+    .expect("a busy worktree must not surface as a routing error");
+
+    let current = repair_repo
+        .get_current_repair_attempt(&conversation_id)
+        .await
+        .expect("load retained attempt")
+        .expect("attempt remains current");
+    let push_branch_calls = github.state().push_branch_calls;
+    BehindBaseGateOutcome {
+        push_branch_calls,
+        base_update_target_commit: current.base_update_target_commit.clone(),
+        attempt_phase: current.phase,
+        attempt_updated_at: current.updated_at,
+        expected_attempt_updated_at: leased_updated_at,
+        base_update_events: workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("list route events")
+            .into_iter()
+            .filter(|event| event.step == "pr_base_update")
+            .count(),
+    }
+}
+
+/// Proof obligation 5: the poller never merges or pushes from base while review work owns the
+/// worktree. A mid-review base merge changes the reviewed delta underneath the running reviewer.
+#[tokio::test]
+async fn behind_base_update_is_rejected_while_the_reviewer_is_running() {
+    behind_base_update_with_busy_worktree(
+        "behind-base-reviewer-running",
+        crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Reviewing,
+        None,
+        false,
+        false,
+    )
+    .await
+    .assert_no_base_update("reviewer running");
+}
+
+#[tokio::test]
+async fn behind_base_update_is_rejected_while_a_review_fixer_is_active() {
+    behind_base_update_with_busy_worktree(
+        "behind-base-review-fixer",
+        crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Blocked,
+        Some(crate::domain::entities::WORKSPACE_REVIEW_FIXER_STATUS_RUNNING),
+        false,
+        false,
+    )
+    .await
+    .assert_no_base_update("review fixer active");
+}
+
+/// Gap 3's TOCTOU case: an agent run is mutating the worktree when the poller decides to update.
+#[tokio::test]
+async fn behind_base_update_is_rejected_while_an_agent_run_is_active() {
+    behind_base_update_with_busy_worktree(
+        "behind-base-active-run",
+        crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Idle,
+        None,
+        true,
+        false,
+    )
+    .await
+    .assert_no_base_update("active agent run");
+}
+
+/// Proof obligation 7: an unreadable gate must reject, never fall through to a merge and push.
+#[tokio::test]
+async fn behind_base_update_is_rejected_when_the_review_gate_cannot_be_read() {
+    behind_base_update_with_busy_worktree(
+        "behind-base-unreadable-gate",
+        crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Idle,
+        None,
+        false,
+        true,
+    )
+    .await
+    .assert_no_base_update("unreadable review gate");
+}
+
+/// Control for the four rejection cases above: with the very same fixture and an idle worktree,
+/// the base update really does merge and push. Without this, the gate tests could pass vacuously.
+#[tokio::test]
+async fn behind_base_update_proceeds_when_the_worktree_is_idle() {
+    let outcome = behind_base_update_with_busy_worktree(
+        "behind-base-idle-control",
+        crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Idle,
+        None,
+        false,
+        false,
+    )
+    .await;
+
+    assert_eq!(
+        outcome.push_branch_calls, 1,
+        "an idle worktree must still receive its base update"
+    );
+    assert!(
+        outcome.base_update_target_commit.is_some(),
+        "an idle base update must reserve its target commit"
+    );
+    assert_eq!(
+        outcome.base_update_events, 1,
+        "an idle base update must record its route event"
+    );
+}
