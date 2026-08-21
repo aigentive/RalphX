@@ -298,7 +298,7 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
         .await
     {
         Ok(pr) => pr,
-        Err(error) if matches!(error, AppError::GithubRateLimited { .. }) => {
+        Err(AppError::GithubRateLimited { .. }) => {
             note_github_rate_limited(&deps);
             return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
                 GITHUB_RATE_LIMITED_SKIP_REASON,
@@ -431,7 +431,7 @@ async fn reconcile_linked_agent_workspace_pr(
         .await
     {
         Ok(status) => status,
-        Err(error) if matches!(error, AppError::GithubRateLimited { .. }) => {
+        Err(AppError::GithubRateLimited { .. }) => {
             note_github_rate_limited(&deps);
             return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
                 GITHUB_RATE_LIMITED_SKIP_REASON,

@@ -1613,11 +1613,12 @@ async fn verified_terminal_workspace_is_reconciled_without_any_github_call() {
         outcome,
         AgentWorkspaceExternalPrReconciliationOutcome::Skipped("workspace_terminal_verified")
     );
-    let state = github.state();
-    assert_eq!(state.check_pr_status_calls, 0);
-    assert_eq!(state.fetch_pr_detail_calls, 0);
-    assert_eq!(state.find_latest_pr_by_head_branch_calls, 0);
-    drop(state);
+    {
+        let state = github.state();
+        assert_eq!(state.check_pr_status_calls, 0);
+        assert_eq!(state.fetch_pr_detail_calls, 0);
+        assert_eq!(state.find_latest_pr_by_head_branch_calls, 0);
+    }
     assert!(workspace_repo
         .list_publication_events(&conversation_id)
         .await
