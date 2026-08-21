@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -197,6 +199,24 @@ pub trait AgentWorkspaceRepairRepository: Send + Sync {
         &self,
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentWorkspaceRepairAttempt>>;
+
+    /// Get the current (unsettled) repair attempt for each of several conversations.
+    ///
+    /// Conversations with no unsettled attempt are absent from the map. Implementations should
+    /// batch this when backed by a database; the default loops so non-database implementations
+    /// need no change.
+    async fn get_current_repair_attempts_for_conversations(
+        &self,
+        conversation_ids: &[ChatConversationId],
+    ) -> AppResult<HashMap<ChatConversationId, AgentWorkspaceRepairAttempt>> {
+        let mut attempts = HashMap::new();
+        for conversation_id in conversation_ids {
+            if let Some(attempt) = self.get_current_repair_attempt(conversation_id).await? {
+                attempts.insert(conversation_id.clone(), attempt);
+            }
+        }
+        Ok(attempts)
+    }
 
     /// Returns the latest durable generation, including settled generations. Legacy import is
     /// allowed only when this returns `None` so stale projections can never revive an old flow.

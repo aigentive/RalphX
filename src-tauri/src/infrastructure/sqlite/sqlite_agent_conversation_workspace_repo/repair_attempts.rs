@@ -1,5 +1,7 @@
 use super::*;
 
+use std::collections::HashMap;
+
 use crate::domain::entities::{
     AgentWorkspacePrAutofixIssueKind, AgentWorkspaceRepairAttempt, AgentWorkspaceRepairAttemptId,
     AgentWorkspaceRepairContinuation, AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectId,
@@ -17,6 +19,10 @@ use crate::domain::repositories::{
     SettleAndStartAgentWorkspaceRepairSuccessorOutcome, StartOrJoinAgentWorkspaceRepairAttempt,
     StartOrJoinAgentWorkspaceRepairAttemptOutcome,
 };
+
+/// SQLite's default `SQLITE_MAX_VARIABLE_NUMBER`, with headroom for bound values outside the
+/// `IN (...)` list.
+const SQLITE_BIND_PARAMETER_LIMIT: usize = 900;
 
 fn invalid_repair_row_value(
     column: usize,
@@ -181,6 +187,36 @@ fn load_current_repair_attempt(
     )
     .optional()
     .map_err(Into::into)
+}
+
+fn load_current_repair_attempts(
+    conn: &Connection,
+    conversation_ids: &[String],
+) -> AppResult<HashMap<ChatConversationId, AgentWorkspaceRepairAttempt>> {
+    let mut attempts = HashMap::new();
+    for chunk in conversation_ids.chunks(SQLITE_BIND_PARAMETER_LIMIT) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        // The `settled_at IS NULL` predicate is copied verbatim from
+        // `load_current_repair_attempt`. `idx_agent_workspace_repair_attempts_one_active` is a
+        // UNIQUE partial index over exactly this predicate, so at most one row per conversation
+        // can match and the single-item `LIMIT 1` has nothing to disambiguate.
+        let sql = format!(
+            "SELECT * FROM agent_workspace_repair_attempts
+             WHERE conversation_id IN ({placeholders}) AND settled_at IS NULL"
+        );
+        let mut statement = conn.prepare(&sql)?;
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                row_to_repair_attempt(row)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        for attempt in rows {
+            attempts.insert(attempt.conversation_id.clone(), attempt);
+        }
+    }
+    Ok(attempts)
 }
 
 fn load_latest_repair_attempt(
@@ -585,6 +621,22 @@ impl AgentWorkspaceRepairRepository for SqliteAgentConversationWorkspaceReposito
         let conversation_id = conversation_id.as_str().to_string();
         self.db
             .run(move |conn| load_current_repair_attempt(conn, &conversation_id))
+            .await
+    }
+
+    async fn get_current_repair_attempts_for_conversations(
+        &self,
+        conversation_ids: &[ChatConversationId],
+    ) -> AppResult<HashMap<ChatConversationId, AgentWorkspaceRepairAttempt>> {
+        if conversation_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conversation_ids: Vec<String> = conversation_ids
+            .iter()
+            .map(|conversation_id| conversation_id.as_str().to_string())
+            .collect();
+        self.db
+            .run(move |conn| load_current_repair_attempts(conn, &conversation_ids))
             .await
     }
 

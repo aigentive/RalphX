@@ -974,3 +974,104 @@ async fn terminated_repair_effect_is_closed_forever_and_releases_the_attempt_slo
         "the replay must not mutate the terminated row"
     );
 }
+
+/// The sidebar listing replaces per-conversation current-attempt reads with one batched pass, so
+/// the batched result must equal the map of the single-item results: unsettled attempts present,
+/// settled and absent ones missing entirely.
+#[tokio::test]
+async fn current_repair_attempts_batch_matches_single_item_reads() {
+    let db = SqliteTestDb::new("sqlite_repair_attempts_batch_tests");
+    let repo = SqliteAgentConversationWorkspaceRepository::from_shared(db.shared_conn());
+
+    // `ChatConversationId` is a UUID newtype: non-UUID strings all parse to `Uuid::nil()`, so
+    // these must be generated rather than named.
+    let unsettled = ChatConversationId::new();
+    let settled = ChatConversationId::new();
+    let no_attempt = ChatConversationId::new();
+
+    for (index, conversation_id) in [&unsettled, &settled, &no_attempt].into_iter().enumerate() {
+        db.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO chat_conversations (id, context_type, context_id, created_at, updated_at)
+                 VALUES (?1, 'project', 'project-repair', ?2, ?2)",
+                rusqlite::params![conversation_id.as_str(), Utc::now().to_rfc3339()],
+            )
+            .expect("seed repair conversation");
+        });
+        let mut workspace = workspace(conversation_id.clone());
+        workspace.branch_name = format!("ralphx/project-repair/agent-{index}");
+        workspace.worktree_path = format!("/tmp/ralphx/project-repair/agent-{index}");
+        repo.create_or_update(workspace)
+            .await
+            .expect("persist workspace");
+    }
+
+    let unsettled_attempt = repair_attempt(unsettled.clone());
+    let unsettled_attempt_id = unsettled_attempt.id.clone();
+    repo.start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+        attempt: unsettled_attempt,
+        reason: "batched read fixture".to_string(),
+        verified_newer_base: false,
+        compatibility_projection: None,
+        events: Vec::new(),
+    })
+    .await
+    .expect("start unsettled attempt");
+
+    repo.start_or_join_repair_attempt(StartOrJoinAgentWorkspaceRepairAttempt {
+        attempt: repair_attempt(settled.clone()),
+        reason: "batched read fixture".to_string(),
+        verified_newer_base: false,
+        compatibility_projection: None,
+        events: Vec::new(),
+    })
+    .await
+    .expect("start attempt to settle");
+    db.with_connection(|conn| {
+        conn.execute(
+            // The table CHECK requires `outcome` and `settled_at` to be set together.
+            "UPDATE agent_workspace_repair_attempts
+             SET settled_at = ?2, outcome = 'succeeded'
+             WHERE conversation_id = ?1",
+            rusqlite::params![settled.as_str(), Utc::now().to_rfc3339()],
+        )
+        .expect("settle attempt");
+    });
+
+    let conversation_ids = vec![unsettled.clone(), settled.clone(), no_attempt.clone()];
+    let batched = repo
+        .get_current_repair_attempts_for_conversations(&conversation_ids)
+        .await
+        .expect("batched current attempts");
+
+    for conversation_id in &conversation_ids {
+        let single = repo
+            .get_current_repair_attempt(conversation_id)
+            .await
+            .expect("single-item current attempt");
+        assert_eq!(
+            batched
+                .get(conversation_id)
+                .map(|attempt| attempt.id.clone()),
+            single.map(|attempt| attempt.id),
+            "batched and single-item reads disagree for {conversation_id:?}"
+        );
+    }
+
+    assert_eq!(batched.len(), 1);
+    assert_eq!(
+        batched.get(&unsettled).map(|attempt| attempt.id.clone()),
+        Some(unsettled_attempt_id)
+    );
+}
+
+#[tokio::test]
+async fn current_repair_attempts_batch_short_circuits_on_empty_input() {
+    let (_db, repo, _conversation_id) = setup_repo();
+
+    assert!(repo
+        .get_current_repair_attempts_for_conversations(&[])
+        .await
+        .expect("empty batched current attempts")
+        .is_empty());
+}
