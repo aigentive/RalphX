@@ -1,195 +1,115 @@
 # Installing RalphX and running it for the first time
 
-Install the signed Mac app, connect an authenticated agent runtime, and create the first project workspace RalphX will use for your conversations. At the end, you will have RalphX open with a project ready for the next guide.
+Install the signed Mac app, connect an authenticated agent runtime, and create the first project RalphX will work in. At the end you will have RalphX open with a project ready for the next guide.
 
 **Before you start:** nothing — this is the first guide
 
 ## Check the requirements
 
-1. Confirm that your Mac runs macOS 13 Ventura or later.
+1. Confirm your Mac runs macOS 13 Ventura or later.
 
-2. Choose one supported agent runtime: the Claude CLI or the Codex CLI.
+2. Install one supported agent runtime: the [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) or the [Codex CLI](https://developers.openai.com/codex/cli).
 
-3. Install your chosen CLI by following its official instructions: [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) or [Codex CLI](https://developers.openai.com/codex/cli).
+   This is your *agent harness* — the AI runtime RalphX drives. RalphX is not itself a model; it launches and supervises the CLI you install here. See [RalphX concepts](concepts.md) if that distinction is new.
 
-4. Authenticate the CLI in Terminal before opening RalphX.
+   One is enough. You can add the other later, and you can change which one each agent uses without reinstalling anything.
 
-5. Keep the authenticated CLI available on your Mac; RalphX needs an installed, authenticated runtime to run agents.
+3. Authenticate that CLI in Terminal before opening RalphX.
 
-6. If you are contributing to RalphX rather than installing the app, use the [build-from-source guide](../development/build-from-source.md).
+   Follow the CLI's own login instructions. RalphX stores no credential of its own — it reuses the session already in your `claude` or `codex` CLI, so a CLI that cannot run on its own cannot run under RalphX either.
 
 ## Install RalphX with Homebrew
 
-1. Open Terminal.
-
-2. Add the RalphX Homebrew tap:
+1. Add the RalphX tap and install the signed app in Terminal.
 
    ```sh
    brew tap aigentive/ralphx
-   ```
-
-3. Install the signed RalphX app:
-
-   ```sh
    brew install --cask ralphx
    ```
 
-4. Wait for Homebrew to finish installing the app.
+2. Open RalphX from Applications or Spotlight once Homebrew finishes.
 
-5. Open RalphX from Applications or Spotlight.
+   For upgrades, stale tap metadata, repair, and uninstalling later, use the [Homebrew installation guide](../install/homebrew.md) rather than repeating these commands.
 
-6. Use the [Homebrew installation guide](../install/homebrew.md) later for upgrades, stale tap metadata, repair, or uninstalling.
+### If you do not use Homebrew
 
-## Use the signed release instead
+1. Download the signed build for your Mac from the [RalphX GitHub Releases page](https://github.com/aigentive/ralphx.app/releases).
 
-1. If you do not use Homebrew, open the [RalphX GitHub Releases page](https://github.com/aigentive/ralphx.app/releases).
+2. Move the downloaded app into Applications, then open it.
 
-2. Download the signed build for your Mac.
-
-3. Install the downloaded app in Applications.
-
-4. Open RalphX.
-
-5. Return to the Homebrew instructions above if you prefer Homebrew to manage future upgrades.
+   Homebrew is still the easier path for future upgrades. You can switch to it later without reinstalling from scratch.
 
 ## Set up your provider
 
-1. Open RalphX for the first time.
+1. Click **Set Up Provider** on the welcome screen.
 
-2. Find the **Provider** step on the welcome screen.
+   The **Provider** step is the first of the welcome screen's steps, and it reads “Choose your agent harness.” until a provider is ready.
 
 ![The Provider step of the RalphX welcome screen](../../assets/public/guides/welcome-provider-step.png)
 
-3. Click **Set Up Provider** when RalphX asks you to choose an agent harness.
+2. Select the provider matching the CLI you installed, and complete the setup RalphX shows.
 
-4. Select the provider that matches the CLI you installed and authenticated.
+3. Confirm the **Provider** step now reads “Agent harness ready.”
 
-5. Complete the provider setup shown by RalphX.
+   Do not continue until it does. Agent work cannot start without an authenticated provider, and every later guide assumes this step succeeded.
 
-6. Return to the welcome screen after the provider is ready.
+## Create your first project
 
-7. Confirm that the **Provider** step now shows that your agent harness is ready.
+1. Click **Start Your First Project** on the welcome screen.
 
-8. Do not continue until RalphX can see an authenticated provider; agent work cannot start without one.
+   This is the same button you used a moment ago — its label changes as you progress. If you already have a project, it reads **Continue** instead.
 
-## Start your first project
+2. Choose how to start in the **Create New Project** dialog.
 
-1. Find the **Project** step on the welcome screen.
+   **Add Existing Repository** points RalphX at a folder already under version control. This is the usual choice.
 
-2. Click **Start Your First Project**.
+   **Clone Repository** copies a remote repository onto your machine first.
 
-3. Read the **Create New Project** dialog before choosing how to start.
+   **Create New Repository** starts a brand-new project in an empty folder.
 
 ![The RalphX Project Creation Wizard](../../assets/public/guides/project-creation-wizard.png)
 
-4. Click **Add Existing Repository** to point RalphX at a folder you already have set up with version control.
+3. Click **Browse** beside **Location** and choose the project folder.
 
-   Click **Clone Repository** instead to copy an existing remote repository onto your machine first.
+   **Location** is the only required field in the dialog; RalphX marks it with an asterisk and inspects the folder once you set it.
 
-   Click **Create New Repository** instead to start a brand-new project in an empty folder.
+4. Leave **Project Name** empty, or type a short name.
 
-5. Use a folder for the project you want RalphX to work with.
+   The field is optional. Left empty, RalphX infers the name from the folder. Set it when you want a label that is easier to recognize among several projects.
 
-6. Keep your current working directory separate from the worktrees RalphX creates for agent work.
+5. Set **Base branch** under **Git Settings**.
 
-## Choose the project location
+   This is the branch your work starts from and is meant to merge back into — normally your team's integration branch, such as `main`, not a feature branch.
 
-1. Find **Location** in the project dialog.
+6. Open **Advanced Settings** and check **Worktree Parent Directory**.
 
-2. Click **Browse**.
+   RalphX creates a separate checkout — a *worktree* — for each piece of agent work, and this is where those go. Keep the default unless you need them on another local volume or in a directory your organization requires.
 
-3. Choose the local folder that contains the project RalphX should use.
+   Whichever you choose, it needs room for several complete checkouts of your project.
 
-4. Confirm the chosen folder in **Location**.
+   Your own working directory is never touched by agent work. That isolation is the point of the worktree, and it is worth knowing before an agent starts editing.
 
-5. Use a folder you can access and that has the project files you want to discuss or change.
+7. Click **Create Project**.
 
-6. Let RalphX inspect the folder before moving to the Git settings.
+   The button reads **Creating...** while RalphX works. Leave the app open until it finishes.
 
-## Name the project
+   Use **Cancel** only if you opened this dialog outside the first-run flow and want to leave without creating anything.
 
-1. Review the **Project Name** field.
-
-2. Leave the optional name empty to let RalphX infer it from the selected folder.
-
-3. Enter a short name if you want a different project label in RalphX.
-
-4. Keep the name recognizable; it helps you distinguish workspaces later.
-
-5. Continue when the project name matches the workspace you want to create.
-
-## Choose Git settings
-
-1. Find the **Git Settings** section.
-
-2. Open **Base branch**.
-
-3. Select the branch that should be the starting point for RalphX work.
-
-4. Choose the branch your team normally uses as the integration branch.
-
-5. Review the displayed worktree location.
-
-6. RalphX uses that location for isolated agent work instead of changing your active working directory.
-
-7. Keep the default if it is suitable for your Mac and available disk space.
-
-## Choose the worktree parent directory
-
-1. Open **Advanced Settings**.
-
-2. Find **Worktree Parent Directory**.
-
-3. Keep the default directory if you do not need a different location.
-
-4. Change it only when you need RalphX worktrees on another local volume or in an organization-approved directory.
-
-5. Choose a directory with enough space for project worktrees.
-
-6. Remember the location if you want to inspect generated worktrees outside RalphX later.
-
-7. Leave the advanced section when the worktree parent directory is correct.
-
-## Create the workspace
-
-1. Recheck **Location**.
-
-2. Recheck **Base branch**.
-
-3. Recheck **Worktree Parent Directory** if you changed it.
-
-4. Click **Create Project**.
-
-5. Wait while RalphX creates the project workspace.
-
-6. Do not close RalphX while project creation is in progress.
-
-7. Return to the welcome screen when creation finishes.
-
-8. Confirm that the **Project** step reports that the project workspace is ready.
-
-9. Click **Continue** when RalphX offers it after a project already exists.
-
-10. Use **Cancel** only when you opened the project dialog outside the first-run flow and want to leave without creating a project.
+8. Click **Continue** when the **Project** step reports “Project workspace ready.”
 
 ## Optionally connect Atlassian
 
-1. Find the **Atlassian** step on the welcome screen.
+1. Click the **Atlassian** step to connect Jira and Confluence now, or skip it.
 
-2. Treat this step as optional; it provides Jira and Confluence context when you choose to connect it.
+   This step is optional and nothing later depends on it. It adds Jira and Confluence context to agent conversations.
 
-3. Click **Atlassian** only if you want to set up that integration now.
-
-4. Complete the integration flow shown by RalphX.
-
-5. Skip it for now if you do not need Atlassian context.
-
-6. Return later through Settings → **Integrations** → **Atlassian** when you want to connect it.
+   You can connect it any time afterwards through Settings → **Integrations** → **Atlassian**, covered in [Connecting RalphX to Jira and Confluence](integrations/connect-jira-and-confluence.md).
 
 ## What you have now
 
-RalphX is installed on your Mac and has an authenticated agent provider available. You also have a project workspace with a selected base branch and a worktree parent directory for isolated agent work. The optional Atlassian connection is either configured or safely left for later.
+RalphX is installed on your Mac with an authenticated agent provider available. You have a project with a base branch set and a worktree parent directory chosen, so agent work has somewhere isolated to happen. The optional Atlassian connection is either configured or safely left for later.
 
 ## Next
 
 - [Finding your way around](02-tour-of-the-app.md)
+- [RalphX concepts](concepts.md) — if *worktree*, *harness*, or *provider* did more work above than you expected
