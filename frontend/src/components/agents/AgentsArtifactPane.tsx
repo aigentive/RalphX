@@ -3309,7 +3309,9 @@ function AgentPlanPanel({
     });
   const planActionHint =
     !tasksEnabled && isPlanApproved
-      ? "Tasks is off. Implement this approved plan directly."
+      ? // Empty (not null) suppresses the banner description entirely; null would
+        // fall through the ?? in planLifecycleDescription into generic approved-plan copy.
+        ""
       : buildPlanActionHint({
           assessment: planComplexityQuery.data,
           isAssessing: isPlanRecommendationPending,
