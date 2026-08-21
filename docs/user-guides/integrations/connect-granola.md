@@ -8,19 +8,19 @@ Connect Granola so RalphX can find meeting notes and use them as context in a co
 
 1. Open Settings → **Integrations** → **Granola**.
 
-   The Granola card is labeled “Granola note references.”
+   The Granola card is labeled “Granola note references.”.
 
-   Its status banner initially says “Note references not ready.”
+   Its status banner initially says “Note references not ready”.
 
 2. Read the in-panel **Get a Granola API key** help block and follow it exactly.
 
-   “Open the Granola desktop app, go to Settings -> Connectors -> API keys, create a new key, choose the note scopes, then paste it here.”
+   “Open the Granola desktop app, go to Settings -> Connectors -> API keys, create a new key, choose the note scopes, then paste it here.”.
 
    Use the linked [Granola API docs](https://docs.granola.ai/introduction) if you need more detail before creating the key.
 
    Copy the new API key from Granola.
 
-   Choose note scopes that include the notes you expect RalphX to search.
+   Choose note scopes that include the notes you expect RalphX to search. For the exact scope names available in Granola, see [Granola's API documentation](https://docs.granola.ai/introduction) — RalphX cannot verify Granola's scope names from its own source.
 
    Keep the key private after copying it.
 
@@ -28,13 +28,13 @@ Connect Granola so RalphX can find meeting notes and use them as context in a co
 
 1. Paste the API key into **API token**.
 
-   The empty field says “Paste Granola API token.”
+   The empty field says “Paste Granola API token”.
 
-   Once a token is stored, the field instead says “Stored token unchanged.”
+   Once a token is stored, the field instead says “Stored token unchanged”.
 
-   The helper text says “Used for @granola note references and prompt context.”
+   The helper text says “Used for @granola note references and prompt context.”.
 
-   RalphX stores this token itself. This differs from the GitHub integration, which delegates authentication to the local `gh` CLI instead of storing a token in RalphX.
+   RalphX stores the token you paste here and uses it for all Granola requests.
 
 2. Click **Save API token**.
 
@@ -42,17 +42,35 @@ Connect Granola so RalphX can find meeting notes and use them as context in a co
 
    Saved does not yet prove that the API key works with Granola.
 
-   It is safe to leave the field unchanged when it says “Stored token unchanged.”
+   It is safe to leave the field unchanged when it says “Stored token unchanged”.
 
 3. Click **Validate**.
 
    Validation checks the saved token with Granola.
 
-   A successful connection changes the banner to “Note references enabled.”
+   A successful connection changes the banner to “Note references enabled”.
 
    Keep the settings panel open until validation finishes.
 
    If validation fails, create or copy a usable Granola key with the note scopes you need, then save and validate it again.
+
+## Recover from a validation error
+
+1. Enter a value in **API token** before clicking **Save API token** if the panel says "Granola API token cannot be empty"
+
+   The token field must contain text before RalphX can save it. Paste the API key you copied from the Granola desktop app.
+
+2. Paste a fresh key and try again if the panel says "Failed to save Granola API token"
+
+   This message means RalphX encountered a problem writing the token. Open the Granola desktop app, create a new API key in Settings → Connectors → API keys, paste it into **API token**, and click **Save API token**.
+
+3. Click **Validate** if the panel says "Granola API token was saved, but note references are still disabled"
+
+   Saving and validating are separate steps. The key is stored but RalphX has not yet confirmed that Granola accepts it. Click **Validate** to complete the check.
+
+4. Create a replacement key in Granola if the panel says "Failed to validate Granola integration"
+
+   Open the Granola desktop app and go to Settings → Connectors → API keys to create a new key. Choose note scopes that cover the meetings you expect RalphX to search. Paste the new key into **API token**, click **Save API token**, then click **Validate**.
 
 ## Use Granola notes as context
 

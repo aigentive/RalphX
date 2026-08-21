@@ -12,7 +12,7 @@ Connect your Linear account so you can bring relevant issues into a RalphX conve
 
    Create a personal API key that can read the teams and issues you want RalphX to use.
 
-   Follow [Linear's API and webhooks documentation](https://linear.app/docs/api-and-webhooks) if your workspace controls who can create keys or you need to choose permissions.
+   Follow [Linear's API and webhooks documentation](https://linear.app/docs/api-and-webhooks) if your workspace controls who can create keys or you need to confirm the minimum required permissions. RalphX does not verify Linear's exact scope names from its own source, so use Linear's documentation before creating the key.
 
    Copy the new key before leaving Linear.
 
@@ -32,19 +32,19 @@ Connect your Linear account so you can bring relevant issues into a RalphX conve
 
 1. Open Settings → **Integrations** → **Linear**.
 
-   The Linear card is labeled “Linear issue references.”
+   The Linear card is labeled “Linear issue references.”.
 
-   Its status banner initially says “Issue references not ready.”
+   Its status banner initially says “Issue references not ready”.
 
 2. Paste the token into **API token**.
 
-   The empty field says “Paste Linear API token.”
+   The empty field says “Paste Linear API token”.
 
-   Once a token is stored, the field instead says “Stored token unchanged.”
+   Once a token is stored, the field instead says “Stored token unchanged”.
 
-   The helper text says “Used for @linear issue search and prompt context.”
+   The helper text says “Used for @linear issue search and prompt context.”.
 
-   RalphX stores this token itself. This differs from the GitHub integration, which delegates authentication to the local `gh` CLI instead of storing a token in RalphX.
+   RalphX stores the token you paste here and uses it for all Linear requests.
 
 3. Click **Save API token**.
 
@@ -56,11 +56,29 @@ Connect your Linear account so you can bring relevant issues into a RalphX conve
 
    Validation checks the saved token with Linear.
 
-   A successful connection changes the banner to “Issue references enabled.”
+   A successful connection changes the banner to “Issue references enabled”.
 
    Keep the Linear settings panel open until the result settles.
 
    If validation fails, return to Linear, create or copy a usable personal API key, replace the value in **API token**, and save and validate again.
+
+## Recover from a validation error
+
+1. Enter a value in **API token** before clicking **Save API token** if the panel says "Linear API token cannot be empty"
+
+   The token field must contain text before RalphX can save it. Paste the personal API key you copied from Linear.
+
+2. Paste a fresh token and try again if the panel says "Failed to save Linear API token"
+
+   This message means RalphX encountered a problem writing the token. Paste a new personal API key from Linear into **API token** and click **Save API token**.
+
+3. Click **Validate** if the panel says "Linear API token was saved, but issue references are still disabled"
+
+   Saving and validating are separate steps. The token is stored but RalphX has not yet confirmed that Linear accepts it. Click **Validate** to complete the check.
+
+4. Return to Linear and create a new personal API key if the panel says "Failed to validate Linear integration"
+
+   Paste the new key into **API token**, click **Save API token**, then click **Validate**.
 
 ## Use Linear issues as context
 

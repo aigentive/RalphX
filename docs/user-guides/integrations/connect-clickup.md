@@ -12,6 +12,8 @@ Connect ClickUp so RalphX can find tasks for the workspace you choose and use th
 
    [ClickUp's API documentation](https://help.clickup.com/hc/en-us/articles/6303422883095-Create-your-own-app-with-the-ClickUp-API) confirms that a personal token uses the same access as your ClickUp account.
 
+   No scope selection is needed when you generate the token — a personal token inherits your full ClickUp account permissions automatically.
+
    Use a personal token, not an OAuth client ID or client secret.
 
    The RalphX panel does not include these token-creation instructions; they are a ClickUp-side setup step.
@@ -26,19 +28,19 @@ Connect ClickUp so RalphX can find tasks for the workspace you choose and use th
 
 1. Open Settings → **Integrations** → **ClickUp**.
 
-   The ClickUp card is labeled “ClickUp ticket references.”
+   The ClickUp card is labeled “ClickUp ticket references.”.
 
-   Its status banner initially says “Task references not ready.”
+   Its status banner initially says “Task references not ready”.
 
 2. Paste the token into **API token**.
 
-   The empty field says “Paste ClickUp personal API token.”
+   The empty field says “Paste ClickUp personal API token”.
 
-   Once a token is stored, the field instead says “Stored token unchanged.”
+   Once a token is stored, the field instead says “Stored token unchanged”.
 
-   The helper text says “Used for ClickUp ticket search and the unified ticketing dashboard.”
+   The helper text says “Used for ClickUp ticket search and the unified ticketing dashboard.”.
 
-   RalphX stores this token itself. This differs from the GitHub integration, which delegates authentication to the local `gh` CLI instead of storing a token in RalphX.
+   RalphX stores the token you paste here and uses it for all ClickUp requests.
 
 3. Click **Save API token**, then click **Validate**.
 
@@ -46,7 +48,29 @@ Connect ClickUp so RalphX can find tasks for the workspace you choose and use th
 
    It does not complete this integration: validation must succeed before RalphX can show the workspace selector.
 
-   When validation succeeds, the banner changes to “Task references enabled.”
+   When validation succeeds, the banner changes to “Task references enabled”.
+
+## Recover from a validation error
+
+1. Enter a value in **API token** before clicking **Save API token** if the panel says "ClickUp API token cannot be empty"
+
+   The token field must contain text before RalphX can save it. Paste the personal API token you copied from ClickUp.
+
+2. Paste a fresh token and try again if the panel says "Failed to save ClickUp API token"
+
+   This message means RalphX encountered a problem writing the token. Paste a new personal API token from ClickUp into **API token**, click **Save API token**, then click **Validate**.
+
+3. Click **Validate** if the panel says "ClickUp API token was saved, but task references are still disabled"
+
+   Saving and validating are separate steps. The token is stored but RalphX has not yet confirmed that ClickUp accepts it. Click **Validate** to complete the check.
+
+4. Return to ClickUp and generate a new personal API token if the panel says "Failed to validate ClickUp integration"
+
+   Paste the new token into **API token**, click **Save API token**, then click **Validate**.
+
+5. Click **Validate** again and then choose the workspace if the panel says "Failed to select ClickUp workspace"
+
+   The workspace selector requires a confirmed token. Re-validating reloads the workspace list so you can complete the selection.
 
 ## Select the ClickUp workspace
 
@@ -54,13 +78,13 @@ Connect ClickUp so RalphX can find tasks for the workspace you choose and use th
 
    The **Workspace** selector appears only after **Validate** succeeds.
 
-   If it is loading, it reads “Loading workspaces...”; otherwise its initial option is “Select a workspace.”
+   If it is loading, it reads “Loading workspaces...”; otherwise its initial option is “Select a workspace”.
 
    This is a required second step. Saving a token without selecting a workspace leaves RalphX with no ClickUp tasks to load.
 
 2. Choose the workspace whose tasks you want RalphX to load.
 
-   The helper text says “Tasks load from the Spaces in the selected ClickUp Workspace.”
+   The helper text says “Tasks load from the Spaces in the selected ClickUp Workspace.”.
 
    Select the workspace that contains the Spaces relevant to your RalphX project.
 

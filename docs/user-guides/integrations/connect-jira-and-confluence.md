@@ -56,9 +56,18 @@ Connect your Atlassian site so RalphX can retrieve Jira issues and Confluence pa
 
 1. Wait for RalphX to finish checking both services after you click **Save and validate**.
 
-   A successful result means the credentials can be used for the connected site.
+   Unlike the Linear, ClickUp, and Granola panels, this one does not show a sentence describing the connection. Its banner title is a single word or short phrase, and it is the thing to read:
 
-   It does not grant access to Jira projects or Confluence spaces that your Atlassian account cannot already open.
+   | Banner title | What it means | What to do |
+   |---|---|---|
+   | **Not configured** | One of the three fields is still empty | Fill in **Site URL**, **Account email**, and **API token** |
+   | **Validation required** | The credentials are saved but not yet checked | Click **Save and validate** |
+   | **Invalid** | Atlassian rejected the site URL, email, or token | Correct the field Atlassian objected to and validate again |
+   | **Enabled** | The credentials work and the integration is live | Nothing — `@jira` and `@confluence` references now resolve |
+
+   **Enabled** is the state you are aiming for, and a successful **Save and validate** goes straight there. RalphX validates and enables in one operation, so there is no separate switch to flip afterwards.
+
+   A successful result does not grant access to Jira projects or Confluence spaces that your Atlassian account cannot already open.
 
 2. Update the credentials from this page if your Atlassian administrator changes the account's access.
 

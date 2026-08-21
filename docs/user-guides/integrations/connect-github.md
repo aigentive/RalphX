@@ -8,11 +8,7 @@ Connect the GitHub CLI on your Mac so RalphX can use the GitHub account you alre
 
 1. Install the GitHub CLI (`gh`) on your Mac.
 
-   RalphX uses the local GitHub CLI instead of asking you to paste a token into the app.
-
-   RalphX stores no GitHub token.
-
-   It reads the status of the `gh` CLI already installed on your Mac and uses its existing authentication.
+   GitHub is the one integration RalphX does not hold a credential for. It delegates GitHub authentication to the local `gh` CLI, reading that CLI's status and reusing its existing sign-in, rather than asking you to paste a token the way the Linear, ClickUp, Granola, and Atlassian panels do.
 
    Install `gh` using GitHub's normal installation method for macOS.
 
@@ -56,7 +52,7 @@ Connect the GitHub CLI on your Mac so RalphX can use the GitHub account you alre
 
 3. Read the connection status and account details.
 
-   A connected state shows “GitHub CLI authenticated.”
+   A connected state shows “GitHub CLI authenticated”.
 
    It also shows that `gh` is installed, the active host, and the active GitHub account.
 
@@ -66,25 +62,25 @@ Connect the GitHub CLI on your Mac so RalphX can use the GitHub account you alre
 
 ## Understand a status that is not connected
 
-1. Run `gh auth login` again when the page says “GitHub CLI not authenticated.”
+1. Run `gh auth login` again when the page says “GitHub CLI not authenticated”.
 
    Then return to Settings → **Integrations** → **GitHub** and click **Refresh**.
 
    RalphX gives this guidance when `gh` is installed but does not have a usable local sign-in.
 
-2. Re-authenticate when the page says “GitHub CLI credential rejected.”
+2. Re-authenticate when the page says “GitHub CLI credential rejected”.
 
    Your local GitHub CLI credential is present but GitHub did not accept it.
 
    Run `gh auth login` in a terminal, complete the flow, and click **Refresh** in RalphX.
 
-3. Wait and retry when the page says “GitHub temporarily unavailable.”
+3. Wait and retry when the page says “GitHub temporarily unavailable”.
 
    This means RalphX could not get a reliable response from GitHub at that moment.
 
    Click **Refresh** before starting another sign-in flow.
 
-4. Retry the status check when the page says “GitHub access could not be verified.”
+4. Retry the status check when the page says “GitHub access could not be verified”.
 
    This is a verification problem rather than proof that you need a new token.
 
@@ -92,7 +88,7 @@ Connect the GitHub CLI on your Mac so RalphX can use the GitHub account you alre
 
    If it continues, run `gh auth login` in a terminal and complete the sign-in flow again.
 
-5. Install `gh` when the page says “GitHub CLI unavailable.”
+5. Install `gh` when the page says “GitHub CLI unavailable”.
 
    RalphX cannot connect to GitHub through this page until the GitHub CLI is available.
 
