@@ -1,6 +1,6 @@
 # Codex CLI Multi-Harness Spec
 
-Status: implemented baseline; retained as the original parity map. Current runtime contracts live in `.claude/rules/multi-harness.md`, `.claude/rules/delegation-topology.md`, and `docs/user-guides/agent-harnesses.md`.
+Status: implemented baseline; retained as the original parity map. Current runtime contracts live in `.claude/rules/multi-harness.md`, `.claude/rules/delegation-topology.md`, and `docs/architecture/agent-harnesses.md`.
 
 ## 1. Goal
 

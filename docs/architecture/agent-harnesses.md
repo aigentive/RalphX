@@ -1,5 +1,7 @@
 # Agent Harnesses
 
+**Audience: maintainers.** This document describes how RalphX models and routes agent harnesses internally. If you are looking for how to set up and use a harness in the app, read [Using Claude Code with RalphX](../user-guides/configure/using-claude-code-with-ralphx.md) or [Using Codex with RalphX](../user-guides/configure/using-codex-with-ralphx.md) instead.
+
 RalphX can route different parts of the product through different agent harnesses. A harness is the external AI runtime RalphX launches, supervises, resumes, and parses events from.
 
 Today RalphX supports two harnesses:
@@ -50,16 +52,16 @@ RalphX displays only reasoning summaries or thinking deltas that the selected ha
 
 Claude can stream a running thinking block and later settle it with a measured duration when its CLI supplies block start/delta/stop events. Codex reasoning currently arrives as complete summarized items, so it renders settled without a duration. Both normalize into the same chat UI and persisted timeline contract.
 
-For the exact CLI flags, capability probing, native event shapes, persistence, failure cases, and tests, see [Agent Thinking Capture](../architecture/agent-thinking-capture.md).
+For the exact CLI flags, capability probing, native event shapes, persistence, failure cases, and tests, see [Agent Thinking Capture](agent-thinking-capture.md).
 
 ---
 
 ## Where you configure it
 
-Use the dedicated harness screens in the desktop app:
+Two settings surfaces own this:
 
-- **Settings → General → Execution Agents** for worker, reviewer, re-executor, and merger lanes
-- **Settings → Ideation → Ideation Agents** for ideation, verifier, and specialist lanes
+- **Models & Providers → Providers** validates the installed harness CLIs and enables a provider.
+- **Agents → Roles** sets the per-role provider, model, and effort defaults. Execution and ideation lanes are not separate screens — worker, reviewer, merger, ideation, and verifier are all agent roles in one list.
 
 RalphX stores harness settings with the same layered precedence used elsewhere:
 
