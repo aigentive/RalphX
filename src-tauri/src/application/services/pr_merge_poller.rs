@@ -498,6 +498,14 @@ impl PrPollerRegistry {
         Some((state.remaining, state.reset_at))
     }
 
+    /// Records a rate-limit rejection observed outside the poll loops into the shared budget.
+    ///
+    /// Callers that spend their own `gh` reads (external-PR reconciliation) must feed what they
+    /// learn back here, or every other consumer keeps burning calls against an exhausted window.
+    pub fn note_rate_limited(&self) {
+        note_rate_limited(&self.rate_limit);
+    }
+
     pub fn set_branch_update_repo(&self, repo: Arc<dyn BranchUpdateRepository>) {
         if let Ok(mut current) = self.branch_update_repo.write() {
             *current = Some(repo);

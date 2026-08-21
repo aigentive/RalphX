@@ -540,6 +540,19 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         fingerprint: Option<&str>,
     ) -> AppResult<()>;
 
+    /// Records that this workspace's publication PR was confirmed to belong to its own branch.
+    /// Set-once: an existing marker is left alone so the original verification time survives.
+    ///
+    /// Defaulted to a no-op because the marker is only an optimization — an implementor that
+    /// never records it keeps re-verifying, which is the pre-existing behavior, not a
+    /// correctness failure.
+    async fn mark_publication_association_verified(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     /// Persists a base-ahead detection transition for one workspace via a targeted column
     /// update. Required (not defaulted) so a forgotten implementor is a compile error rather
     /// than a silent fail-open that discards detection state.

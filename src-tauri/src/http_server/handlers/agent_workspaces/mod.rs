@@ -1709,12 +1709,19 @@ fn workspace_review_action_error(error: AppError) -> JsonError {
     let status = match &error {
         AppError::Validation(_)
         | AppError::Conflict(_)
+        | AppError::GithubRateLimited { .. }
         | AppError::WorkspaceReviewUnfinishedGitOperation => StatusCode::CONFLICT,
         AppError::NotFound(_) | AppError::ProjectNotFound(_) => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     let message = match error {
         AppError::Conflict(message) => message,
+        // Destructure rather than using `Display`, which already prefixes
+        // "GitHub rate limit exceeded: " and would state the cause twice.
+        AppError::GithubRateLimited { message } => format!(
+            "GitHub's API rate limit is exhausted, so this action can't be prepared right now. \
+             Wait for the limit to reset and try again. ({message})"
+        ),
         error => error.to_string(),
     };
     json_error(status, message, None)

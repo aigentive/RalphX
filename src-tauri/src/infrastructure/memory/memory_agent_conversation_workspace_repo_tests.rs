@@ -2316,6 +2316,128 @@ async fn workspace_review_auto_merge_restore_rejects_a_missing_publication_pr() 
         Some(guard)
     );
 }
+#[tokio::test]
+async fn publication_association_marker_is_set_once_and_leaves_updated_at_alone() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("publication-association-memory");
+    let before = repo
+        .create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    assert_eq!(before.publication_association_verified_at, None);
+
+    repo.mark_publication_association_verified(&conversation_id)
+        .await
+        .expect("marker should persist");
+    let first = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    let stamped = first
+        .publication_association_verified_at
+        .expect("marker should be recorded");
+    assert_eq!(
+        first.updated_at, before.updated_at,
+        "recording the marker is bookkeeping and must not bump updated_at"
+    );
+
+    repo.mark_publication_association_verified(&conversation_id)
+        .await
+        .expect("second marker write should be a no-op");
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist")
+            .publication_association_verified_at,
+        Some(stamped),
+        "the original verification time must survive re-verification"
+    );
+}
+
+#[tokio::test]
+async fn update_publication_clears_the_marker_only_when_the_pr_number_changes() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("publication-association-change-memory");
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .expect("workspace should persist");
+    repo.update_publication(
+        &conversation_id,
+        Some(1000),
+        None,
+        Some("open"),
+        Some("pushed"),
+    )
+    .await
+    .expect("initial publication should persist");
+    repo.mark_publication_association_verified(&conversation_id)
+        .await
+        .expect("marker should persist");
+    let verified_at = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist")
+        .publication_association_verified_at
+        .expect("marker should be recorded");
+
+    repo.update_publication(
+        &conversation_id,
+        Some(1000),
+        None,
+        Some("merged"),
+        Some("pushed"),
+    )
+    .await
+    .expect("same-PR update should persist");
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist")
+            .publication_association_verified_at,
+        Some(verified_at),
+        "an unchanged PR number keeps the verified association"
+    );
+
+    repo.update_publication(
+        &conversation_id,
+        Some(1001),
+        None,
+        Some("open"),
+        Some("pushed"),
+    )
+    .await
+    .expect("changed-PR update should persist");
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist")
+            .publication_association_verified_at,
+        None,
+        "a different PR number must invalidate the verified association"
+    );
+
+    repo.mark_publication_association_verified(&conversation_id)
+        .await
+        .expect("re-verification should persist");
+    repo.update_publication(&conversation_id, None, None, None, None)
+        .await
+        .expect("clearing publication should persist");
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist")
+            .publication_association_verified_at,
+        None,
+        "dropping the PR number must invalidate the verified association"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use crate::domain::entities::{
