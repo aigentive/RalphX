@@ -416,6 +416,26 @@ async fn reconcile_linked_agent_workspace_pr(
         .as_deref()
         .filter(|status| matches!(*status, "merged" | "closed"))
     {
+        // A workspace whose terminal status was recorded before the
+        // `publication_association_verified_at` marker was introduced (or that
+        // was never cleaned up by a full reconciliation pass) needs a one-time
+        // stamp so future triggers take the fast `workspace_terminal_verified`
+        // skip path. The recorded terminal status itself proves the association
+        // was verified on the terminalizing pass, so no GitHub call is needed.
+        if workspace.publication_association_verified_at.is_none() {
+            if let Err(error) = deps
+                .workspace_repo
+                .mark_publication_association_verified(&workspace.conversation_id)
+                .await
+            {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    error = %error,
+                    "Could not stamp verified association for terminal workspace; will retry next trigger"
+                );
+            }
+        }
+
         let terminalized = terminalize_agent_workspace_after_pr(
             Arc::clone(&deps.workspace_repo),
             Arc::clone(&deps.agent_run_repo),
