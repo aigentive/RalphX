@@ -404,6 +404,11 @@ pub struct StreamTimeoutsConfig {
     pub db_lock_wait_warn_ms: u64,
     #[serde(default = "default_db_lock_hold_warn_ms")]
     pub db_lock_hold_warn_ms: u64,
+    /// Minimum spacing between slow-lock WARN lines. A contended database can produce these
+    /// faster than they can be read or stored, so they are rate limited and the suppressed count
+    /// is reported on the next emitted line. `0` disables limiting.
+    #[serde(default = "default_db_lock_warn_interval_ms")]
+    pub db_lock_warn_interval_ms: u64,
 }
 
 fn default_max_wall_clock_secs() -> u64 {
@@ -510,6 +515,10 @@ fn default_db_lock_hold_warn_ms() -> u64 {
     250
 }
 
+fn default_db_lock_warn_interval_ms() -> u64 {
+    5_000
+}
+
 impl Default for StreamTimeoutsConfig {
     fn default() -> Self {
         Self {
@@ -550,6 +559,7 @@ impl Default for StreamTimeoutsConfig {
                 default_chat_payload_retention_checkpoint_batches(),
             db_lock_wait_warn_ms: default_db_lock_wait_warn_ms(),
             db_lock_hold_warn_ms: default_db_lock_hold_warn_ms(),
+            db_lock_warn_interval_ms: default_db_lock_warn_interval_ms(),
         }
     }
 }
@@ -1312,6 +1322,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.stream.db_lock_hold_warn_ms,
         "RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS"
+    );
+    env_u64!(
+        cfg.stream.db_lock_warn_interval_ms,
+        "RALPHX_STREAM_DB_LOCK_WARN_INTERVAL_MS"
     );
 
     // Reconciliation
