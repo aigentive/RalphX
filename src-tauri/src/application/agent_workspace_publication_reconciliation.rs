@@ -9,13 +9,17 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, ChatConversationRepository,
 };
 use crate::domain::services::GithubServiceTrait;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublicationCorrectionOutcome {
     Corrected,
     Skipped,
     Unverified,
+    /// PR detail was unreadable specifically because GitHub's rate limit is exhausted. Callers
+    /// treat this like `Unverified` for correction purposes but also feed the shared budget, so
+    /// the rest of the pass stops spending calls that cannot succeed.
+    RateLimited,
     NotApplicable,
 }
 
@@ -41,6 +45,15 @@ pub async fn correct_foreign_agent_workspace_publication(
     {
         Ok(detail) => detail,
         Err(error) => {
+            if matches!(error, AppError::GithubRateLimited { .. }) {
+                tracing::debug!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "Foreign publication correction deferred by the GitHub rate limit"
+                );
+                return Ok(PublicationCorrectionOutcome::RateLimited);
+            }
             tracing::warn!(
                 conversation_id = workspace.conversation_id.as_str(),
                 pr_number,
@@ -51,6 +64,23 @@ pub async fn correct_foreign_agent_workspace_publication(
         }
     };
     if detail.head_ref_name == workspace.branch_name {
+        // The PR provably belongs to this workspace's own branch. Record that once so the
+        // reconciliation gate can stop paying for this same proof on every future trigger.
+        // Best effort: a failed marker write only means the next pass re-verifies, which is
+        // exactly today's behavior, so it must never fail the correction.
+        if workspace.publication_association_verified_at.is_none() {
+            if let Err(error) = workspace_repo
+                .mark_publication_association_verified(&workspace.conversation_id)
+                .await
+            {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "Could not record the verified publication association; reconciliation will re-verify"
+                );
+            }
+        }
         return Ok(PublicationCorrectionOutcome::Skipped);
     }
 

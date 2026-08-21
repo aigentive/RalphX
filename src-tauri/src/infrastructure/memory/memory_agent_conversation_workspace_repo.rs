@@ -752,6 +752,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         }
 
         if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            if workspace.publication_pr_number != pr_number {
+                workspace.publication_association_verified_at = None;
+            }
             workspace.publication_pr_number = pr_number;
             workspace.publication_pr_url = pr_url.map(str::to_string);
             workspace.publication_pr_status = pr_status.map(str::to_string);
@@ -1093,6 +1096,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         }
 
         let now = Utc::now();
+        if workspace.publication_pr_number != publication.pr_number {
+            workspace.publication_association_verified_at = None;
+        }
         workspace.publication_pr_number = publication.pr_number;
         workspace.publication_pr_url = publication.pr_url;
         workspace.publication_pr_status = publication.pr_status;
@@ -1152,6 +1158,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             return Ok(false);
         }
         let now = Utc::now();
+        if workspace.publication_pr_number != publication.pr_number {
+            workspace.publication_association_verified_at = None;
+        }
         workspace.publication_pr_number = publication.pr_number;
         workspace.publication_pr_url = publication.pr_url;
         workspace.publication_pr_status = publication.pr_status;
@@ -1173,6 +1182,19 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .or_default()
             .extend(events);
         Ok(true)
+    }
+
+    async fn mark_publication_association_verified(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            // Set-once, and no `updated_at` bump — mirrors the SQLite statement.
+            if workspace.publication_association_verified_at.is_none() {
+                workspace.publication_association_verified_at = Some(Utc::now());
+            }
+        }
+        Ok(())
     }
 
     async fn get_publication_metadata_receipt(

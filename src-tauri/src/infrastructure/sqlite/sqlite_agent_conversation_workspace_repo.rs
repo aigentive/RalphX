@@ -171,6 +171,9 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> AppResult<AgentConversationWorks
         stale_base_detected_at: row
             .get::<_, Option<String>>("stale_base_detected_at")?
             .map(|value| parse_datetime(&value)),
+        publication_association_verified_at: row
+            .get::<_, Option<String>>("publication_association_verified_at")?
+            .map(|value| parse_datetime(&value)),
         status: AgentConversationWorkspaceStatus::from_str(&status)
             .unwrap_or(AgentConversationWorkspaceStatus::Active),
         created_at: parse_datetime(&created_at),
@@ -1814,6 +1817,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                          pr_supervision_summary = CASE WHEN ?7 THEN NULL ELSE pr_supervision_summary END,
                          pr_supervision_updated_at = CASE WHEN ?7 THEN ?6 ELSE pr_supervision_updated_at END,
                          stale_base_detected_at = CASE WHEN ?2 IS NOT NULL THEN NULL ELSE stale_base_detected_at END,
+                         publication_association_verified_at = CASE
+                             WHEN publication_pr_number IS ?2 THEN publication_association_verified_at
+                             ELSE NULL END,
                          updated_at = ?6
                      WHERE conversation_id = ?1",
                     rusqlite::params![
@@ -2341,6 +2347,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                          pr_supervision_summary = CASE WHEN ?10 THEN NULL ELSE pr_supervision_summary END,
                          pr_supervision_updated_at = CASE WHEN ?10 THEN ?11 ELSE pr_supervision_updated_at END,
                          stale_base_detected_at = CASE WHEN ?4 IS NOT NULL THEN NULL ELSE stale_base_detected_at END,
+                         publication_association_verified_at = CASE
+                             WHEN publication_pr_number IS ?4 THEN publication_association_verified_at
+                             ELSE NULL END,
                          updated_at = ?11
                      WHERE conversation_id = ?1
                        AND publication_metadata_attempt_id = ?2
@@ -2448,6 +2457,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      pr_supervision_summary = CASE WHEN ?6 THEN NULL ELSE pr_supervision_summary END,
                      pr_supervision_updated_at = CASE WHEN ?6 THEN ?7 ELSE pr_supervision_updated_at END,
                      stale_base_detected_at = CASE WHEN ?2 IS NOT NULL THEN NULL ELSE stale_base_detected_at END,
+                     publication_association_verified_at = CASE
+                         WHEN publication_pr_number IS ?2 THEN publication_association_verified_at
+                         ELSE NULL END,
                      updated_at = ?7
                  WHERE conversation_id = ?1
                    AND publication_pr_number IS ?8
@@ -2692,6 +2704,29 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                          updated_at = ?4
                      WHERE conversation_id = ?1",
                     rusqlite::params![conversation_id, fingerprint, observed_at, now],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn mark_publication_association_verified(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                // Set-once, and deliberately no `updated_at` bump: this is reconciliation
+                // bookkeeping, not an observable workspace change, so it must not churn
+                // consumers that key off `updated_at`.
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET publication_association_verified_at = ?2
+                     WHERE conversation_id = ?1
+                       AND publication_association_verified_at IS NULL",
+                    rusqlite::params![conversation_id, now],
                 )?;
                 Ok(())
             })
