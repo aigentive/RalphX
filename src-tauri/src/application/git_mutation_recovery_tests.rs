@@ -1,9 +1,13 @@
-use super::git_mutation_recovery::{recover_in_flight_git_mutations, GitMutationRecoveryOutcome};
+use super::git_mutation_recovery::{
+    is_quiescent_uninitialized_repair_push_preflight, is_uninitialized_repair_push_preflight,
+    recover_in_flight_git_mutations, GitMutationRecoveryOutcome,
+};
 use crate::application::GitService;
 use crate::domain::entities::{
-    BranchUpdateCapacityOwnership, BranchUpdateContinuation, BranchUpdateDirection,
-    BranchUpdateOperation, BranchUpdateWorkspaceOwnership, GitMutationKind, GitTargetLeaseOwner,
-    InternalStatus, Project,
+    AgentWorkspaceRepairAttemptId, AgentWorkspaceRepairEffect, AgentWorkspaceRepairEffectKind,
+    AgentWorkspaceRepairEffectStatus, BranchUpdateCapacityOwnership, BranchUpdateContinuation,
+    BranchUpdateDirection, BranchUpdateOperation, BranchUpdateWorkspaceOwnership, GitMutationKind,
+    GitTargetLeaseOwner, InternalStatus, Project,
 };
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, BeginGitMutation, BranchUpdateActivation,
@@ -310,4 +314,105 @@ async fn recovery_clears_stable_dirty_merge_claim_but_keeps_target_owned() {
         lease.owner().kind,
         crate::domain::entities::GitTargetLeaseOwnerKind::MergeAttempt
     );
+}
+
+// ---------------------------------------------------------------------------
+// Inert push-preflight predicate truth table
+//
+// The quiescent predicate is the whole safety argument behind settling an open push effect that
+// was never initialized: the reconciler concludes "no push was ever authorized" from it. Each
+// conjunct is falsified individually below so a future edit cannot silently widen it.
+// ---------------------------------------------------------------------------
+
+fn inert_push_effect(created_at: chrono::DateTime<Utc>) -> AgentWorkspaceRepairEffect {
+    let mut effect = AgentWorkspaceRepairEffect::new(
+        AgentWorkspaceRepairAttemptId::new(),
+        AgentWorkspaceRepairEffectKind::PushBranch,
+        "repair:push:test",
+        created_at,
+    );
+    effect.status = AgentWorkspaceRepairEffectStatus::InFlight;
+    effect
+}
+
+#[test]
+fn uninitialized_push_preflight_is_inert_once_it_passes_the_quiescence_window() {
+    let now = Utc::now();
+    let min_age = chrono::Duration::seconds(300);
+    let effect = inert_push_effect(now - chrono::Duration::seconds(300));
+
+    assert!(is_uninitialized_repair_push_preflight(&effect));
+    assert!(is_quiescent_uninitialized_repair_push_preflight(
+        &effect, now, min_age
+    ));
+}
+
+#[test]
+fn uninitialized_push_preflight_one_second_younger_than_the_bound_is_not_yet_inert() {
+    let now = Utc::now();
+    let min_age = chrono::Duration::seconds(300);
+    let effect = inert_push_effect(now - chrono::Duration::seconds(299));
+
+    // Still structurally uninitialized, but a push may be in flight right now.
+    assert!(is_uninitialized_repair_push_preflight(&effect));
+    assert!(!is_quiescent_uninitialized_repair_push_preflight(
+        &effect, now, min_age
+    ));
+}
+
+#[test]
+fn partially_initialized_push_preflight_is_never_inert_at_any_age() {
+    let now = Utc::now();
+    let min_age = chrono::Duration::seconds(300);
+    // Ancient enough that only the OID shape can be what keeps it out.
+    let created_at = now - chrono::Duration::days(30);
+
+    let mut intended = inert_push_effect(created_at);
+    intended.intended_head_oid = Some("abc123".to_string());
+
+    let mut expected_remote = inert_push_effect(created_at);
+    expected_remote.expected_remote_oid = Some("def456".to_string());
+
+    let mut expected_absent = inert_push_effect(created_at);
+    expected_absent.expected_remote_absent = true;
+
+    for effect in [&intended, &expected_remote, &expected_absent] {
+        assert!(
+            !is_uninitialized_repair_push_preflight(effect),
+            "a written precondition means the push was authorized"
+        );
+        assert!(!is_quiescent_uninitialized_repair_push_preflight(
+            effect, now, min_age
+        ));
+    }
+}
+
+#[test]
+fn non_in_flight_and_non_push_effects_are_never_inert() {
+    let now = Utc::now();
+    let min_age = chrono::Duration::seconds(300);
+    let created_at = now - chrono::Duration::days(30);
+
+    for status in [
+        AgentWorkspaceRepairEffectStatus::Pending,
+        AgentWorkspaceRepairEffectStatus::Observed,
+        AgentWorkspaceRepairEffectStatus::Failed,
+    ] {
+        let mut effect = inert_push_effect(created_at);
+        effect.status = status;
+        assert!(!is_quiescent_uninitialized_repair_push_preflight(
+            &effect, now, min_age
+        ));
+    }
+
+    for kind in [
+        AgentWorkspaceRepairEffectKind::CreatePr,
+        AgentWorkspaceRepairEffectKind::UpdatePr,
+    ] {
+        let mut effect = inert_push_effect(created_at);
+        effect.kind = kind;
+        assert!(!is_quiescent_uninitialized_repair_push_preflight(
+            &effect, now, min_age
+        ));
+    }
 }
