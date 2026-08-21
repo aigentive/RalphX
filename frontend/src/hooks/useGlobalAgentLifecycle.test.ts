@@ -84,11 +84,13 @@ vi.mock("@/providers/EventProvider", () => ({
 
 const mockInvalidateQueries = vi.fn().mockResolvedValue(undefined);
 const mockGetQueryData = vi.fn().mockReturnValue(undefined);
+const mockIsFetching = vi.fn().mockReturnValue(0);
 
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({
     invalidateQueries: mockInvalidateQueries,
     getQueryData: (...args: unknown[]) => mockGetQueryData(...args),
+    isFetching: (...args: unknown[]) => mockIsFetching(...args),
   }),
 }));
 
@@ -226,9 +228,10 @@ describe("useGlobalAgentLifecycle", () => {
 
     flushSidebarInvalidation();
     expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
-    expect(mockInvalidateQueries).toHaveBeenCalledWith({
-      queryKey: agentSidebarConversationKeys.all,
-    });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith(
+      { queryKey: agentSidebarConversationKeys.all },
+      { cancelRefetch: false },
+    );
 
     act(() => {
       fireEvent("agent:run_started", mkRunStarted("project", "project-later"));
@@ -431,9 +434,10 @@ describe("useGlobalAgentLifecycle", () => {
 
       flushSidebarInvalidation();
       expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
-      expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: agentSidebarConversationKeys.all,
-      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith(
+        { queryKey: agentSidebarConversationKeys.all },
+        { cancelRefetch: false },
+      );
     }
   );
 
@@ -672,9 +676,10 @@ describe("useGlobalAgentLifecycle", () => {
 
     flushSidebarInvalidation();
     expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
-    expect(mockInvalidateQueries).toHaveBeenCalledWith({
-      queryKey: agentSidebarConversationKeys.all,
-    });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith(
+      { queryKey: agentSidebarConversationKeys.all },
+      { cancelRefetch: false },
+    );
   });
 
   // --------------------------------------------------------------------------
@@ -772,9 +777,10 @@ describe("useGlobalAgentLifecycle", () => {
 
     flushSidebarInvalidation();
     expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
-    expect(mockInvalidateQueries).toHaveBeenCalledWith({
-      queryKey: agentSidebarConversationKeys.all,
-    });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith(
+      { queryKey: agentSidebarConversationKeys.all },
+      { cancelRefetch: false },
+    );
   });
 
   // --------------------------------------------------------------------------
@@ -833,9 +839,10 @@ describe("useGlobalAgentLifecycle", () => {
 
     flushSidebarInvalidation();
     expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
-    expect(mockInvalidateQueries).toHaveBeenCalledWith({
-      queryKey: agentSidebarConversationKeys.all,
-    });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith(
+      { queryKey: agentSidebarConversationKeys.all },
+      { cancelRefetch: false },
+    );
   });
 
   // --------------------------------------------------------------------------
@@ -963,9 +970,10 @@ describe("useGlobalAgentLifecycle", () => {
 
     flushSidebarInvalidation();
     expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
-    expect(mockInvalidateQueries).toHaveBeenCalledWith({
-      queryKey: agentSidebarConversationKeys.all,
-    });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith(
+      { queryKey: agentSidebarConversationKeys.all },
+      { cancelRefetch: false },
+    );
   });
 
   // --------------------------------------------------------------------------

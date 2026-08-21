@@ -11,7 +11,7 @@ import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useEventBus } from "@/providers/EventProvider";
-import { agentSidebarConversationKeys } from "@/hooks/agentSidebarConversationKeys";
+import { invalidateAgentSidebarConversations } from "@/hooks/agentSidebarConversationKeys";
 import { DELEGATION_PARK_NEEDS_ATTENTION } from "@/lib/events";
 import type { DelegationParkAttentionPayload } from "@/types/events";
 import type { Unsubscribe } from "@/lib/event-bus";
@@ -47,7 +47,7 @@ export function useDelegationParkAttention() {
 
           // The row is leaving the parked working lane; refresh so it stops advertising
           // delegates it is no longer waiting on.
-          queryClient.invalidateQueries({ queryKey: agentSidebarConversationKeys.all });
+          void invalidateAgentSidebarConversations(queryClient);
 
           toast.error(
             `Delegates finished but ${coordinatorLabel(payload)} could not be resumed`,

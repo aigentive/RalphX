@@ -10,6 +10,9 @@ import {
   workspacePublicationFingerprint,
 } from "./useAgentSidebarPublicationPolling";
 
+const SIDEBAR_FILTERS = { queryKey: ["agents", "sidebar-conversations"] };
+const NON_CANCELLING = { cancelRefetch: false };
+
 const { getBulkWorkspacePublicationStatesMock } = vi.hoisted(() => ({
   getBulkWorkspacePublicationStatesMock: vi.fn(),
 }));
@@ -59,9 +62,7 @@ describe("useAgentSidebarPublicationPolling", () => {
     );
 
     await waitFor(() =>
-      expect(invalidateSpy).toHaveBeenCalledWith({
-        queryKey: ["agents", "sidebar-conversations"],
-      }),
+      expect(invalidateSpy).toHaveBeenCalledWith(SIDEBAR_FILTERS, NON_CANCELLING),
     );
 
     expect(invalidateSpy).toHaveBeenCalledWith({
@@ -108,9 +109,7 @@ describe("useAgentSidebarPublicationPolling", () => {
     );
 
     await waitFor(() =>
-      expect(invalidateSpy).toHaveBeenCalledWith({
-        queryKey: ["agents", "sidebar-conversations"],
-      }),
+      expect(invalidateSpy).toHaveBeenCalledWith(SIDEBAR_FILTERS, NON_CANCELLING),
     );
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ["agents", "workspace-pr-review", "conv-label"],
@@ -146,9 +145,7 @@ describe("useAgentSidebarPublicationPolling", () => {
     );
 
     await waitFor(() =>
-      expect(invalidateSpy).toHaveBeenCalledWith({
-        queryKey: ["agents", "sidebar-conversations"],
-      }),
+      expect(invalidateSpy).toHaveBeenCalledWith(SIDEBAR_FILTERS, NON_CANCELLING),
     );
   });
 
@@ -184,8 +181,84 @@ describe("useAgentSidebarPublicationPolling", () => {
     await waitFor(() =>
       expect(getBulkWorkspacePublicationStatesMock).toHaveBeenCalled(),
     );
-    expect(invalidateSpy).not.toHaveBeenCalledWith({
-      queryKey: ["agents", "sidebar-conversations"],
+    expect(invalidateSpy).not.toHaveBeenCalledWith(SIDEBAR_FILTERS, NON_CANCELLING);
+  });
+
+  it("skips the sidebar invalidation while a listing is in flight, but still refreshes the changed workspaces", async () => {
+    const queryClient = createTestQueryClient();
+    // A multi-minute listing is already running; stacking invalidations on it is
+    // exactly what livelocked the sidebar.
+    vi.spyOn(queryClient, "isFetching").mockReturnValue(1);
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    getBulkWorkspacePublicationStatesMock.mockResolvedValue({
+      "conv-merged": {
+        publication_state: "merged",
+        publication_label: "merged",
+        review_state: null,
+      },
     });
+
+    renderHook(
+      () =>
+        useAgentSidebarPublicationPolling(
+          [conversation("conv-merged")],
+          true,
+          new Map([
+            ["conv-merged", workspacePublicationFingerprint("draft", null, null)],
+          ]),
+        ),
+      { wrapper: createWrapper(queryClient) },
+    );
+
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["agents", "conversation-workspace", "conv-merged"],
+      }),
+    );
+    expect(invalidateSpy).not.toHaveBeenCalledWith(SIDEBAR_FILTERS, NON_CANCELLING);
+  });
+
+  it("invalidates the sidebar on a later tick once the in-flight listing settles", async () => {
+    const queryClient = createTestQueryClient();
+    // The guard must be self-clearing: if it could outlive the fetch it would
+    // wedge the cache, reproducing the bug it exists to fix.
+    const isFetchingSpy = vi
+      .spyOn(queryClient, "isFetching")
+      .mockReturnValueOnce(1)
+      .mockReturnValue(0);
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    getBulkWorkspacePublicationStatesMock.mockResolvedValue({
+      "conv-merged": {
+        publication_state: "merged",
+        publication_label: "merged",
+        review_state: null,
+      },
+    });
+
+    const { rerender } = renderHook(
+      ({ visible }: { visible: boolean }) =>
+        useAgentSidebarPublicationPolling(
+          [conversation("conv-merged")],
+          visible,
+          new Map([
+            ["conv-merged", workspacePublicationFingerprint("draft", null, null)],
+          ]),
+        ),
+      {
+        wrapper: createWrapper(queryClient),
+        initialProps: { visible: true },
+      },
+    );
+
+    await waitFor(() => expect(isFetchingSpy).toHaveBeenCalled());
+    expect(invalidateSpy).not.toHaveBeenCalledWith(SIDEBAR_FILTERS, NON_CANCELLING);
+
+    // Remount the poll effect to stand in for the next 5s tick.
+    rerender({ visible: false });
+    rerender({ visible: true });
+
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith(SIDEBAR_FILTERS, NON_CANCELLING),
+    );
   });
 });

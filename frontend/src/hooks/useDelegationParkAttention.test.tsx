@@ -93,9 +93,10 @@ describe("useDelegationParkAttention", () => {
       error: "boom",
     });
 
-    expect(invalidate).toHaveBeenCalledWith({
-      queryKey: ["agents", "sidebar-conversations"],
-    });
+    expect(invalidate).toHaveBeenCalledWith(
+      { queryKey: ["agents", "sidebar-conversations"] },
+      { cancelRefetch: false },
+    );
   });
 
   it("alerts once per park so a retried dispatcher cannot spam the user", () => {
