@@ -172,6 +172,7 @@ export type AgentWorkspaceHoldPresentation = {
   courtChip: { label: string; autoResumes: boolean };
   headline: string;
   paragraph: string;
+  technicalDetails: string | null;
   primary: { kind: AgentWorkspaceHoldPrimaryActionKind; label: string; caption: string };
   secondary: { kind: AgentWorkspaceHoldActionKind; label: string; tooltip: string } | null;
   more: Array<{ kind: AgentWorkspaceHoldActionKind; label: string; caption: string }>;
@@ -315,7 +316,7 @@ const HOLD_COPY: Record<AgentWorkspaceMaintenanceOperationHoldReason, HoldCopy> 
     courtChip: { label: "Waiting on you", autoResumes: false },
     headline: "Repair paused — publish not confirmed",
     paragraph:
-      "RalphX pushed a repair but could not confirm it reached GitHub. Retry publication to make RalphX try again.",
+      "RalphX can't confirm whether an earlier publish step reached GitHub. It stopped rather than risk pushing twice. Retry publication to have it check again and continue.",
     primary: {
       kind: "retryPublication",
       label: "Retry publication",
@@ -323,7 +324,7 @@ const HOLD_COPY: Record<AgentWorkspaceMaintenanceOperationHoldReason, HoldCopy> 
     },
     secondary: null,
     more: [],
-    releaseConditions: ["RalphX confirms the push reached GitHub."],
+    releaseConditions: ["RalphX confirms the publish step's state on GitHub."],
   },
   pr_autofix_base_parity_transient: {
     courtChip: { label: "Waiting on a re-run", autoResumes: true },
@@ -415,14 +416,15 @@ export function getAgentWorkspaceHoldPresentation(
     pill: AGENT_WORKSPACE_HOLD_PILL,
     courtChip: copy.courtChip,
     headline: copy.headline,
-    // Fix D: the agent's own structured account wins; a fixer completion that only filled the
-    // legacy free-text `summary` still shows its own account (the pre-redesign "repair verdict"
-    // fact) before falling back to the generic per-hold-reason template. Poller-created holds
-    // carry neither field and always take the template.
-    paragraph:
-      composeAgentWorkspaceOperationNarrative(operation) ??
-      nonBlank(operation.summary) ??
-      copy.paragraph,
+    // An agent's own structured account wins, because it describes this specific repair. Anything
+    // else takes the curated per-hold-reason copy.
+    //
+    // The raw `operation.summary` is deliberately NOT in this chain. It is machine-written backend
+    // text, and using it as the paragraph is what put "RalphX retained the effect fence and did not
+    // reacquire or release Git authority: Conflict: …" in front of users while this curated copy
+    // sat unreachable. It is still available, one click away, as `technicalDetails`.
+    paragraph: composeAgentWorkspaceOperationNarrative(operation) ?? copy.paragraph,
+    technicalDetails: nonBlank(operation.summary),
     primary: {
       kind: copy.primary.kind,
       label: copy.primary.label,
@@ -656,11 +658,15 @@ export function getAgentWorkspaceMaintenancePresentation(
       };
     case "held": {
       const hold = getAgentWorkspaceHoldPresentation(workspace);
+      // For the maintenance banner summary: prefer narrative, then the raw operation
+      // summary (diagnostic detail), then the curated per-hold-reason template as
+      // a last resort. The hold card paragraph has a different chain (narrative →
+      // curated copy, with the raw summary surfaced as technicalDetails instead).
+      const heldSummary =
+        narrative ?? nonBlank(operation.summary) ?? hold?.paragraph ?? summary;
       return {
         title: hold?.headline ?? "Repair paused",
-        // The hold presentation already resolves narrative-over-template; it is the
-        // single writer of the held paragraph, so do not re-decide it here.
-        summary: hold?.paragraph ?? summary,
+        summary: heldSummary,
         tone: "warning",
         busy: false,
         action: "hold",

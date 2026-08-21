@@ -6,6 +6,7 @@ use dashmap::DashMap;
 
 use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
 use crate::application::agent_workspace_publish_repair_state::validate_agent_workspace_repair_target_lease;
+use crate::application::git_mutation_recovery::is_quiescent_uninitialized_repair_push_preflight;
 use crate::application::git_service::git_cmd;
 use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{
@@ -31,6 +32,7 @@ use crate::domain::state_machine::transition_handler::{
     CommitHookFailureKind, PlanUpdateResult, SourceUpdateResult,
 };
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::{application::AppState, application::GitService, domain::entities::Project};
 use tauri::Manager;
 
@@ -1162,10 +1164,22 @@ pub(crate) enum AgentWorkspaceRepairPushOutcome {
 pub(crate) enum AgentWorkspaceRepairOpenPushEffectReconciliation {
     Observed,
     Pending,
-    /// The remote is exactly at this effect's recorded pre-push state: the intended mutation
-    /// provably never reached the remote, so the effect was terminated as `Failed` and the
-    /// fence is clear.
-    NotApplied,
+    /// The intended mutation provably never reached the remote, so the effect was terminated as
+    /// `Failed` and the fence is clear. The reason distinguishes the two proofs, which carry
+    /// materially different user-facing facts.
+    NotApplied(AgentWorkspaceRepairPushEffectNotAppliedReason),
+}
+
+/// Why a push effect was proven not to have been applied. An enum rather than message text so
+/// callers branch on a variant instead of comparing strings (project rule 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentWorkspaceRepairPushEffectNotAppliedReason {
+    /// The effect was fully initialized and a push was authorized, but the remote is still exactly
+    /// at the recorded pre-push state, so the push never landed.
+    RemoteUnchanged,
+    /// The effect's preconditions were never written, which proves no push was ever authorized for
+    /// it. No remote read happened, so nothing may be asserted about the remote's contents.
+    NeverAuthorized,
 }
 
 /// Resolution of the base push-effect idempotency key lookup: either an in-flight effect to
@@ -1636,6 +1650,61 @@ pub(crate) async fn reconcile_open_agent_workspace_repair_push_effect(
     {
         return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
     }
+    // ORDERING INVARIANT: the live-claim check runs BEFORE any OID-shape classification.
+    //
+    // A live repair-owned mutation claim means a push may be in flight right now; startup claim
+    // recovery (`recover_repair_owned_in_flight_git_mutations`) stays the sole authority in that
+    // window, so this reconciler must not draw any conclusion while the claim is still open. This
+    // check used to sit below the OID early returns, which was harmless while every OID shape fell
+    // through to `Pending`. It is load-bearing now that an uninitialized shape is classified as
+    // `NotApplied` below: concluding "no push was ever authorized" is only sound once we have
+    // proven no mutation is currently authorized either.
+    let owner_id = attempt.id.to_string();
+    if state
+        .branch_update_repo
+        .list_in_flight_mutations()
+        .await?
+        .iter()
+        .any(|claim| {
+            claim.owner.kind == GitTargetLeaseOwnerKind::AgentWorkspaceRepair
+                && claim.owner.owner_id == owner_id
+        })
+    {
+        return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
+    }
+
+    // An effect whose intended/expected OIDs were never written is proof that no push was issued
+    // for it: `initialize_agent_workspace_repair_push_effect` durably persists those preconditions
+    // (and its CAS commits) strictly before the `git push` runs, a few dozen lines below in
+    // `push_agent_workspace_repair_branch`. Terminating it here releases the one-open-effect fence
+    // so the continuation can reacquire its lease on the next sweep; leaving it open wedges the
+    // attempt permanently, because claim recovery deliberately releases the claim without settling
+    // the effect and the continuation gate cannot reacquire while an effect is open.
+    //
+    // The quiescence window keeps a preflight that is merely mid-flight from being swept.
+    if is_quiescent_uninitialized_repair_push_preflight(
+        &effect,
+        Utc::now(),
+        Duration::seconds(
+            i64::try_from(git_runtime_config().agent_workspace_repair_inert_effect_min_age_secs)
+                .unwrap_or(i64::MAX),
+        ),
+    ) {
+        fail_agent_workspace_repair_effect_for_phase(
+            state.agent_workspace_repair_repo.as_ref(),
+            attempt,
+            effect,
+            AgentWorkspaceRepairPhase::Continuing,
+            "repair push effect was never initialized, so no push was authorized for it; releasing it lets the repair continue",
+        )
+        .await?;
+        return Ok(
+            AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied(
+                AgentWorkspaceRepairPushEffectNotAppliedReason::NeverAuthorized,
+            ),
+        );
+    }
+
     let Some(intended_head_oid) = effect
         .intended_head_oid
         .as_deref()
@@ -1648,22 +1717,6 @@ pub(crate) async fn reconcile_open_agent_workspace_repair_push_effect(
         return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
     }
     if !effect.has_exact_remote_oid_proof() {
-        return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
-    }
-    // A live repair-owned mutation claim means a push may be in flight right now; startup claim
-    // recovery (`recover_repair_owned_in_flight_git_mutations`) stays the sole authority in that
-    // window, so this reconciler must not draw any conclusion while the claim is still open.
-    let owner_id = attempt.id.to_string();
-    if state
-        .branch_update_repo
-        .list_in_flight_mutations()
-        .await?
-        .iter()
-        .any(|claim| {
-            claim.owner.kind == GitTargetLeaseOwnerKind::AgentWorkspaceRepair
-                && claim.owner.owner_id == owner_id
-        })
-    {
         return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::Pending);
     }
 
@@ -1744,7 +1797,11 @@ pub(crate) async fn reconcile_open_agent_workspace_repair_push_effect(
             "repair push remote OID still matches the recorded pre-push state; the push never reached the remote",
         )
         .await?;
-        return Ok(AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied);
+        return Ok(
+            AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied(
+                AgentWorkspaceRepairPushEffectNotAppliedReason::RemoteUnchanged,
+            ),
+        );
     }
     // A differing remote OID is proof of nothing (a third party may have advanced the branch);
     // keep the fence open and let the next recovery pass re-check.

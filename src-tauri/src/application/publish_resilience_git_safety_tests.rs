@@ -29,9 +29,10 @@ use super::publish_resilience::{
     verify_agent_workspace_repair_pr_handoff, verify_workspace_repair_push_remote_precondition,
     AgentWorkspaceRepairOpenPushEffectReconciliation, AgentWorkspaceRepairPrHandoff,
     AgentWorkspaceRepairPrHandoffResult, AgentWorkspaceRepairPublishContinuation,
-    AgentWorkspaceRepairPushOutcome, AgentWorkspaceRepairPushRequest,
-    BlockedCreatePrEffectReconciliation, BlockedRepairPrHandoffReconciliation,
-    PublishAfterRepairPushError, RepairEffectIdentity, RepairPrHandoffVerification,
+    AgentWorkspaceRepairPushEffectNotAppliedReason, AgentWorkspaceRepairPushOutcome,
+    AgentWorkspaceRepairPushRequest, BlockedCreatePrEffectReconciliation,
+    BlockedRepairPrHandoffReconciliation, PublishAfterRepairPushError, RepairEffectIdentity,
+    RepairPrHandoffVerification,
 };
 use super::publish_resilience_create_pr_reconciliation::{
     REPAIR_CREATE_PR_AMBIGUOUS_STEP, REPAIR_CREATE_PR_EFFECT_ADOPTED_STEP,
@@ -2768,10 +2769,24 @@ async fn startup_recovery_never_steals_a_foreign_target_lease_and_blocks_after_t
             assert!(current
                 .blocker
                 .as_deref()
-                .is_some_and(|blocker| blocker.contains("failed 3 times without settling")));
-            assert!(current.blocker.as_deref().is_some_and(
-                |blocker| blocker.contains("workspace repair continuation target is owned")
-            ));
+                .is_some_and(|blocker| blocker.contains("tried 3 times")));
+            // The specific cause must stay recoverable, but it is internal vocabulary, so it
+            // belongs in the timeline event that renders inside the collapsed Details disclosure
+            // — not in the blocker, which composes the hold card's user-facing paragraph.
+            let events = state
+                .agent_conversation_workspace_repo
+                .list_publication_events(&fixture.workspace.conversation_id)
+                .await
+                .expect("list events after the foreign-lease block");
+            assert!(
+                events.iter().any(|event| {
+                    event.step == "continuation_recovery_blocked"
+                        && event
+                            .summary
+                            .contains("workspace repair continuation target is owned")
+                }),
+                "the foreign-lease cause must survive somewhere an engineer can reach it: {events:#?}"
+            );
         }
     }
     let lease = state
@@ -2997,7 +3012,10 @@ async fn push_after_not_applied_effect_uses_a_distinct_key_and_keeps_the_repair_
         reconcile_open_agent_workspace_repair_push_effect(&state, &continuing, effect.clone())
             .await
             .expect("reconcile the never-applied push effect"),
-        AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied
+        AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied(
+            AgentWorkspaceRepairPushEffectNotAppliedReason::RemoteUnchanged
+        ),
+        "this effect is fully initialized, so its proof is the remote read, not the absence of one"
     );
     let base_key = repair_push_effect_idempotency_key(&fixture);
     let closed_effect = state
