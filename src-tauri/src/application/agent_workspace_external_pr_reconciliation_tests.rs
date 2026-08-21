@@ -1560,3 +1560,155 @@ async fn scheduled_reconciliation_deduplicates_recent_workspace_loads_until_forc
     wait_for_latest_pr_lookup_calls(&github, 2).await;
     assert_eq!(factory_calls.load(Ordering::SeqCst), 2);
 }
+
+/// A workspace whose linked PR is already recorded terminal has nothing left to learn from
+/// GitHub. The 5s sidebar publication poll re-invalidates the mounted workspace query, which
+/// re-enters this path every reconciliation TTL for as long as the user keeps it open — so
+/// re-querying and re-writing forever is pure repetition.
+#[tokio::test]
+async fn reconciliation_short_circuits_a_recorded_merged_linked_pr() {
+    let project = test_project();
+    let mut workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_pr_number = Some(263);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/263".to_string());
+    workspace.publication_pr_status = Some("merged".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    let github = Arc::new(MockGithubService::new());
+    let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Linked {
+            pr_number: 263,
+            pr_status: "merged".to_string()
+        }
+    );
+
+    // Both round trips must be gone. `correct_foreign_agent_workspace_publication` calls
+    // `fetch_pr_detail` unconditionally for any recorded PR number, so a guard placed after it
+    // would still cost one request.
+    let github_state = github.state();
+    assert_eq!(github_state.fetch_pr_detail_calls, 0);
+    assert_eq!(github_state.check_pr_status_calls, 0);
+    assert_eq!(github_state.find_latest_pr_by_head_branch_calls, 0);
+    drop(github_state);
+
+    // No duplicate publication writes.
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap();
+    assert!(
+        events.is_empty(),
+        "recorded-terminal reconcile should append no publication events, got {events:?}"
+    );
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_status.as_deref(), Some("merged"));
+    assert_eq!(updated.publication_pr_number, Some(263));
+}
+
+#[tokio::test]
+async fn reconciliation_short_circuits_a_recorded_closed_linked_pr() {
+    let project = test_project();
+    let mut workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_pr_number = Some(264);
+    workspace.publication_pr_status = Some("closed".to_string());
+    let github = Arc::new(MockGithubService::new());
+    let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Linked {
+            pr_number: 264,
+            pr_status: "closed".to_string()
+        }
+    );
+    let github_state = github.state();
+    assert_eq!(github_state.fetch_pr_detail_calls, 0);
+    assert_eq!(github_state.check_pr_status_calls, 0);
+    drop(github_state);
+    assert!(workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// Local terminal settlement still runs, so a workspace recorded terminal but never cleaned up
+/// converges instead of being stranded by the short-circuit — and running it twice is a no-op.
+#[tokio::test]
+async fn recorded_terminal_short_circuit_still_settles_locally_and_is_idempotent() {
+    let project = test_project();
+    let mut workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_pr_number = Some(265);
+    workspace.publication_pr_status = Some("merged".to_string());
+    workspace.pr_supervision_status = Some("monitoring".to_string());
+    workspace.pr_supervision_summary = Some("RalphX is monitoring the pull request.".to_string());
+    let github = Arc::new(MockGithubService::new());
+    let (deps, workspace_repo) =
+        deps_with_workspace(project.clone(), workspace.clone(), github.clone()).await;
+
+    reconcile_agent_workspace_external_pr(
+        deps.clone(),
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("first reconciliation should succeed");
+
+    let after_first = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+
+    reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("second reconciliation should succeed");
+
+    let after_second = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+
+    assert_eq!(after_first.status, after_second.status);
+    assert_eq!(
+        after_first.publication_pr_status,
+        after_second.publication_pr_status
+    );
+    assert_eq!(
+        after_first.pr_supervision_status,
+        after_second.pr_supervision_status
+    );
+    let github_state = github.state();
+    assert_eq!(github_state.fetch_pr_detail_calls, 0);
+    assert_eq!(github_state.check_pr_status_calls, 0);
+}

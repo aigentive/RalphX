@@ -352,6 +352,46 @@ async fn reconcile_linked_agent_workspace_pr(
         ));
     };
 
+    // A recorded terminal status was written by a pass that verified it against GitHub, and a
+    // merged or closed PR cannot leave that state. Re-querying it costs two round trips
+    // (`fetch_pr_detail` inside the foreign-publication correction, then `check_pr_status`) plus
+    // three duplicate DB writes on every reconcile — and the mounted-workspace path re-enters
+    // here every reconciliation TTL while the user has the conversation open.
+    //
+    // This guard must precede `correct_foreign_agent_workspace_publication`: that helper calls
+    // `fetch_pr_detail` unconditionally whenever a PR number is recorded.
+    //
+    // Deliberately skipped for recorded-terminal workspaces:
+    //   - foreign-publication correction, which was already performed by the terminalizing pass;
+    //   - `reconcile_clickup_ticket_for_workspace_pr`, likewise already run by that pass.
+    // Local terminal settlement still runs, so a workspace recorded terminal but never cleaned up
+    // converges. It is idempotent: `cleanup_terminal_agent_workspace_after_pr` requires this same
+    // persisted merged/closed/archived authority and `claim_local_cleanup` absorbs repeats.
+    if let Some(recorded_terminal_status) = workspace
+        .publication_pr_status
+        .as_deref()
+        .filter(|status| matches!(*status, "merged" | "closed"))
+    {
+        let terminalized = terminalize_agent_workspace_after_pr(
+            Arc::clone(&deps.workspace_repo),
+            Arc::clone(&deps.agent_run_repo),
+            Some(Arc::clone(&deps.plan_branch_repo)),
+            deps.chat_service.as_ref().map(Arc::clone),
+            &workspace.conversation_id,
+            project,
+            TerminalAgentWorkspaceCause::from_pr_status(recorded_terminal_status),
+        )
+        .await;
+        terminalized
+            .require_runtime_shutdown()
+            .map_err(AppError::Infrastructure)?;
+
+        return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Linked {
+            pr_number,
+            pr_status: recorded_terminal_status.to_string(),
+        });
+    }
+
     match correct_foreign_agent_workspace_publication(
         Arc::clone(&deps.workspace_repo),
         Arc::clone(&deps.chat_conversation_repo),
