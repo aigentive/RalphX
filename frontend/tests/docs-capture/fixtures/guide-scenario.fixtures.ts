@@ -285,6 +285,7 @@ export async function applyGuideScenario(
             reviewFixerRunId: null,
             reviewFixerConversationId: null,
             reviewFixerStatus: null,
+            reviewFixerCycleCount: 0,
             lastRunId: "guide-review-run",
             lastError: null,
             autoMergeGuardStatus: null,

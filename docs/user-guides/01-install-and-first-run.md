@@ -78,13 +78,19 @@ Install the signed Mac app, connect an authenticated agent runtime, and create t
 
 2. Click **Start Your First Project**.
 
-3. Read the **Create New Project** dialog before choosing a folder.
+3. Read the **Create New Project** dialog before choosing how to start.
 
 ![The RalphX Project Creation Wizard](../../assets/public/guides/project-creation-wizard.png)
 
-4. Use a folder for the project you want RalphX to work with.
+4. Click **Add Existing Repository** to point RalphX at a folder you already have set up with version control.
 
-5. Keep your current working directory separate from the worktrees RalphX creates for agent work.
+   Click **Clone Repository** instead to copy an existing remote repository onto your machine first.
+
+   Click **Create New Repository** instead to start a brand-new project in an empty folder.
+
+5. Use a folder for the project you want RalphX to work with.
+
+6. Keep your current working directory separate from the worktrees RalphX creates for agent work.
 
 ## Choose the project location
 
