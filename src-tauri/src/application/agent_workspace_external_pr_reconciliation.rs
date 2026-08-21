@@ -42,6 +42,11 @@ use crate::infrastructure::agents::claude::git_runtime_config;
 const STARTUP_EXTERNAL_PR_RECONCILIATION_LIMIT: usize = 25;
 const STARTUP_EXTERNAL_PR_RECONCILIATION_CONCURRENCY: usize = 4;
 
+/// Skip reason for a pass that stopped because GitHub's window is exhausted. Expected and
+/// transient: the throttle TTL keeps the retry cadence bounded, so this is not an error.
+const GITHUB_RATE_LIMITED_SKIP_REASON: &str = "github_rate_limited";
+const FOREIGN_PUBLICATION_RATE_LIMITED_SKIP_REASON: &str = "foreign_publication_rate_limited";
+
 static IN_FLIGHT_RECONCILIATIONS: OnceLock<DashMap<String, ()>> = OnceLock::new();
 static RECENT_RECONCILIATIONS: OnceLock<DashMap<String, Instant>> = OnceLock::new();
 
@@ -168,13 +173,36 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
         ));
     };
 
+    // Every remaining path spends at least one `gh` read, so consult the shared budget before
+    // any of them. The signal is the structured shared `RateLimitState`, never error text; a
+    // poisoned lock yields `None` and falls through to normal work rather than manufacturing a
+    // "rate limited" verdict. Mirrors the durable repair-recovery deferral.
+    if let Some(registry) = deps.pr_poller_registry.as_ref() {
+        if let Some((remaining, reset_at)) = registry.rate_limit_snapshot() {
+            if remaining == 0 && reset_at > Instant::now() {
+                tracing::debug!(
+                    conversation_id = conversation_id.as_str(),
+                    trigger = trigger.as_str(),
+                    "Deferring external PR reconciliation until the GitHub rate limit resets"
+                );
+                return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                    GITHUB_RATE_LIMITED_SKIP_REASON,
+                ));
+            }
+        }
+    }
+
     // Archived linked workspaces are normally skipped by the gate below, but a foreign
     // publication association must remain correctable so terminal cleanup that consumed a
     // PR the workspace never owned can be reversed. Owned associations stay skipped so
     // reconciliation cannot replay terminal events for archived workspaces.
+    //
+    // Once the association has been verified there is nothing left to correct, so verified
+    // workspaces fall through to the gate instead of buying the same PR detail read again.
     if workspace.mode == AgentConversationWorkspaceMode::Edit
         && workspace.linked_plan_branch_id.is_none()
         && workspace.publication_pr_number.is_some()
+        && workspace.publication_association_verified_at.is_none()
         && workspace.status == AgentConversationWorkspaceStatus::Archived
     {
         let project = match deps.project_repo.get_by_id(&workspace.project_id).await {
@@ -220,6 +248,12 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
                     "foreign_publication_unverified",
                 ))
             }
+            PublicationCorrectionOutcome::RateLimited => {
+                note_github_rate_limited(&deps);
+                Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                    FOREIGN_PUBLICATION_RATE_LIMITED_SKIP_REASON,
+                ))
+            }
             PublicationCorrectionOutcome::Skipped | PublicationCorrectionOutcome::NotApplicable => {
                 Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
                     "workspace_not_active",
@@ -258,10 +292,20 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
 
     let lookup_started = Instant::now();
     let branch_name = workspace.branch_name.clone();
-    let pr = deps
+    let pr = match deps
         .github
         .find_latest_pr_by_head_branch(Path::new(&project.working_directory), &branch_name)
-        .await?;
+        .await
+    {
+        Ok(pr) => pr,
+        Err(AppError::GithubRateLimited { .. }) => {
+            note_github_rate_limited(&deps);
+            return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                GITHUB_RATE_LIMITED_SKIP_REASON,
+            ));
+        }
+        Err(error) => return Err(error),
+    };
     tracing::info!(
         conversation_id = conversation_id.as_str(),
         trigger = trigger.as_str(),
@@ -372,15 +416,63 @@ async fn reconcile_linked_agent_workspace_pr(
                 "foreign_publication_unverified",
             ));
         }
+        PublicationCorrectionOutcome::RateLimited => {
+            note_github_rate_limited(&deps);
+            return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                FOREIGN_PUBLICATION_RATE_LIMITED_SKIP_REASON,
+            ));
+        }
         PublicationCorrectionOutcome::Skipped | PublicationCorrectionOutcome::NotApplicable => {}
     }
 
-    let status = deps
+    let status = match deps
         .github
         .check_pr_status(Path::new(&project.working_directory), pr_number)
-        .await?;
+        .await
+    {
+        Ok(status) => status,
+        Err(AppError::GithubRateLimited { .. }) => {
+            note_github_rate_limited(&deps);
+            return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+                GITHUB_RATE_LIMITED_SKIP_REASON,
+            ));
+        }
+        Err(error) => return Err(error),
+    };
     let pr_status = publication_status_for_pr_status(&status);
     require_durable_live_pr_poller(&deps, matches!(&status, PrStatus::Open))?;
+
+    // Re-observing an unchanged terminal PR has nothing to persist. The write, the event, and
+    // the emit would all be exact replays, and the ClickUp reconcile below is itself another
+    // `gh` read plus a git subprocess — so this guard has to sit before it, not after the open
+    // branch. Terminal cleanup still runs: it is the runtime-shutdown authority and is
+    // idempotent, so a half-finished prior terminalization still completes.
+    if is_unchanged_terminal_publication(workspace, &status, pr_status) {
+        tracing::debug!(
+            conversation_id = workspace.conversation_id.as_str(),
+            pr_number,
+            pr_status,
+            "Skipping publication rewrite for an unchanged terminal PR"
+        );
+        let terminalized = terminalize_agent_workspace_after_pr(
+            Arc::clone(&deps.workspace_repo),
+            Arc::clone(&deps.agent_run_repo),
+            Some(Arc::clone(&deps.plan_branch_repo)),
+            deps.chat_service.as_ref().map(Arc::clone),
+            &workspace.conversation_id,
+            project,
+            TerminalAgentWorkspaceCause::from_pr_status(pr_status),
+        )
+        .await;
+        terminalized
+            .require_runtime_shutdown()
+            .map_err(AppError::Infrastructure)?;
+        return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Linked {
+            pr_number,
+            pr_status: pr_status.to_string(),
+        });
+    }
+
     reconcile_clickup_ticket_for_workspace_pr(
         &deps,
         workspace,
@@ -440,6 +532,28 @@ async fn reconcile_linked_agent_workspace_pr(
         pr_number,
         pr_status: pr_status.to_string(),
     })
+}
+
+/// Feeds an observed rate-limit rejection back into the shared budget so the pollers and the
+/// durable recovery sweep back off together instead of each rediscovering the exhausted window.
+fn note_github_rate_limited(deps: &AgentWorkspaceExternalPrReconciliationDeps) {
+    if let Some(registry) = deps.pr_poller_registry.as_ref() {
+        registry.note_rate_limited();
+    }
+}
+
+/// Whether this observation carries no new publication state.
+///
+/// Requires a terminal observed status that already matches what is persisted, and a settled
+/// `pushed` push status — anything else still has a real transition to record.
+fn is_unchanged_terminal_publication(
+    workspace: &AgentConversationWorkspace,
+    status: &PrStatus,
+    observed_pr_status: &str,
+) -> bool {
+    !matches!(status, PrStatus::Open)
+        && workspace.publication_pr_status.as_deref() == Some(observed_pr_status)
+        && workspace.publication_push_status.as_deref() == Some("pushed")
 }
 
 fn require_durable_live_pr_poller(
@@ -747,6 +861,15 @@ pub(crate) fn external_pr_reconciliation_skip_reason(
         return Some("workspace_terminal");
     }
     if workspace.publication_pr_number.is_some() {
+        // A terminal PR whose association with this branch was already proved has nothing left
+        // to reconcile: the status cannot change again and the PR cannot turn out to be
+        // foreign. Without this, every trigger re-spends GitHub reads on settled workspaces
+        // forever and replays their terminal publication event.
+        if workspace.has_terminal_publication_pr_status()
+            && workspace.publication_association_verified_at.is_some()
+        {
+            return Some("workspace_terminal_verified");
+        }
         return match workspace.status {
             AgentConversationWorkspaceStatus::Active
             | AgentConversationWorkspaceStatus::Missing => None,

@@ -6835,3 +6835,52 @@ async fn needs_human_still_rejected_for_a_pr_autofix_repair_with_in_flight_ci() 
     .expect_err("PR-autofix needs_human must still be rejected while CI is in flight");
     assert_eq!(error.0, StatusCode::CONFLICT);
 }
+
+#[test]
+fn rate_limited_review_action_maps_to_conflict_with_actionable_copy() {
+    let (status, Json(body)) = workspace_review_action_error(AppError::GithubRateLimited {
+        message: "API rate limit exceeded for user ID 1".to_string(),
+    });
+
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "409 is what the dialog's blocked-copy path reads; 500 falls back to generic text"
+    );
+    let error = body
+        .get("error")
+        .and_then(|value| value.as_str())
+        .expect("json_error writes the message under `error`");
+    assert!(
+        error.contains("rate limit is exhausted"),
+        "expected the cause in the copy, got: {error}"
+    );
+    assert!(
+        error.contains("Wait for the limit to reset and try again."),
+        "expected the remedy in the copy, got: {error}"
+    );
+    assert!(
+        error.contains("API rate limit exceeded for user ID 1"),
+        "expected the raw detail preserved for support, got: {error}"
+    );
+    assert!(
+        !error.contains("GitHub rate limit exceeded:"),
+        "the Display prefix must not be interpolated on top of the copy: {error}"
+    );
+}
+
+#[test]
+fn non_rate_limited_review_action_statuses_are_unchanged() {
+    assert_eq!(
+        workspace_review_action_error(AppError::Conflict("busy".to_string())).0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        workspace_review_action_error(AppError::NotFound("gone".to_string())).0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        workspace_review_action_error(AppError::Infrastructure("boom".to_string())).0,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+}
