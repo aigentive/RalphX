@@ -117,3 +117,137 @@ async fn armed_park_keeps_completed_coordinator_working_and_counts_unsettled_del
             .iter()
             .all(|row| row.conversation.id != conversation.id.as_str())));
 }
+
+/// The listing derives lanes, labels, refs, and verbs from `SidebarWorkspaceFacts` instead of a
+/// composed workspace response. If the two ever disagree, a plan-branch-linked workspace would be
+/// classified into a different lane than the response the rest of the surface renders — silently.
+#[tokio::test]
+async fn sidebar_workspace_facts_match_the_composed_response() {
+    use crate::domain::entities::plan_branch::PrPushStatus;
+    use crate::domain::entities::{
+        AgentConversationWorkspaceMode, ArtifactId, IdeationAnalysisBaseRefKind, IdeationSessionId,
+        PlanBranch, PlanBranchStatus,
+    };
+
+    let state = AppState::new_test();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "facts-parity".to_string(),
+            "/tmp/facts-parity".to_string(),
+        ))
+        .await
+        .unwrap();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+
+    // A linked plan branch whose publication differs from the workspace's own columns is the only
+    // shape where entity-derived and response-derived facts can diverge.
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::new(),
+        IdeationSessionId::new(),
+        project.id.clone(),
+        "ralphx/plan/facts-parity".to_string(),
+        "main".to_string(),
+    );
+    plan_branch.status = PlanBranchStatus::Merged;
+    plan_branch.pr_number = Some(4242);
+    plan_branch.pr_url = Some("https://github.com/owner/repo/pull/4242".to_string());
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    let plan_branch = state.plan_branch_repo.create(plan_branch).await.unwrap();
+
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-1".to_string()),
+        "ralphx/facts-parity/agent".to_string(),
+        "/tmp/ralphx/facts-parity/agent".to_string(),
+    );
+    // Deliberately stale relative to the plan branch.
+    workspace.publication_pr_number = Some(1);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pending".to_string());
+    workspace.pr_supervision_status = Some("monitoring".to_string());
+    workspace.pr_auto_merge_current = Some(true);
+    workspace.linked_plan_branch_id = Some(plan_branch.id.clone());
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let facts = SidebarWorkspaceFacts::from_entity(&workspace, Some(&plan_branch));
+    let response =
+        agent_workspace_response_without_repair_recovery_for_state(&state, workspace.clone())
+            .await
+            .unwrap();
+
+    assert_eq!(facts, SidebarWorkspaceFacts::from_response(&response));
+    // Proves the overlay was actually exercised rather than both sides reading stale columns.
+    assert_eq!(facts.publication_pr_number, Some(4242));
+    assert_eq!(facts.publication_pr_status.as_deref(), Some("merged"));
+
+    // Without the plan branch the facts fall back to the workspace's own columns, so the parity
+    // above is not an artifact of the overlay always winning.
+    let unlinked = SidebarWorkspaceFacts::from_entity(&workspace, None);
+    assert_eq!(unlinked.publication_pr_number, Some(1));
+    assert_eq!(unlinked.publication_pr_status.as_deref(), Some("open"));
+}
+
+/// Composition is the expensive part of the listing: each conversation response costs a runtime
+/// attribution read and each workspace response costs a mode lock, a repair attempt, and an
+/// autofix spend query. Those must scale with the returned page, not with the number of
+/// conversations enumerated.
+#[tokio::test]
+async fn listing_composes_responses_only_for_rows_a_page_returns() {
+    let state = AppState::new_test();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "hydration-scope".to_string(),
+            "/tmp/hydration-scope".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    const CONVERSATION_COUNT: usize = 9;
+    const LIMIT_PER_GROUP: u32 = 2;
+    for _ in 0..CONVERSATION_COUNT {
+        state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project.id.clone()))
+            .await
+            .unwrap();
+    }
+
+    let mut input = sidebar_input(&project.id);
+    input.limit_per_group = Some(LIMIT_PER_GROUP);
+    let execution_state = Arc::new(ExecutionState::new());
+    let response = list_agent_sidebar_conversations_for_app_state(input, &state, &execution_state)
+        .await
+        .unwrap();
+
+    let returned_rows: usize = response.groups.iter().map(|group| group.rows.len()).sum();
+    let enumerated: i64 = response.groups.iter().map(|group| group.total).sum();
+
+    // Totals stay accurate over every enumerated row even though only a page is composed.
+    assert_eq!(enumerated, CONVERSATION_COUNT as i64);
+    assert!(
+        returned_rows < CONVERSATION_COUNT,
+        "the fixture must actually paginate for this test to mean anything"
+    );
+    // Each returned row carries a fully composed conversation response.
+    for group in &response.groups {
+        assert!(group.rows.len() <= LIMIT_PER_GROUP as usize);
+        for row in &group.rows {
+            assert!(!row.conversation.id.is_empty());
+        }
+    }
+}

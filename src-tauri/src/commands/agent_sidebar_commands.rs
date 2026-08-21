@@ -12,14 +12,15 @@ use crate::commands::agent_sidebar_review_state::{
     SidebarPrReviewState,
 };
 use crate::commands::unified_chat_commands::{
-    agent_conversation_response_for_state, agent_workspace_response_with_pr_supervision_for_state,
+    agent_conversation_response_for_state,
+    agent_workspace_response_without_repair_recovery_for_state, plan_branch_publication_overlay,
     AgentConversationResponse, AgentConversationWorkspaceResponse,
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    AgentRunStatus, AgentWorkspacePrReviewMonitor, ChatContextType, ChatConversation,
-    ChatConversationId, DelegationPark, Project, ProjectId, TeamMemberStatus, TeamRunBindingStatus,
-    TeamRunTriggerKind,
+    AgentConversationWorkspace, AgentRunStatus, AgentWorkspacePrReviewMonitor, ChatContextType,
+    ChatConversation, ChatConversationId, DelegationPark, PlanBranch, PlanBranchId, Project,
+    ProjectId, TeamMemberStatus, TeamRunBindingStatus, TeamRunTriggerKind,
 };
 
 const DEFAULT_LIMIT_PER_GROUP: u32 = 6;
@@ -240,6 +241,69 @@ impl SidebarPublicationState {
     }
 }
 
+/// The workspace fields the sidebar derives rows from, already carrying any linked-plan-branch
+/// publication overlay.
+///
+/// The listing composes full workspace responses only for the rows a page actually returns, so
+/// lane, label, ref, and verb derivation runs against this projection instead. Building it from
+/// the persisted entity plus the shared plan-branch overlay keeps it byte-identical to the
+/// corresponding fields of `AgentConversationWorkspaceResponse` — see
+/// `sidebar_workspace_facts_match_the_composed_response` — which matters because a divergence
+/// here would silently reclassify a plan-branch-linked workspace into a different lane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SidebarWorkspaceFacts {
+    pub(crate) publication_pr_number: Option<i64>,
+    pub(crate) publication_pr_status: Option<String>,
+    pub(crate) publication_push_status: Option<String>,
+    pub(crate) base_ref: String,
+    pub(crate) base_display_name: Option<String>,
+    pub(crate) pr_supervision_status: Option<String>,
+    pub(crate) pr_auto_merge_current: Option<bool>,
+}
+
+impl SidebarWorkspaceFacts {
+    fn from_entity(
+        workspace: &AgentConversationWorkspace,
+        plan_branch: Option<&PlanBranch>,
+    ) -> Self {
+        let mut facts = Self {
+            publication_pr_number: workspace.publication_pr_number,
+            publication_pr_status: workspace.publication_pr_status.clone(),
+            publication_push_status: workspace.publication_push_status.clone(),
+            base_ref: workspace.base_ref.clone(),
+            base_display_name: workspace.base_display_name.clone(),
+            pr_supervision_status: workspace.pr_supervision_status.clone(),
+            pr_auto_merge_current: workspace.pr_auto_merge_current,
+        };
+        if let Some(plan_branch) = plan_branch {
+            let overlay = plan_branch_publication_overlay(plan_branch);
+            facts.publication_pr_number = overlay.pr_number;
+            facts.publication_pr_status = overlay.pr_status;
+            facts.publication_push_status = overlay.push_status;
+        }
+        facts
+    }
+
+    /// Callers that already hold a composed response project from it directly, so they cannot
+    /// drift from the response the rest of the surface renders.
+    pub(crate) fn from_response(response: &AgentConversationWorkspaceResponse) -> Self {
+        Self {
+            publication_pr_number: response.publication_pr_number,
+            publication_pr_status: response.publication_pr_status.clone(),
+            publication_push_status: response.publication_push_status.clone(),
+            base_ref: response.base_ref.clone(),
+            base_display_name: response.base_display_name.clone(),
+            pr_supervision_status: response.pr_supervision_status.clone(),
+            pr_auto_merge_current: response.pr_auto_merge_current,
+        }
+    }
+}
+
+/// One conversation before its response payloads are composed.
+///
+/// Every field the listing needs to filter, sort, group, and paginate is present; the expensive
+/// `AgentConversationResponse` / `AgentConversationWorkspaceResponse` composition happens only for
+/// the rows a page actually returns.
 struct SidebarConversationRow {
     conversation_id: ChatConversationId,
     project_id: String,
@@ -247,11 +311,12 @@ struct SidebarConversationRow {
     sort_at: DateTime<Utc>,
     is_pinned: bool,
     is_priority: bool,
-    conversation: AgentConversationResponse,
-    workspace: Option<AgentConversationWorkspaceResponse>,
+    conversation: ChatConversation,
+    workspace: Option<AgentConversationWorkspace>,
     ref_kind: &'static str,
     ref_label: String,
     publication_state: SidebarPublicationState,
+    publication_label: Option<String>,
     attention_lane: SidebarAttentionLane,
     parked_delegate_count: usize,
     attention_state_fingerprint: String,
@@ -292,7 +357,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
 async fn list_agent_sidebar_conversations_for_app_state_impl(
     input: AgentSidebarConversationsInput,
     state: &AppState,
-    execution_state: &Arc<ExecutionState>,
+    _execution_state: &Arc<ExecutionState>,
 ) -> Result<AgentSidebarConversationGroupsResponse, String> {
     let group_by = SidebarGroupBy::parse(input.group_by.as_deref())?;
     let row_sort = SidebarRowSort::parse(input.sort.as_deref())?;
@@ -359,17 +424,22 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
             .get_by_project_id(&project_id)
             .await
             .map_err(|e| e.to_string())?;
-        let mut workspace_by_conversation_id = HashMap::new();
-        for workspace in workspaces {
-            let conversation_id = workspace.conversation_id;
-            let response = agent_workspace_response_with_pr_supervision_for_state(
-                state,
-                execution_state,
-                workspace,
-            )
-            .await?;
-            workspace_by_conversation_id.insert(conversation_id, response);
-        }
+        // Raw entities only. Composing a workspace response here cost several awaited reads for
+        // every workspace in the project, most of which never reach a returned page.
+        let mut workspace_by_conversation_id: HashMap<ChatConversationId, _> = workspaces
+            .into_iter()
+            .map(|workspace| (workspace.conversation_id, workspace))
+            .collect();
+        // One project-wide read replaces the per-workspace `get_by_id` the response composer does
+        // for every linked plan branch.
+        let plan_branch_by_id: HashMap<PlanBranchId, PlanBranch> = state
+            .plan_branch_repo
+            .get_by_project_id(&project_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|plan_branch| (plan_branch.id.clone(), plan_branch))
+            .collect();
 
         let conversations = state
             .chat_conversation_repo
@@ -381,6 +451,8 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
             .await
             .map_err(|e| e.to_string())?;
 
+        // Apply every cheap filter before the batched reads so they only cover surviving rows.
+        let mut candidates = Vec::new();
         for conversation in conversations {
             let workspace = workspace_by_conversation_id.remove(&conversation.id);
             if conversation.automation_run_id.is_some() {
@@ -395,28 +467,45 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
             if !matches_search(&conversation, search.as_deref()) {
                 continue;
             }
+            candidates.push((conversation, workspace));
+        }
 
-            let latest_run = state
-                .agent_run_repo
-                .get_latest_for_conversation(&conversation.id)
-                .await
-                .map_err(|e| e.to_string())?;
-            let latest_run_status = latest_run.as_ref().map(|run| run.status);
-            let blocked_exhausted_repair = state
-                .agent_workspace_repair_repo
-                .get_current_repair_attempt(&conversation.id)
-                .await
-                .map_err(|e| e.to_string())?
-                .as_ref()
+        let candidate_ids: Vec<ChatConversationId> = candidates
+            .iter()
+            .map(|(conversation, _)| conversation.id)
+            .collect();
+        let latest_run_by_conversation = state
+            .agent_run_repo
+            .get_latest_for_conversations(&candidate_ids)
+            .await
+            .map_err(|e| e.to_string())?;
+        let current_repair_by_conversation = state
+            .agent_workspace_repair_repo
+            .get_current_repair_attempts_for_conversations(&candidate_ids)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        for (conversation, workspace) in candidates {
+            let workspace_facts = workspace.as_ref().map(|workspace| {
+                let plan_branch = workspace
+                    .linked_plan_branch_id
+                    .as_ref()
+                    .and_then(|plan_branch_id| plan_branch_by_id.get(plan_branch_id));
+                SidebarWorkspaceFacts::from_entity(workspace, plan_branch)
+            });
+            let latest_run = latest_run_by_conversation.get(&conversation.id);
+            let latest_run_status = latest_run.map(|run| run.status);
+            let blocked_exhausted_repair = current_repair_by_conversation
+                .get(&conversation.id)
                 .is_some_and(is_blocked_and_not_auto_retryable);
             let publication_state =
-                publication_state_for_workspace(workspace.as_ref(), latest_run_status);
+                publication_state_for_workspace(workspace_facts.as_ref(), latest_run_status);
             if !selected_state_set.contains(&publication_state) {
                 continue;
             }
 
             let (ref_kind, ref_label) =
-                conversation_ref_display(workspace.as_ref(), default_ref_label.as_str());
+                conversation_ref_display(workspace_facts.as_ref(), default_ref_label.as_str());
             let parked_delegate_count = parked_delegate_counts_by_conversation
                 .get(&conversation.id)
                 .copied()
@@ -429,7 +518,7 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
                 conversation.is_archived(),
                 publication_state,
                 latest_run_status,
-                workspace.as_ref(),
+                workspace_facts.as_ref(),
                 blocked_exhausted_repair,
                 conversation
                     .last_message_at
@@ -441,9 +530,9 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
             let attention_state_fingerprint = attention_state_fingerprint(
                 conversation.is_archived(),
                 publication_state,
-                latest_run.as_ref().map(|run| run.id.to_string()).as_deref(),
+                latest_run.map(|run| run.id.to_string()).as_deref(),
                 latest_run_status,
-                normalized_supervision_status(workspace.as_ref()).as_deref(),
+                normalized_supervision_status(workspace_facts.as_ref()).as_deref(),
                 conversation.last_message_at,
                 managed_team_activity_by_conversation
                     .get(&conversation.id)
@@ -453,23 +542,23 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
             let action_verb = action_verb_for_row(
                 publication_state,
                 latest_run_status,
-                workspace.as_ref(),
+                workspace_facts.as_ref(),
                 ref_kind,
+            );
+            let publication_label = publication_label_for_workspace_response(
+                workspace_facts.as_ref(),
+                publication_state,
             );
             let sort_at = conversation
                 .last_message_at
                 .unwrap_or(conversation.updated_at);
             let is_pinned = pinned_conversation_ids.contains(&conversation.id.as_str());
             let is_priority = priority_conversation_ids.contains(&conversation.id.as_str());
-            // Captured before the response shadows `conversation`: the response
-            // carries a plain `String` id, and mute lookups are keyed by the
-            // typed conversation id.
             let conversation_id = conversation.id;
             let automation_id = conversation
                 .automation_id
                 .as_ref()
                 .map(|automation_id| automation_id.as_str().to_string());
-            let conversation = agent_conversation_response_for_state(state, conversation).await?;
             rows.push(SidebarConversationRow {
                 conversation_id,
                 project_id: project_id_string.clone(),
@@ -482,6 +571,7 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
                 ref_kind,
                 ref_label,
                 publication_state,
+                publication_label,
                 attention_lane,
                 parked_delegate_count,
                 attention_state_fingerprint,
@@ -513,6 +603,7 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
         .await
         .map_err(|e| e.to_string())?;
     let mut has_no_project_rows = false;
+    let mut standalone_candidates = Vec::new();
     for conversation in standalone_conversations {
         if archived_only && !conversation.is_archived() {
             continue;
@@ -520,13 +611,21 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
         if !matches_search(&conversation, search.as_deref()) {
             continue;
         }
+        standalone_candidates.push(conversation);
+    }
+    let standalone_candidate_ids: Vec<ChatConversationId> = standalone_candidates
+        .iter()
+        .map(|conversation| conversation.id)
+        .collect();
+    let standalone_latest_run_by_conversation = state
+        .agent_run_repo
+        .get_latest_for_conversations(&standalone_candidate_ids)
+        .await
+        .map_err(|e| e.to_string())?;
 
-        let latest_run = state
-            .agent_run_repo
-            .get_latest_for_conversation(&conversation.id)
-            .await
-            .map_err(|e| e.to_string())?;
-        let latest_run_status = latest_run.as_ref().map(|run| run.status);
+    for conversation in standalone_candidates {
+        let latest_run = standalone_latest_run_by_conversation.get(&conversation.id);
+        let latest_run_status = latest_run.map(|run| run.status);
         // Standalone (chat-only in this phase) never creates an
         // AgentConversationWorkspace, so there is no per-conversation
         // workspace lookup here (unlike the per-project loop above).
@@ -559,7 +658,7 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
         let attention_state_fingerprint = attention_state_fingerprint(
             conversation.is_archived(),
             publication_state,
-            latest_run.as_ref().map(|run| run.id.to_string()).as_deref(),
+            latest_run.map(|run| run.id.to_string()).as_deref(),
             latest_run_status,
             None,
             conversation.last_message_at,
@@ -569,13 +668,13 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
             None,
         );
         let action_verb = action_verb_for_row(publication_state, latest_run_status, None, ref_kind);
+        let publication_label = publication_label_for_workspace_response(None, publication_state);
         let sort_at = conversation
             .last_message_at
             .unwrap_or(conversation.updated_at);
         let is_pinned = pinned_conversation_ids.contains(&conversation.id.as_str());
         let is_priority = priority_conversation_ids.contains(&conversation.id.as_str());
         let conversation_id = conversation.id;
-        let conversation = agent_conversation_response_for_state(state, conversation).await?;
         has_no_project_rows = true;
         rows.push(SidebarConversationRow {
             conversation_id,
@@ -589,6 +688,7 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
             ref_kind,
             ref_label,
             publication_state,
+            publication_label,
             attention_lane,
             parked_delegate_count,
             attention_state_fingerprint,
@@ -624,7 +724,9 @@ async fn list_agent_sidebar_conversations_for_app_state_impl(
         SidebarGroupBy::Inbox => inbox_groups(rows, limit, &offsets),
     };
 
-    Ok(AgentSidebarConversationGroupsResponse { groups })
+    Ok(AgentSidebarConversationGroupsResponse {
+        groups: hydrate_groups(state, groups).await?,
+    })
 }
 
 fn compare_sidebar_rows(
@@ -713,7 +815,7 @@ fn default_ref_label(project: Option<&Project>) -> String {
 }
 
 fn conversation_ref_display(
-    workspace: Option<&AgentConversationWorkspaceResponse>,
+    workspace: Option<&SidebarWorkspaceFacts>,
     default_ref_label: &str,
 ) -> (&'static str, String) {
     if let Some(pr_number) = workspace.and_then(|workspace| workspace.publication_pr_number) {
@@ -734,7 +836,7 @@ fn conversation_ref_display(
 }
 
 pub(crate) fn publication_state_for_workspace(
-    workspace: Option<&AgentConversationWorkspaceResponse>,
+    workspace: Option<&SidebarWorkspaceFacts>,
     latest_run_status: Option<AgentRunStatus>,
 ) -> SidebarPublicationState {
     let Some(workspace) = workspace else {
@@ -786,7 +888,7 @@ fn is_in_flight_run_status(latest_run_status: Option<AgentRunStatus>) -> bool {
 }
 
 pub(crate) fn normalized_supervision_status(
-    workspace: Option<&AgentConversationWorkspaceResponse>,
+    workspace: Option<&SidebarWorkspaceFacts>,
 ) -> Option<String> {
     normalized_supervision_status_value(
         workspace.and_then(|workspace| workspace.pr_supervision_status.as_deref()),
@@ -865,7 +967,7 @@ fn attention_lane_for_row(
     is_archived: bool,
     publication_state: SidebarPublicationState,
     latest_run_status: Option<AgentRunStatus>,
-    workspace: Option<&AgentConversationWorkspaceResponse>,
+    workspace: Option<&SidebarWorkspaceFacts>,
     blocked_exhausted_repair: bool,
     last_activity_at: DateTime<Utc>,
     managed_team_activity: Option<&ManagedTeamActivity>,
@@ -888,7 +990,7 @@ fn attention_lane_for_row_with_armed_park(
     is_archived: bool,
     publication_state: SidebarPublicationState,
     latest_run_status: Option<AgentRunStatus>,
-    workspace: Option<&AgentConversationWorkspaceResponse>,
+    workspace: Option<&SidebarWorkspaceFacts>,
     blocked_exhausted_repair: bool,
     last_activity_at: DateTime<Utc>,
     managed_team_activity: Option<&ManagedTeamActivity>,
@@ -1122,7 +1224,7 @@ async fn managed_team_activity_for_session(
 fn action_verb_for_row(
     publication_state: SidebarPublicationState,
     latest_run_status: Option<AgentRunStatus>,
-    workspace: Option<&AgentConversationWorkspaceResponse>,
+    workspace: Option<&SidebarWorkspaceFacts>,
     ref_kind: &str,
 ) -> String {
     match publication_state {
@@ -1163,7 +1265,7 @@ fn publication_groups(
     selected_states: Vec<SidebarPublicationState>,
     limit: u32,
     offsets: &HashMap<String, u32>,
-) -> Vec<AgentSidebarConversationGroupResponse> {
+) -> Vec<SidebarGroupSkeleton> {
     let mut rows_by_state: HashMap<SidebarPublicationState, Vec<SidebarConversationRow>> =
         selected_states
             .iter()
@@ -1197,7 +1299,7 @@ fn inbox_groups(
     rows: Vec<SidebarConversationRow>,
     limit: u32,
     offsets: &HashMap<String, u32>,
-) -> Vec<AgentSidebarConversationGroupResponse> {
+) -> Vec<SidebarGroupSkeleton> {
     let mut rows_by_lane: HashMap<SidebarAttentionLane, Vec<SidebarConversationRow>> =
         SidebarAttentionLane::ALL
             .iter()
@@ -1233,7 +1335,7 @@ fn project_groups(
     sort: SidebarRowSort,
     limit: u32,
     offsets: &HashMap<String, u32>,
-) -> Vec<AgentSidebarConversationGroupResponse> {
+) -> Vec<SidebarGroupSkeleton> {
     let mut rows_by_project: HashMap<String, Vec<SidebarConversationRow>> = project_labels
         .iter()
         .map(|(project_id, _)| (project_id.clone(), Vec::new()))
@@ -1290,7 +1392,7 @@ fn automation_groups(
     sort: SidebarRowSort,
     limit: u32,
     offsets: &HashMap<String, u32>,
-) -> Vec<AgentSidebarConversationGroupResponse> {
+) -> Vec<SidebarGroupSkeleton> {
     let mut rows_by_group: HashMap<String, Vec<SidebarConversationRow>> = HashMap::new();
     for row in rows {
         let key = row
@@ -1361,26 +1463,36 @@ fn fallback_automation_label(id: &str) -> String {
     format!("Automation {id}")
 }
 
+/// A grouped, paginated page of rows that has not been composed into responses yet.
+///
+/// Grouping and pagination stay synchronous and total-accurate over every enumerated row, while
+/// only the `rows` that survive pagination pay for response composition.
+struct SidebarGroupSkeleton {
+    key: String,
+    label: String,
+    total: i64,
+    offset: u32,
+    limit: u32,
+    has_more: bool,
+    rows: Vec<SidebarConversationRow>,
+}
+
 fn build_group(
     key: String,
     label: String,
     rows: Vec<SidebarConversationRow>,
     offset: u32,
     limit: u32,
-) -> AgentSidebarConversationGroupResponse {
+) -> SidebarGroupSkeleton {
     let total = rows.len() as i64;
     let start = offset as usize;
     let rows = if start >= rows.len() {
         Vec::new()
     } else {
-        rows.into_iter()
-            .skip(start)
-            .take(limit as usize)
-            .map(AgentSidebarConversationRowResponse::from)
-            .collect()
+        rows.into_iter().skip(start).take(limit as usize).collect()
     };
 
-    AgentSidebarConversationGroupResponse {
+    SidebarGroupSkeleton {
         key,
         label,
         total,
@@ -1391,26 +1503,58 @@ fn build_group(
     }
 }
 
-impl From<SidebarConversationRow> for AgentSidebarConversationRowResponse {
-    fn from(row: SidebarConversationRow) -> Self {
-        let publication_label =
-            publication_label_for_workspace_response(row.workspace.as_ref(), row.publication_state);
-        Self {
-            conversation: row.conversation,
-            workspace: row.workspace,
-            ref_kind: row.ref_kind.to_string(),
-            ref_label: row.ref_label,
-            publication_state: row.publication_state.key().to_string(),
-            publication_label,
-            attention_lane: row.attention_lane.key().to_string(),
-            parked_delegate_count: row.parked_delegate_count,
-            is_muted: row.is_muted,
-            action_verb: row.action_verb,
-            review_state: row
-                .review_state
-                .map(|review_state| review_state.key().to_string()),
+/// Composes conversation and workspace responses for exactly the rows the groups return.
+///
+/// Uses the side-effect-free workspace composer: enumerating the sidebar is a read boundary and
+/// must not schedule recovery work.
+async fn hydrate_groups(
+    state: &AppState,
+    groups: Vec<SidebarGroupSkeleton>,
+) -> Result<Vec<AgentSidebarConversationGroupResponse>, String> {
+    let mut hydrated = Vec::with_capacity(groups.len());
+    for group in groups {
+        let mut rows = Vec::with_capacity(group.rows.len());
+        for row in group.rows {
+            rows.push(hydrate_row(state, row).await?);
         }
+        hydrated.push(AgentSidebarConversationGroupResponse {
+            key: group.key,
+            label: group.label,
+            total: group.total,
+            offset: group.offset,
+            limit: group.limit,
+            has_more: group.has_more,
+            rows,
+        });
     }
+    Ok(hydrated)
+}
+
+async fn hydrate_row(
+    state: &AppState,
+    row: SidebarConversationRow,
+) -> Result<AgentSidebarConversationRowResponse, String> {
+    let workspace = match row.workspace {
+        Some(workspace) => Some(
+            agent_workspace_response_without_repair_recovery_for_state(state, workspace).await?,
+        ),
+        None => None,
+    };
+    Ok(AgentSidebarConversationRowResponse {
+        conversation: agent_conversation_response_for_state(state, row.conversation).await?,
+        workspace,
+        ref_kind: row.ref_kind.to_string(),
+        ref_label: row.ref_label,
+        publication_state: row.publication_state.key().to_string(),
+        publication_label: row.publication_label,
+        attention_lane: row.attention_lane.key().to_string(),
+        parked_delegate_count: row.parked_delegate_count,
+        is_muted: row.is_muted,
+        action_verb: row.action_verb,
+        review_state: row
+            .review_state
+            .map(|review_state| review_state.key().to_string()),
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -1511,7 +1655,7 @@ fn publication_state_from_domain(
 }
 
 fn publication_label_for_workspace_response(
-    workspace: Option<&AgentConversationWorkspaceResponse>,
+    workspace: Option<&SidebarWorkspaceFacts>,
     state: SidebarPublicationState,
 ) -> Option<String> {
     if matches!(

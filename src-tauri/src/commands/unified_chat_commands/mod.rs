@@ -599,21 +599,46 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
     }
 }
 
+/// The publication fields a linked plan branch overlays onto its workspace.
+///
+/// Callers that derive publication state without composing a full workspace response — the agents
+/// sidebar listing — must apply this same overlay, or they would classify a plan-branch-linked
+/// workspace differently from the response the rest of the surface sees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlanBranchPublicationOverlay {
+    pub pr_number: Option<i64>,
+    pub pr_url: Option<String>,
+    pub pr_status: Option<String>,
+    pub push_status: Option<String>,
+}
+
+pub(crate) fn plan_branch_publication_overlay(
+    plan_branch: &PlanBranch,
+) -> PlanBranchPublicationOverlay {
+    PlanBranchPublicationOverlay {
+        pr_number: plan_branch.pr_number,
+        pr_url: plan_branch.pr_url.clone(),
+        pr_status: if plan_branch.status == PlanBranchStatus::Merged {
+            Some("merged".to_string())
+        } else {
+            plan_branch
+                .pr_status
+                .as_ref()
+                .map(|status| status.to_db_string().to_ascii_lowercase())
+        },
+        push_status: Some(plan_branch.pr_push_status.to_db_string().to_string()),
+    }
+}
+
 fn project_plan_branch_publication_into_workspace_response(
     response: &mut AgentConversationWorkspaceResponse,
     plan_branch: &PlanBranch,
 ) {
-    response.publication_pr_number = plan_branch.pr_number;
-    response.publication_pr_url = plan_branch.pr_url.clone();
-    response.publication_pr_status = if plan_branch.status == PlanBranchStatus::Merged {
-        Some("merged".to_string())
-    } else {
-        plan_branch
-            .pr_status
-            .as_ref()
-            .map(|status| status.to_db_string().to_ascii_lowercase())
-    };
-    response.publication_push_status = Some(plan_branch.pr_push_status.to_db_string().to_string());
+    let overlay = plan_branch_publication_overlay(plan_branch);
+    response.publication_pr_number = overlay.pr_number;
+    response.publication_pr_url = overlay.pr_url;
+    response.publication_pr_status = overlay.pr_status;
+    response.publication_push_status = overlay.push_status;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
