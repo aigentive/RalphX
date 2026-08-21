@@ -1160,6 +1160,58 @@ pub(crate) async fn release_agent_workspace_needs_human_hold_for_new_head(
         .map(repair_attempt_transition_outcome)
 }
 
+/// Releases a `needs_human` hold whose CI evidence fresh green health just proved stale.
+///
+/// The proof shape differs from `release_agent_workspace_needs_human_hold_for_new_head`: that
+/// variant proves the hold describes a *different* head, while this one proves the failure the hold
+/// described no longer exists at the current head. The caller (the PR merge poller) owns the
+/// greenness proof — a known head with a non-empty checks list, zero failing checks, zero in-flight
+/// runs, and no classified autofix issue — and must only pass a head that satisfied it on the same
+/// poll tick.
+///
+/// Deliberately does not consult `pr_autofix_dispatch_head_commit`: green evidence is head-agnostic
+/// proof, so rescued orphan attempts carrying a NULL dispatch head also heal. Fails closed on a
+/// blank head or a missing `needs_human` marker. The blocker text is never consulted; it is
+/// free-form agent prose, not evidence.
+pub(crate) async fn release_agent_workspace_needs_human_hold_for_green_head(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    mut attempt: AgentWorkspaceRepairAttempt,
+    green_head: &str,
+    summary: &str,
+) -> AppResult<AgentWorkspaceRepairTransitionOutcome> {
+    let green_head = green_head.trim();
+    let clears = !green_head.is_empty()
+        && attempt
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == NEEDS_HUMAN_REPAIR_REASON);
+    if !clears {
+        return Ok(AgentWorkspaceRepairTransitionOutcome::Stale(attempt));
+    }
+
+    let expected_phase = attempt.phase;
+    let expected_updated_at = attempt.updated_at;
+    attempt
+        .pending_reasons
+        .retain(|reason| reason != NEEDS_HUMAN_REPAIR_REASON);
+    // Phase and marker move together atomically, exactly as in the new-head variant: attempt.phase
+    // must equal next_phase to satisfy the matches_attempt guard in the repo CAS.
+    attempt.phase = AgentWorkspaceRepairPhase::Ready;
+    attempt.summary = Some(summary.to_string());
+    attempt.updated_at = next_transition_at(Some(expected_updated_at));
+    repair_repo
+        .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
+            attempt,
+            expected_phase,
+            expected_updated_at,
+            next_phase: AgentWorkspaceRepairPhase::Ready,
+            compatibility_projection: None,
+            events: Vec::new(),
+        })
+        .await
+        .map(repair_attempt_transition_outcome)
+}
+
 async fn reserve_agent_workspace_repair_health_hold(
     repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
     mut attempt: AgentWorkspaceRepairAttempt,

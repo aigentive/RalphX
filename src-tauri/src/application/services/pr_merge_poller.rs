@@ -21,7 +21,7 @@ use crate::application::agent_workspace_base_staleness::{
     classify_health_hold_disposition, BaseStalenessObservation, HealthHoldDisposition,
 };
 use crate::application::agent_workspace_ci_rerun::{
-    ci_rerun_hold_still_pending, classify_check_conclusion, CiFailureKind,
+    check_is_in_flight, ci_rerun_hold_still_pending, classify_check_conclusion, CiFailureKind,
 };
 use crate::application::agent_workspace_pr_autofix_attempt::{
     load_pr_autofix_attempt_decision, pr_autofix_action_metadata,
@@ -36,13 +36,14 @@ use crate::application::agent_workspace_publish_repair_state::{
     agent_workspace_repair_is_health_held, classify_agent_workspace_repair_delivery,
     held_repair_has_unpublished_head, mark_agent_workspace_base_update_target,
     mark_agent_workspace_base_update_target_preserving_phase,
-    release_agent_workspace_base_stale_hold, release_agent_workspace_needs_human_hold_for_new_head,
+    release_agent_workspace_base_stale_hold,
+    release_agent_workspace_needs_human_hold_for_green_head,
+    release_agent_workspace_needs_human_hold_for_new_head,
     release_and_clear_agent_workspace_repair_target_lease,
     reserve_agent_workspace_base_parity_transient, reserve_agent_workspace_base_stale_hold,
     reserve_agent_workspace_base_update, reserve_agent_workspace_base_update_preserving_phase,
-    reserve_agent_workspace_repair_dispatch,
-    settle_agent_workspace_repair_dispatch_outcome, start_or_join_agent_workspace_repair,
-    start_or_join_agent_workspace_repair_without_projection,
+    reserve_agent_workspace_repair_dispatch, settle_agent_workspace_repair_dispatch_outcome,
+    start_or_join_agent_workspace_repair, start_or_join_agent_workspace_repair_without_projection,
     validate_agent_workspace_repair_target_lease, AgentWorkspaceRepairDispatchOutcome,
     AgentWorkspaceRepairDispatchSettlement, AgentWorkspaceRepairStartOutcome,
     AgentWorkspaceRepairStartRequest, AgentWorkspaceRepairTransitionOutcome, PrAutofixCarryover,
@@ -4031,6 +4032,37 @@ async fn clear_needs_human_hold_after_base_update(
     Ok(())
 }
 
+/// Releases a `needs_human` hold when fresh GitHub health proves its CI evidence stale: the PR
+/// reports fully green at a known head with nothing in flight. Green evidence — not a head
+/// difference — is the proof here, so this fires even when the head never moved, which is the exact
+/// shape `clear_needs_human_hold_after_base_update` can never clear.
+///
+/// Best effort by design: a `Stale`/`Missing` CAS leaves the hold in place for the next tick.
+async fn clear_needs_human_hold_for_green_head(
+    repair_repo: Arc<dyn AgentWorkspaceRepairRepository>,
+    attempt: AgentWorkspaceRepairAttempt,
+    green_head: &str,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+) -> crate::AppResult<()> {
+    if let AgentWorkspaceRepairTransitionOutcome::Applied(_) =
+        release_agent_workspace_needs_human_hold_for_green_head(
+            repair_repo,
+            attempt,
+            green_head,
+            "GitHub reports every check green at the current head, so the escalated CI evidence no longer describes reality.",
+        )
+        .await?
+    {
+        tracing::info!(
+            conversation_id = conversation_id.as_str(),
+            pr_number,
+            "Green CI at the current head superseded a needs_human repair hold"
+        );
+    }
+    Ok(())
+}
+
 /// Whether this generation may take the base-staleness supersession path.
 ///
 /// A `Ready` generation always may — that is the pre-existing behavior and it stays untouched.
@@ -4567,11 +4599,31 @@ async fn route_agent_workspace_pr_autofix_for_target(
                         BehindBaseUpdateRoute::Rejected => return Ok(false),
                     }
                 }
-                // A Blocked generation is admitted only so base staleness can supersede it.
-                // Every remaining branch in this block is CI/health-hold settlement written
-                // for a Ready generation, and settling or releasing a needs_human hold from
-                // here has no head-scoped justification.
+                // A Blocked generation is admitted so base staleness (above) or fully green health
+                // (here) can supersede it. Green health is evidence-scoped proof: the failing check
+                // the hold described no longer exists at the current settled head. Everything past
+                // this point is CI/health-hold settlement written for a Ready generation, and
+                // settling a needs_human hold from there has no justification at all.
+                //
+                // Nothing earlier in this block can swallow the green case: the base-stale release
+                // and its unreadable-health guard both require `base_stale_held`, which a bare
+                // needs_human hold never carries, and the two supersession arms both require merge
+                // state `Behind`, which a green PR is not. `current_issue.is_none()` additionally
+                // excludes changes_requested and Dirty/Conflicting mergeability, so the predicate
+                // pair below is the complete green proof.
                 if blocked_base_staleness_candidate && !attempt_already_settled {
+                    if current_issue.is_none() {
+                        if let Some(green_head) = pr_health_fully_green_head(&health) {
+                            clear_needs_human_hold_for_green_head(
+                                Arc::clone(repair_repo),
+                                attempt,
+                                green_head,
+                                conversation_id,
+                                target.pr_number,
+                            )
+                            .await?;
+                        }
+                    }
                     return Ok(false);
                 }
                 if !attempt_already_settled {
@@ -6511,6 +6563,30 @@ pub(crate) async fn import_agent_workspace_pr_comment_evidence(
     workspace_repo
         .upsert_pr_comment_evidence(conversation_id, comments)
         .await
+}
+
+/// The head GitHub reports for a PR whose health is fully green and settled: a known, non-blank
+/// head; at least one reported check (an empty list is degraded evidence, not green); zero failing
+/// checks; zero in-flight runs. Returns `None` on every weaker shape, so a caller releasing a fence
+/// against this proof fails closed on degraded or unsettled health.
+fn pr_health_fully_green_head(health: &PrHealth) -> Option<&str> {
+    let head = health
+        .sync_state
+        .head_ref_oid
+        .as_deref()
+        .map(str::trim)
+        .filter(|head| !head.is_empty())?;
+    if health.checks.is_empty() {
+        return None;
+    }
+    if health.checks.iter().any(agent_workspace_check_is_failing) {
+        return None;
+    }
+    // A workflow that is still running is not proof that older evidence is stale.
+    if health.checks.iter().any(check_is_in_flight) {
+        return None;
+    }
+    Some(head)
 }
 
 fn agent_workspace_check_is_failing(check: &PrHealthCheck) -> bool {
