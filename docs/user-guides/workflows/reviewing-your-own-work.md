@@ -14,6 +14,10 @@ Use Workspace Review to check the local changes RalphX made in your workspace be
 
 1. Click **Run review** to start a local reviewer pass.
 
+   Expect a few minutes, scaling with the size of the delta rather than the size of the repository. It costs provider credits like any other run, which is worth remembering before clicking **Run again** on an unchanged branch.
+
+   You can stop a review in progress with **Stop** in the composer, the same way you stop any run. The workspace is left as it was and you can start the review again.
+
 ![The RalphX Review tab showing a blocking Workspace Review result and its Overview](../../../assets/public/guides/review-run.png)
 
 2. Use **Retry review** if that attempt needs another run.
@@ -64,3 +68,5 @@ You have reviewed the local workspace delta, resolved its findings, or conscious
 ## Next
 
 - [Reviewing a pull request with RalphX](reviewing-a-pull-request.md)
+
+If this did not look right — the review will not start, it keeps reporting the same finding after **Fix Issues**, or publishing fails — see [When something goes wrong](../troubleshooting.md).

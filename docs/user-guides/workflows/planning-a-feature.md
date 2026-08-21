@@ -47,10 +47,25 @@ Use a planning conversation to turn an idea into an implementation-ready *plan b
 ## Verify and approve the plan
 
 1. Click **Verify Plan** to check that the bundle is safe and complete enough to execute.
+
+   Verification reads the plan against the codebase and argues with it, so expect it to take several minutes on a substantial plan. It is the slowest step in this guide.
+
+   Like every agent action in RalphX, it runs against your own provider account and consumes credits there. Planning is cheap next to implementation, but repeatedly re-verifying an unchanged plan is spend for nothing.
+
 2. Review the verification feedback and resolve any meaningful gap in the conversation.
 3. Click **Verify Plan** again after a material revision.
 4. Read the final Plan Overview and Implementation Blueprint.
 5. Click **Approve Plan** when you are ready to authorize delivery; verification does not approve the plan for you.
+
+   Approval is instant — it records your decision rather than starting work.
+
+## Stop a run you did not mean to start
+
+1. Click **Stop** in the composer while the agent is working.
+
+   The **Send** button becomes **Stop** whenever an agent is running *and* the composer is empty. If you have typed something it stays **Send**, so clear the box to get the **Stop** control back.
+
+   Stopping ends the current run. Anything already written to the conversation and its artifacts stays, and you can send a new message to pick up from there — a stopped planning conversation is not a lost one.
 
 ## Choose a delivery path
 
@@ -67,3 +82,5 @@ You have a verified, approved Plan Overview and Implementation Blueprint, plus a
 ## Next
 
 - [Implementing a feature with RalphX](implementing-a-feature.md)
+
+If this did not look right — verification never finished, the plan came back about the wrong part of the codebase, or the conversation would not start — see [When something goes wrong](../troubleshooting.md).

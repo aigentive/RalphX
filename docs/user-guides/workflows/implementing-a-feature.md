@@ -9,6 +9,11 @@ Use the direct delivery path to turn an approved plan bundle into a branch with 
 1. Return to the approved plan bundle in the **Plan** artifact tab.
 2. Confirm that the Plan Overview and Implementation Blueprint still describe the work you want done.
 3. Click **Implement Directly** to begin the default delivery path.
+
+   This is the longest-running action in these guides. A small, linear change takes several minutes; a plan touching many files can run considerably longer, and it is normal to leave it working and come back.
+
+   It is also the most expensive. Implementation consumes far more provider credits than planning did, because the agent is reading and writing code rather than prose. This is the step to be deliberate about re-running.
+
 4. Wait for the conversation to switch into the **Agent** workspace.
 5. Keep the approved artifacts open as the source of intent for the branch.
 6. Return to planning instead if you need to change to **Create Proposals** and tracked delivery.
@@ -37,6 +42,20 @@ Use the direct delivery path to turn an approved plan bundle into a branch with 
 >
 > Small scope drift is normal and cheap to correct while the branch is still open. Left alone it becomes a review finding later, which costs more.
 
+## Stop a run in progress
+
+1. Click **Stop** in the composer to end the run.
+
+   The **Send** button becomes **Stop** while the agent is working, as long as the composer is empty. Clear anything you have typed if you cannot see it.
+
+   Stopping does not discard work. The branch and every file the agent has already changed stay in the workspace exactly as they are — the worktree is a real checkout and stopping a run does not touch it.
+
+2. Decide what to do with the partial branch.
+
+   Send a new message to have the agent carry on from where it stopped, which is usually what you want after a mid-course correction.
+
+   Or open the **Review** artifact tab and treat what exists as the delta to review — a partially implemented plan is still reviewable work, not a broken state.
+
 ## Hand off to local review
 
 1. Read RalphX's implementation summary against the approved plan bundle.
@@ -54,3 +73,5 @@ You have an approved plan implemented on a branch in an **Agent** workspace. The
 ## Next
 
 - [Reviewing your own work with RalphX](reviewing-your-own-work.md)
+
+If this did not look right — the run stopped early, the branch is missing changes you expected, or the agent could not build the project — see [When something goes wrong](../troubleshooting.md).

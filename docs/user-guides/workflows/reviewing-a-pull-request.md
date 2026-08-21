@@ -14,6 +14,9 @@ Use the Review PR workflow to inspect a linked remote GitHub pull request at its
 ## Inspect the current review
 
 1. Open the **Review** artifact tab for the Review PR workspace.
+
+   RalphX checks out the PR locally and reads it, so the first pass takes a few minutes on a substantial pull request and consumes provider credits. Each re-review on a new head costs the same again — worth knowing before leaving monitoring on for a busy PR.
+
 2. Read the **Review PR monitor** card for the current review state.
 
 ![The RalphX Review PR card with a proposed approval awaiting your decision](../../../assets/public/guides/pr-review-monitor.png)
@@ -53,6 +56,8 @@ Use the Review PR workflow to inspect a linked remote GitHub pull request at its
 2. Click **Stop Monitoring** to stop new-head re-reviews, or **Restart Monitoring** to resume them.
 3. In the stop confirmation, choose **Keep Monitoring**, **Stop After Review**, or **Stop and Cancel Review** according to whether the in-progress review should continue.
 
+   These three decide the fate of a review that is running right now. **Stop After Review** lets it finish and then stops watching for new heads; **Stop and Cancel Review** abandons it immediately. Neither sends anything to GitHub — an unsubmitted review is discarded rather than posted.
+
 ## What you have now
 
 You have reviewed a remote GitHub pull request at its current head, with the review state visible in the **Review PR monitor**. Any GitHub approval, comment, or request for changes was submitted only because you explicitly pressed **Approve PR**, **Submit Comment**, or **Request Changes**; otherwise no review action reached GitHub.
@@ -60,3 +65,5 @@ You have reviewed a remote GitHub pull request at its current head, with the rev
 ## Next
 
 - [RalphX User Guides](../README.md)
+
+If this did not look right — the PR would not load, the monitor is stuck on an old head, or a GitHub action was refused — see [When something goes wrong](../troubleshooting.md).

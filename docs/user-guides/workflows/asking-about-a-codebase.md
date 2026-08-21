@@ -12,6 +12,12 @@ Use an Ask conversation when you want read-only help understanding a codebase, a
 4. Select a project when its codebase is necessary to answer the question.
 5. State the question directly and include the outcome you need from the answer.
 
+   Answers usually arrive in under a minute, though a question that sends RalphX reading widely across the project takes longer.
+
+   **Ask** still runs a real agent against your provider account and consumes credits, but it is the cheapest of the workflows here — it reads and explains rather than writing code. Use it freely.
+
+   You can end a long-running answer with **Stop** in the composer, the same as any other run.
+
 ## Add useful context
 
 1. Type `@` in the composer to reference relevant project context.
@@ -43,3 +49,5 @@ You have a read-only answer about a codebase, supported by the context you suppl
 ## Next
 
 - [Planning a feature with RalphX](planning-a-feature.md)
+
+If this did not look right — the `@` menu found nothing, or the answer described a different part of the codebase than you meant — see [When something goes wrong](../troubleshooting.md).
