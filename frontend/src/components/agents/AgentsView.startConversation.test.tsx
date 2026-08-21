@@ -3581,9 +3581,10 @@ describe("AgentsView start conversation", () => {
         "conversation-survived-abort",
       ]),
     ).toBeDefined();
-    expect(invalidate).toHaveBeenCalledWith({
-      queryKey: ["agents", "sidebar-conversations"],
-    });
+    expect(invalidate).toHaveBeenCalledWith(
+      { queryKey: ["agents", "sidebar-conversations"] },
+      { cancelRefetch: false },
+    );
     expect(invalidateConversationDataQueries).toHaveBeenCalledWith(
       queryClient,
       "conversation-survived-abort",
