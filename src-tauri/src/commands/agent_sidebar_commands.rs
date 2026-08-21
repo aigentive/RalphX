@@ -331,33 +331,28 @@ pub(crate) struct ManagedTeamActivity {
     pub(crate) fingerprint: String,
 }
 
+// Enumerating the sidebar is a read boundary: it composes only through the side-effect-free
+// workspace projection and takes no `ExecutionState`, so it cannot schedule PR-supervision
+// recovery. Recovery keeps its own triggers — workspace open, run completed, and startup.
 #[tauri::command]
 pub async fn list_agent_sidebar_conversations(
     input: AgentSidebarConversationsInput,
     state: State<'_, AppState>,
-    execution_state: State<'_, Arc<ExecutionState>>,
 ) -> Result<AgentSidebarConversationGroupsResponse, String> {
-    list_agent_sidebar_conversations_for_app_state_impl(
-        input,
-        state.inner(),
-        execution_state.inner(),
-    )
-    .await
+    list_agent_sidebar_conversations_for_app_state_impl(input, state.inner()).await
 }
 
 #[doc(hidden)]
 pub async fn list_agent_sidebar_conversations_for_app_state(
     input: AgentSidebarConversationsInput,
     state: &AppState,
-    execution_state: &Arc<ExecutionState>,
 ) -> Result<AgentSidebarConversationGroupsResponse, String> {
-    list_agent_sidebar_conversations_for_app_state_impl(input, state, execution_state).await
+    list_agent_sidebar_conversations_for_app_state_impl(input, state).await
 }
 
 async fn list_agent_sidebar_conversations_for_app_state_impl(
     input: AgentSidebarConversationsInput,
     state: &AppState,
-    _execution_state: &Arc<ExecutionState>,
 ) -> Result<AgentSidebarConversationGroupsResponse, String> {
     let group_by = SidebarGroupBy::parse(input.group_by.as_deref())?;
     let row_sort = SidebarRowSort::parse(input.sort.as_deref())?;
@@ -1727,8 +1722,7 @@ mod tests {
         input: AgentSidebarConversationsInput,
         state: &AppState,
     ) -> Result<AgentSidebarConversationGroupsResponse, String> {
-        let execution_state = Arc::new(ExecutionState::new());
-        super::list_agent_sidebar_conversations_for_app_state(input, state, &execution_state).await
+        super::list_agent_sidebar_conversations_for_app_state(input, state).await
     }
 
     fn sidebar_input(project_id: &ProjectId) -> AgentSidebarConversationsInput {
@@ -2348,14 +2342,13 @@ mod tests {
     }
 
     async fn mute_via_command(state: &AppState, conversation_id: &ChatConversationId) {
-        let execution_state = Arc::new(ExecutionState::new());
         crate::commands::agent_conversation_mute_commands::set_agent_conversation_muted_for_app_state(
             crate::commands::agent_conversation_mute_commands::SetAgentConversationMutedInput {
                 conversation_id: conversation_id.as_str().to_string(),
                 muted: true,
             },
             state,
-            &execution_state,
+            &Arc::new(ExecutionState::new()),
         )
         .await
         .expect("mute should persist");

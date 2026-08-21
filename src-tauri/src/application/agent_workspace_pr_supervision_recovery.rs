@@ -1314,6 +1314,22 @@ fn emit_workspace_changed(events: &dyn EventSink, conversation_id: &ChatConversa
     );
 }
 
+/// Whether a recovery has been claimed for this conversation since process start.
+///
+/// `claim_recovery` marks the conversation before anything else runs, so this is true for any
+/// scheduled recovery — including one whose lazy dependency factory never executed. Read paths
+/// assert it stays false.
+#[doc(hidden)]
+pub(crate) fn recovery_was_claimed_for_test(conversation_id: &ChatConversationId) -> bool {
+    let key = conversation_id.as_str();
+    IN_FLIGHT_RECOVERIES
+        .get_or_init(DashMap::new)
+        .contains_key(&key)
+        || RECENT_RECOVERIES
+            .get_or_init(DashMap::new)
+            .contains_key(&key)
+}
+
 fn claim_recovery(
     conversation_id: &ChatConversationId,
     trigger: AgentWorkspacePrSupervisionRecoveryTrigger,

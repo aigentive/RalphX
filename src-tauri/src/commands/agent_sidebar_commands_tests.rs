@@ -1,8 +1,6 @@
 use chrono::{Duration, Utc};
-use std::sync::Arc;
 
 use super::*;
-use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentRun, DelegationParkId, DelegationParkJob, DelegationParkState, DelegationWakePolicy,
 };
@@ -86,14 +84,10 @@ async fn armed_park_keeps_completed_coordinator_working_and_counts_unsettled_del
         .await
         .unwrap();
 
-    let execution_state = Arc::new(ExecutionState::new());
-    let response = list_agent_sidebar_conversations_for_app_state(
-        sidebar_input(&project.id),
-        &state,
-        &execution_state,
-    )
-    .await
-    .unwrap();
+    let response =
+        list_agent_sidebar_conversations_for_app_state(sidebar_input(&project.id), &state)
+            .await
+            .unwrap();
     let working_row = response
         .groups
         .iter()
@@ -229,8 +223,7 @@ async fn listing_composes_responses_only_for_rows_a_page_returns() {
 
     let mut input = sidebar_input(&project.id);
     input.limit_per_group = Some(LIMIT_PER_GROUP);
-    let execution_state = Arc::new(ExecutionState::new());
-    let response = list_agent_sidebar_conversations_for_app_state(input, &state, &execution_state)
+    let response = list_agent_sidebar_conversations_for_app_state(input, &state)
         .await
         .unwrap();
 
@@ -250,4 +243,73 @@ async fn listing_composes_responses_only_for_rows_a_page_returns() {
             assert!(!row.conversation.id.is_empty());
         }
     }
+}
+
+/// Enumerating the sidebar is a read boundary. It previously composed every workspace through
+/// `agent_workspace_response_with_pr_supervision_for_state`, which schedules PR-supervision
+/// recovery — work that can fetch, enqueue an agent, or continue publication. A listing must not
+/// do that; workspace open, run completed, and startup remain the recovery triggers.
+#[tokio::test]
+async fn listing_schedules_no_pr_supervision_recovery() {
+    use crate::application::agent_workspace_pr_supervision_recovery::recovery_was_claimed_for_test;
+    use crate::domain::entities::{AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind};
+
+    let state = AppState::new_test();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "no-recovery".to_string(),
+            "/tmp/no-recovery".to_string(),
+        ))
+        .await
+        .unwrap();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+
+    // A published, actively supervised workspace: the shape that previously scheduled recovery.
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-1".to_string()),
+        "ralphx/no-recovery/agent".to_string(),
+        "/tmp/ralphx/no-recovery/agent".to_string(),
+    );
+    workspace.publication_pr_number = Some(77);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace.pr_supervision_status = Some("monitoring".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    assert!(
+        !recovery_was_claimed_for_test(&conversation.id),
+        "fixture must start with no recovery claimed"
+    );
+
+    let response =
+        list_agent_sidebar_conversations_for_app_state(sidebar_input(&project.id), &state)
+            .await
+            .unwrap();
+
+    // The row is genuinely enumerated, so the assertion below is about the read path rather than
+    // about the workspace being filtered out.
+    assert!(response
+        .groups
+        .iter()
+        .flat_map(|group| group.rows.iter())
+        .any(|row| row.conversation.id == conversation.id.as_str()));
+    assert!(
+        !recovery_was_claimed_for_test(&conversation.id),
+        "the sidebar listing must not schedule PR supervision recovery"
+    );
 }

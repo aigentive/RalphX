@@ -172,7 +172,6 @@ async fn mute_fingerprint_matches_the_sidebar_read_path_for_a_review_pr_conversa
             priority_conversation_ids: None,
         },
         &state,
-        &execution_state,
     )
     .await
     .expect("sidebar listing should succeed");
