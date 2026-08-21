@@ -1319,6 +1319,7 @@ fn emit_workspace_changed(events: &dyn EventSink, conversation_id: &ChatConversa
 /// `claim_recovery` marks the conversation before anything else runs, so this is true for any
 /// scheduled recovery — including one whose lazy dependency factory never executed. Read paths
 /// assert it stays false.
+#[cfg(test)]
 #[doc(hidden)]
 pub(crate) fn recovery_was_claimed_for_test(conversation_id: &ChatConversationId) -> bool {
     let key = conversation_id.as_str();

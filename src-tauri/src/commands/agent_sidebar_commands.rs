@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -16,6 +17,7 @@ use crate::commands::unified_chat_commands::{
     agent_workspace_response_without_repair_recovery_for_state, plan_branch_publication_overlay,
     AgentConversationResponse, AgentConversationWorkspaceResponse,
 };
+#[cfg(test)]
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentRunStatus, AgentWorkspacePrReviewMonitor, ChatContextType,
