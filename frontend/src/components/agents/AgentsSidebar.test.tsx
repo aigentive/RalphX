@@ -5492,6 +5492,9 @@ describe("AgentsSidebar", () => {
     expect(
       screen.queryByTestId("agents-inbox-lane-empty-recent")
     ).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(useAgentSessionStore.getState().sidebarInboxActiveLane).toBe("stale");
+    });
   });
 
   it("wires the Recent zero secondary action to the live Done count", async () => {

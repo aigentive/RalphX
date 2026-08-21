@@ -342,6 +342,19 @@ export function AgentsPublishHoldCard({
                   {AUTO_REPAIR_EXPLAINER}
                 </p>
               </div>
+              {hold.technicalDetails !== null && (
+                <div
+                  className="space-y-1.5"
+                  data-testid="agents-publish-hold-technical-details"
+                >
+                  <div className="text-[0.6875rem] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                    Technical details
+                  </div>
+                  <p className="font-mono text-xs leading-relaxed text-[var(--text-secondary)]">
+                    {hold.technicalDetails}
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </CollapsibleContent>

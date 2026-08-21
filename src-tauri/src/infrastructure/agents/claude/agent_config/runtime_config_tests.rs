@@ -109,6 +109,22 @@ fn test_all_defaults_are_sensible() {
         default_agent_workspace_repair_reconciliation_scan_interval_secs(),
         60
     );
+    assert_eq!(
+        cfg.git.agent_workspace_repair_inert_effect_min_age_secs,
+        300
+    );
+    assert_eq!(
+        default_agent_workspace_repair_inert_effect_min_age_secs(),
+        300
+    );
+    assert_eq!(
+        cfg.git.agent_workspace_repair_wedged_attempt_max_age_secs,
+        86_400
+    );
+    assert_eq!(
+        default_agent_workspace_repair_wedged_attempt_max_age_secs(),
+        86_400
+    );
     assert_eq!(cfg.git.terminal_pr_local_cleanup_interval_secs, 900);
     assert_eq!(cfg.git.terminal_pr_local_cleanup_retry_secs, 3_600);
     assert_eq!(cfg.git.orphan_worktree_cleanup_marker_retry_secs, 86_400);
@@ -262,6 +278,10 @@ fn test_env_overrides_apply() {
         "RALPHX_GIT_AGENT_WORKSPACE_REPAIR_RECONCILIATION_SCAN_INTERVAL_SECS" => {
             Some("90".to_string())
         }
+        "RALPHX_GIT_AGENT_WORKSPACE_REPAIR_INERT_EFFECT_MIN_AGE_SECS" => Some("450".to_string()),
+        "RALPHX_GIT_AGENT_WORKSPACE_REPAIR_WEDGED_ATTEMPT_MAX_AGE_SECS" => {
+            Some("43200".to_string())
+        }
         "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_INTERVAL_SECS" => Some("300".to_string()),
         "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_RETRY_SECS" => Some("1800".to_string()),
         "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS" => Some("3600".to_string()),
@@ -348,6 +368,14 @@ fn test_env_overrides_apply() {
         cfg.git
             .agent_workspace_repair_reconciliation_scan_interval_secs,
         90
+    );
+    assert_eq!(
+        cfg.git.agent_workspace_repair_inert_effect_min_age_secs,
+        450
+    );
+    assert_eq!(
+        cfg.git.agent_workspace_repair_wedged_attempt_max_age_secs,
+        43_200
     );
     assert_eq!(cfg.git.terminal_pr_local_cleanup_interval_secs, 300);
     assert_eq!(cfg.git.terminal_pr_local_cleanup_retry_secs, 1800);

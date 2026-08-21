@@ -5675,7 +5675,8 @@ async fn rerun_agent_workspace_ci_for_hold_reruns_and_clears_the_base_parity_hol
 
     let mock_github = Arc::new(MockGithubService::new());
     mock_github.state().fetch_pr_health_result = Some(Ok(transient_ci_health("rerun-head", 42)));
-    let github: Arc<dyn GithubServiceTrait> = Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>;
+    let github: Arc<dyn GithubServiceTrait> =
+        Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>;
 
     let outcome = rerun_agent_workspace_ci_for_hold(
         Arc::clone(&repair_repo),
@@ -5759,8 +5760,7 @@ async fn rerun_agent_workspace_ci_for_hold_preserves_stored_narrative() {
 
     let mut narrated = held.clone();
     narrated.what_happened = Some("GitHub cancelled the test job before it started.".to_string());
-    narrated.what_i_did =
-        Some("Left the branch untouched so a re-run can pick it up.".to_string());
+    narrated.what_i_did = Some("Left the branch untouched so a re-run can pick it up.".to_string());
     narrated.updated_at += chrono::Duration::microseconds(1);
     let held = match repair_repo
         .transition_repair_attempt(AgentWorkspaceRepairAttemptTransition {
@@ -5780,7 +5780,8 @@ async fn rerun_agent_workspace_ci_for_hold_preserves_stored_narrative() {
 
     let mock_github = Arc::new(MockGithubService::new());
     mock_github.state().fetch_pr_health_result = Some(Ok(transient_ci_health("rerun-head", 42)));
-    let github: Arc<dyn GithubServiceTrait> = Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>;
+    let github: Arc<dyn GithubServiceTrait> =
+        Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>;
 
     let outcome = rerun_agent_workspace_ci_for_hold(
         Arc::clone(&repair_repo),
@@ -5851,13 +5852,19 @@ async fn rerun_agent_workspace_ci_for_hold_rejects_a_stale_generation() {
     .await
     .expect("a stale CAS mismatch is a typed outcome, not an error");
 
-    assert!(matches!(outcome, AgentWorkspaceCiRerunActionOutcome::Stale(_)));
+    assert!(matches!(
+        outcome,
+        AgentWorkspaceCiRerunActionOutcome::Stale(_)
+    ));
     let unchanged = repair_repo
         .get_current_repair_attempt(&conversation_id)
         .await
         .expect("load current attempt")
         .expect("attempt still exists");
-    assert_eq!(unchanged, held, "a stale CAS rejection must not mutate the durable attempt");
+    assert_eq!(
+        unchanged, held,
+        "a stale CAS rejection must not mutate the durable attempt"
+    );
 }
 
 #[tokio::test]
@@ -5889,7 +5896,8 @@ async fn rerun_agent_workspace_ci_for_hold_reports_budget_exhaustion_without_mut
         outcome => panic!("expected the exhausted-budget fixture to persist, got {outcome:?}"),
     };
     let mock_github = Arc::new(MockGithubService::new());
-    let github: Arc<dyn GithubServiceTrait> = Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>;
+    let github: Arc<dyn GithubServiceTrait> =
+        Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>;
 
     let outcome = rerun_agent_workspace_ci_for_hold(
         Arc::clone(&repair_repo),
@@ -6238,5 +6246,74 @@ async fn terminated_update_effect_restores_retry_repair_without_an_escalation_re
         .expect("classify scheduled recovery action"),
         AgentWorkspaceRepairOperationRecoveryAction::None,
         "a scheduled automatic retry owns the attempt, so the button stays hidden"
+    );
+}
+
+/// Vocabulary that must never reach a user-facing repair summary.
+///
+/// These are the exact terms that produced the reported incident's unreadable hold card:
+/// "Workspace repair publication needs attention because its external effect remains open after 3
+/// recovery checks. RalphX retained the effect fence and did not reacquire or release Git
+/// authority: Conflict: workspace repair continuation lost its canonical target authority while an
+/// external effect remains open".
+///
+/// Machine-written summaries are rendered verbatim in the Agents publish surface, so a raw
+/// `AppError` interpolation is a product defect, not a diagnostic convenience. The error belongs in
+/// the log and the structured technical-details slot instead.
+const BANNED_REPAIR_SUMMARY_VOCABULARY: &[&str] = &[
+    "effect fence",
+    "canonical target authority",
+    "reacquire or release Git authority",
+    "external effect",
+    "recovery error",
+    "Conflict:",
+    "AppError",
+];
+
+#[test]
+fn machine_written_repair_summaries_contain_no_internal_vocabulary() {
+    // The literal summary strings written by the durable recovery module. Kept as a table rather
+    // than scraped from source so that adding a new summary is a deliberate act with a deliberate
+    // review, and so the assertion reads as a contract.
+    let summaries = [
+        "RalphX tried 3 times to finish publishing this repair and could not complete it. It stopped so the work is not left half-done.",
+        "RalphX stopped publishing this repair after 3 failed attempts.",
+        "RalphX hit a problem finishing this repair's publish step and will try again shortly.",
+        "RalphX can't confirm whether an earlier publish step reached GitHub, so it stopped rather than risk sending it twice.",
+        "RalphX can't confirm whether an earlier publish step reached GitHub, so it is holding this repair rather than risking a duplicate push.",
+        "RalphX is still checking whether an earlier publish step reached GitHub before it continues this repair.",
+        "RalphX could not finish publishing this repair and has stopped retrying on its own. Retry publication to have it try again.",
+        "RalphX stopped retrying this repair because a publish step never finished. Retry publication to try again.",
+        "RalphX checked GitHub and the branch is still exactly where it was before the publish step, so that step never reached GitHub. RalphX cleared it and the repair is continuing.",
+        "RalphX found a publish step that was recorded but never started, so nothing was sent to GitHub. It has been cleared and the repair is continuing.",
+    ];
+
+    for summary in summaries {
+        for banned in BANNED_REPAIR_SUMMARY_VOCABULARY {
+            assert!(
+                !summary.contains(banned),
+                "user-facing repair summary leaks internal vocabulary {banned:?}: {summary:?}"
+            );
+        }
+        assert!(
+            !summary.contains('{') && !summary.contains('}'),
+            "an uninterpolated format placeholder escaped into a summary: {summary:?}"
+        );
+    }
+}
+
+#[test]
+fn banned_repair_summary_vocabulary_actually_catches_the_reported_incident_text() {
+    // Falsifies the guard itself: a table that matched nothing would pass vacuously forever.
+    let reported = "Workspace repair publication needs attention because its external effect \
+                    remains open after 3 recovery checks. RalphX retained the effect fence and did \
+                    not reacquire or release Git authority: Conflict: workspace repair \
+                    continuation lost its canonical target authority while an external effect \
+                    remains open";
+    assert!(
+        BANNED_REPAIR_SUMMARY_VOCABULARY
+            .iter()
+            .any(|banned| reported.contains(banned)),
+        "the banned-vocabulary table must reject the exact string this work exists to eliminate"
     );
 }
