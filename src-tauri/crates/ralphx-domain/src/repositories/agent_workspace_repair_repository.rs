@@ -212,7 +212,7 @@ pub trait AgentWorkspaceRepairRepository: Send + Sync {
         let mut attempts = HashMap::new();
         for conversation_id in conversation_ids {
             if let Some(attempt) = self.get_current_repair_attempt(conversation_id).await? {
-                attempts.insert(conversation_id.clone(), attempt);
+                attempts.insert(*conversation_id, attempt);
             }
         }
         Ok(attempts)

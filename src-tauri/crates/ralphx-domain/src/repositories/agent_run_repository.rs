@@ -59,7 +59,7 @@ pub trait AgentRunRepository: Send + Sync {
         let mut latest = HashMap::new();
         for conversation_id in conversation_ids {
             if let Some(run) = self.get_latest_for_conversation(conversation_id).await? {
-                latest.insert(conversation_id.clone(), run);
+                latest.insert(*conversation_id, run);
             }
         }
         Ok(latest)
