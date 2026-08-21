@@ -10,6 +10,8 @@ Choose limits that let RalphX finish work quickly without overwhelming your Mac.
 
    This is where RalphX keeps every concurrency control.
 
+![The RalphX Capacity settings showing the project and global concurrency limits](../../../assets/public/guides/settings-capacity.png)
+
 2. Set **Max Concurrent Tasks** for this project.
 
    Its helper text is “Maximum number of tasks to run simultaneously (1-10).”

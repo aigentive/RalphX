@@ -91,9 +91,6 @@ export async function applyGuideScenario(
         await mockGetConversation(conversationId),
       );
       await window.__queryClient.invalidateQueries();
-      // The tour guide points at the artifact pane as the place to inspect what
-      // RalphX produced, so it needs the same seeded bundle as the planning
-      // guide instead of the empty "Drop Markdown plan" picker.
       if (scenarioName === "guide_planning" || scenarioName === "guide_tour") {
         const sessionId = `${conversationId}-ideation-session`;
         const artifactId = `${conversationId}-plan-artifact`;

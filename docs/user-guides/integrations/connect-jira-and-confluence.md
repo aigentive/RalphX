@@ -12,6 +12,8 @@ Connect your Atlassian site so RalphX can retrieve Jira issues and Confluence pa
 
    If you skipped the optional Atlassian step during first-run onboarding, you can complete the same setup here at any time.
 
+![The RalphX Atlassian integration settings with its Site URL, Account email, and API token fields](../../../assets/public/guides/settings-atlassian.png)
+
 2. Enter your Atlassian base address in **Site URL**.
 
    Use the URL for your site, such as `https://your-team.atlassian.net`.

@@ -14,6 +14,8 @@ Set up Claude Code as a RalphX provider, confirm that its local CLI is ready, an
 
    RalphX stores no Anthropic credential.
 
+![The RalphX Providers settings showing the Claude provider card and its status badges](../../../assets/public/guides/providers-claude-card.png)
+
 2. Read the status badge and CLI status on the **Claude** card.
 
    **Enabled** means RalphX can use Claude for agents.

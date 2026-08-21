@@ -13,7 +13,11 @@ export type GuideScenarioName =
   | "guide_implementing"
   | "guide_local_review"
   | "guide_pr_review"
-  | "guide_github_settings";
+  | "guide_github_settings"
+  | "guide_settings_atlassian"
+  | "guide_settings_providers"
+  | "guide_providers_cli_not_ready"
+  | "guide_settings_capacity";
 
 /** Expected shipped values from config/ralphx.yaml:38-49. Keep hand-written. */
 export const PROD_UI_FEATURE_FLAGS = {
@@ -198,6 +202,8 @@ const onboarding: GuideScenario = {
   taskSteps: {},
 };
 
+
+
 export const GUIDE_SCENARIO_FIXTURES: Record<GuideScenarioName, GuideScenario> =
   {
     guide_onboarding: onboarding,
@@ -207,6 +213,10 @@ export const GUIDE_SCENARIO_FIXTURES: Record<GuideScenarioName, GuideScenario> =
     guide_local_review: scenario("guide_local_review", "revision_needed"),
     guide_pr_review: scenario("guide_pr_review", "reviewing"),
     guide_github_settings: scenario("guide_github_settings", "approved"),
+    guide_settings_atlassian: scenario("guide_settings_atlassian", "approved"),
+    guide_settings_providers: scenario("guide_settings_providers", "approved"),
+    guide_providers_cli_not_ready: scenario("guide_providers_cli_not_ready", "approved"),
+    guide_settings_capacity: scenario("guide_settings_capacity", "approved"),
   };
 
 /**

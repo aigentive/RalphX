@@ -82,6 +82,10 @@ RalphX MCP tools currently require Codex to run with Never approval and Danger F
 
    Enable Codex only after its CLI is ready.
 
+   This is the **CLI Not Ready** state — the one to recognize, because it is what a provider looks like when RalphX cannot find or run its command:
+
+![The RalphX Providers settings showing a provider in its CLI Not Ready state](../../../assets/public/guides/providers-cli-not-ready.png)
+
 2. Follow **Install instructions** when the CLI is not ready.
 
    The link opens the [Codex installation instructions](https://help.openai.com/en/articles/11096431).
