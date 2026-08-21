@@ -630,9 +630,12 @@ describe("getAgentWorkspaceHoldPresentation", () => {
     expect(presentation?.paragraph.toLowerCase()).not.toContain("effect fence");
     expect(presentation?.paragraph.toLowerCase()).not.toContain("cas");
     expect(presentation?.paragraph.toLowerCase()).not.toContain(" ci ");
+    expect(presentation?.paragraph.toLowerCase()).not.toContain("canonical target authority");
+    expect(presentation?.paragraph.toLowerCase()).not.toContain("reacquire or release git authority");
+    expect(presentation?.paragraph.toLowerCase()).not.toContain("conflict:");
   });
 
-  it("falls back to the durable operation.summary when no agent narrative is present", () => {
+  it("shows the curated paragraph when no agent narrative is present, and surfaces the raw summary as technicalDetails", () => {
     const presentation = getAgentWorkspaceHoldPresentation(
       workspace({
         maintenanceOperation: {
@@ -644,6 +647,9 @@ describe("getAgentWorkspaceHoldPresentation", () => {
     );
 
     expect(presentation?.paragraph).toBe(
+      "RalphX can't confirm whether an earlier publish step reached GitHub. It stopped rather than risk pushing twice. Retry publication to have it check again and continue.",
+    );
+    expect(presentation?.technicalDetails).toBe(
       "RalphX pushed commit abc123 but GitHub returned a 502.",
     );
   });
@@ -660,7 +666,29 @@ describe("getAgentWorkspaceHoldPresentation", () => {
     );
 
     expect(presentation?.paragraph).toBe(
-      "RalphX pushed a repair but could not confirm it reached GitHub. Retry publication to make RalphX try again.",
+      "RalphX can't confirm whether an earlier publish step reached GitHub. It stopped rather than risk pushing twice. Retry publication to have it check again and continue.",
+    );
+    expect(presentation?.technicalDetails).toBeNull();
+  });
+
+  it("shows the agent-authored narrative in the paragraph even when curated copy exists for the hold reason", () => {
+    const presentation = getAgentWorkspaceHoldPresentation(
+      workspace({
+        maintenanceOperation: {
+          ...maintenanceOperation,
+          holdReason: "publication_effect_attention",
+          summary: "RalphX pushed commit abc123 but GitHub returned a 502.",
+          whatHappened: "The push timed out after 30 seconds.",
+          whatIDid: "Held the repair to avoid a duplicate push.",
+        },
+      }),
+    );
+
+    expect(presentation?.paragraph).toBe(
+      "The push timed out after 30 seconds. Held the repair to avoid a duplicate push.",
+    );
+    expect(presentation?.technicalDetails).toBe(
+      "RalphX pushed commit abc123 but GitHub returned a 502.",
     );
   });
 

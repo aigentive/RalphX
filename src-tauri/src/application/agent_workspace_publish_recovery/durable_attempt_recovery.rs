@@ -36,8 +36,8 @@ use crate::application::publish_resilience::{
     reconcile_blocked_agent_workspace_repair_create_pr_effect,
     reconcile_blocked_agent_workspace_repair_pr_handoff,
     terminate_orphaned_blocked_repair_pr_handoff_effect,
-    terminate_orphaned_blocked_repair_push_effect, BlockedCreatePrEffectReconciliation,
-    BlockedRepairPrHandoffReconciliation,
+    terminate_orphaned_blocked_repair_push_effect, AgentWorkspaceRepairPushEffectNotAppliedReason,
+    BlockedCreatePrEffectReconciliation, BlockedRepairPrHandoffReconciliation,
 };
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
@@ -59,6 +59,7 @@ use crate::domain::repositories::{
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
+use crate::infrastructure::agents::claude::git_runtime_config;
 
 /// Publication step recorded when unattended repair stops because its budget is spent.
 const REPAIR_BUDGET_EXHAUSTED_STEP: &str = "repair_budget_exhausted";
@@ -70,6 +71,10 @@ const REPAIR_PUBLISH_REDRIVE_STEP: &str = "repair_publish_redrive";
 pub(crate) const CONTINUATION_RECOVERY_BLOCKED_STEP: &str = "continuation_recovery_blocked";
 const CONTINUATION_OPEN_EFFECT_ATTENTION_STEP: &str = "continuation_open_effect_attention_required";
 const CONTINUATION_EFFECT_NOT_APPLIED_STEP: &str = "continuation_effect_not_applied";
+/// Emitted when the terminal watchdog force-settles a continuation whose open effect outlived the
+/// wedged bound. Distinct from `CONTINUATION_RECOVERY_BLOCKED_STEP` so a time-based auto-block is
+/// never mistaken for ordinary streak exhaustion in the timeline.
+const CONTINUATION_WEDGED_ATTEMPT_BLOCKED_STEP: &str = "continuation_wedged_attempt_blocked";
 const LEGACY_REPAIR_IMPORT_BLOCKED_STEP: &str = "legacy_repair_import_blocked";
 const LEGACY_REPAIR_IMPORT_BLOCKED_CLASSIFICATION: &str = "legacy_repair_import_ambiguous";
 const LEGACY_REPAIR_IMPORTED_STEP: &str = "legacy_repair_imported";
@@ -408,14 +413,15 @@ async fn reconcile_agent_workspace_repair_attempt(
                         .await
                         {
                             Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::Observed) => {}
-                            Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied) => {
+                            Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::NotApplied(reason)) => {
                                 // The reconciler proved the push never reached the remote and
                                 // terminated the effect as Failed, clearing the fence. Return Noop
                                 // so the next sweep reacquires the lease without spending an
                                 // open-effect recovery credit or re-raising the attention
                                 // notification that record_continuation_effect_not_applied just
                                 // resolved.
-                                record_continuation_effect_not_applied(state, &current).await;
+                                record_continuation_effect_not_applied(state, &current, reason)
+                                    .await;
                                 return Ok(DurableRepairRecoveryOutcome::Noop);
                             }
                             Ok(crate::application::publish_resilience::AgentWorkspaceRepairOpenPushEffectReconciliation::Pending) => {
@@ -1154,7 +1160,9 @@ async fn retry_safe_blocked_agent_workspace_repair(
     let carryover_pr_autofix_evidence = if current.source == AgentWorkspaceRepairSource::PrAutofix {
         match evaluate_pr_autofix_successor(state, &current, &workspace).await {
             PrAutofixSuccessorDecision::Proceed(carryover) => carryover,
-            PrAutofixSuccessorDecision::ProceedRetargeted { observed_base_commit } => {
+            PrAutofixSuccessorDecision::ProceedRetargeted {
+                observed_base_commit,
+            } => {
                 retargeted_base = Some(observed_base_commit);
                 None
             }
@@ -2168,11 +2176,19 @@ async fn escalate_or_record_continuation_recovery_failure(
     if next_streak >= MAX_CONTINUATION_RECOVERY_FAILURE_STREAK {
         let conversation_id = current.conversation_id.clone();
         let fingerprint = current.pr_autofix_health_fingerprint.clone();
+        // The raw error is deliberately absent from user-facing text; it is recorded in the
+        // structured diagnostic that feeds the hold card's Technical details.
+        tracing::warn!(
+            error = %error,
+            attempt_id = %current.id,
+            streak = next_streak,
+            "Blocking workspace repair continuation after repeated recovery failures"
+        );
         let outcome = block_recovery_attempt(
             state,
             current,
             &format!(
-                "Workspace repair continuation recovery failed {next_streak} times without settling: {error}"
+                "RalphX tried {next_streak} times to finish publishing this repair and could not complete it. It stopped so the work is not left half-done."
             ),
         )
         .await?;
@@ -2183,8 +2199,11 @@ async fn escalate_or_record_continuation_recovery_failure(
                     conversation_id,
                     CONTINUATION_RECOVERY_BLOCKED_STEP,
                     "blocked",
+                    // The publication event is the diagnostic slot: it renders in the hold card's
+                    // Timeline, inside the collapsed Details disclosure, rather than as the
+                    // headline paragraph. The specific cause belongs here, not in the blocker.
                     format!(
-                        "Workspace repair publication was blocked after {next_streak} failed recovery attempts."
+                        "RalphX stopped publishing this repair after {next_streak} failed attempts. Cause: {error}"
                     ),
                     fingerprint,
                 ))
@@ -2197,9 +2216,15 @@ async fn escalate_or_record_continuation_recovery_failure(
     marked.pending_reasons.push(format!(
         "{CONTINUATION_RECOVERY_FAILURE_REASON_PREFIX}{next_streak}"
     ));
-    let summary = format!(
-        "Workspace repair continuation is pending reconciliation after recovery error: {error}"
+    tracing::warn!(
+        error = %error,
+        attempt_id = %marked.id,
+        streak = next_streak,
+        "Workspace repair continuation recovery failed; will retry on the next sweep"
     );
+    let summary =
+        "RalphX hit a problem finishing this repair's publish step and will try again shortly."
+            .to_string();
     let expected_phase = marked.phase;
     match transition_agent_workspace_repair_attempt(
         Arc::clone(&state.agent_workspace_repair_repo),
@@ -2249,7 +2274,8 @@ async fn record_blocked_open_effect_attention(
         return Ok(());
     }
     let summary = current.summary.clone().unwrap_or_else(|| {
-        "Workspace repair publication is blocked behind an open external effect.".to_string()
+        "RalphX can't confirm whether an earlier publish step reached GitHub, so it stopped rather than risk sending it twice."
+            .to_string()
     });
     let mut marked = current;
     marked
@@ -2283,17 +2309,31 @@ async fn record_open_effect_continuation_recovery_failure(
         .iter()
         .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON);
     let next_streak = continuation_open_effect_recovery_streak(&current).saturating_add(1);
+    // User-facing summaries state what happened and what RalphX is waiting for. The raw error is
+    // logged and kept for the structured diagnostic instead of being interpolated here.
+    tracing::warn!(
+        error = %error,
+        attempt_id = %current.id,
+        streak = next_streak,
+        already_escalated,
+        "Workspace repair continuation recovery failed with an open external effect"
+    );
     let summary = if already_escalated || next_streak >= MAX_CONTINUATION_RECOVERY_FAILURE_STREAK {
-        format!(
-            "Workspace repair publication needs attention because its external effect remains open after {next_streak} recovery checks. RalphX retained the effect fence and did not reacquire or release Git authority: {error}"
-        )
+        "RalphX can't confirm whether an earlier publish step reached GitHub, so it is holding this repair rather than risking a duplicate push."
+            .to_string()
     } else {
-        format!(
-            "Workspace repair continuation is pending reconciliation for an open external effect after recovery error: {error}"
-        )
+        "RalphX is still checking whether an earlier publish step reached GitHub before it continues this repair."
+            .to_string()
     };
 
     if already_escalated {
+        // Terminal escape hatch. Recovery has already yielded ownership and re-surfacing attention
+        // forever is how a workspace stays wedged indefinitely. Past a generous bound, force the
+        // attempt into `Blocked`, which already has both a working supersession path
+        // (`retry_blocked_agent_workspace_repair`) and an admitted user Retry action.
+        if let Some(outcome) = block_wedged_open_effect_attempt(state, &current).await? {
+            return Ok(outcome);
+        }
         surface_open_effect_continuation_attention(state, &current, &summary).await?;
         return Ok(DurableRepairRecoveryOutcome::Active);
     }
@@ -2326,6 +2366,96 @@ async fn record_open_effect_continuation_recovery_failure(
         AgentWorkspaceRepairTransitionOutcome::Stale(_)
         | AgentWorkspaceRepairTransitionOutcome::Missing => Ok(DurableRepairRecoveryOutcome::Stale),
     }
+}
+
+/// Terminal watchdog for an already-escalated continuation whose open effect never settles.
+///
+/// The primary fix settles the one dead-effect shape we know about. This exists so a *future*
+/// differently-shaped dead effect degrades in bounded time instead of wedging a workspace
+/// indefinitely, as the reported incident did for over two weeks.
+///
+/// `Ok(None)` means the bound has not elapsed and the caller should keep today's behavior.
+///
+/// # The age basis is load-bearing
+///
+/// The bound is measured on the **open effect's `created_at`**, never on `attempt.updated_at`.
+/// `start_or_join_repair_attempt` takes its `Joined` branch for any unsettled attempt on the same
+/// base ref and unconditionally assigns `current.updated_at = attempt.updated_at` before writing.
+/// A wedged workspace is precisely the one that keeps receiving fresh PR evidence and keeps getting
+/// `Joined` as a recorded no-op, so `attempt.updated_at` is refreshed indefinitely. An
+/// `updated_at`-based bound would never elapse — the watchdog would be dead code on the exact shape
+/// it exists to catch. The effect row is untouched by `Joined`.
+async fn block_wedged_open_effect_attempt(
+    state: &AppState,
+    current: &AgentWorkspaceRepairAttempt,
+) -> AppResult<Option<DurableRepairRecoveryOutcome>> {
+    let Some(effect) = state
+        .agent_workspace_repair_repo
+        .get_open_repair_effect(&current.id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let max_age = Duration::seconds(
+        i64::try_from(git_runtime_config().agent_workspace_repair_wedged_attempt_max_age_secs)
+            .unwrap_or(i64::MAX),
+    );
+    if Utc::now() - effect.created_at < max_age {
+        return Ok(None);
+    }
+
+    let conversation_id = current.conversation_id.clone();
+    let fingerprint = current.pr_autofix_health_fingerprint.clone();
+    let mut wedged = current.clone();
+    // `Blocked` only admits the user's Retry action while `next_dispatch_at` is unset, and
+    // `block_agent_workspace_repair_completion_with_projection` does not clear it. Without this the
+    // watchdog would produce a blocked workspace offering no action at all — strictly worse than
+    // the retry treadmill it replaces.
+    wedged.next_dispatch_at = None;
+    // The attention reason must survive the block, because the Retry admission projection requires
+    // it. It is already present on this path (`already_escalated`), and blocking preserves
+    // `pending_reasons`, so assert rather than re-adding it via `record_blocked_open_effect_attention`
+    // — that helper early-returns whenever the reason is already there and would be a silent no-op.
+    debug_assert!(
+        wedged
+            .pending_reasons
+            .iter()
+            .any(|reason| reason == CONTINUATION_OPEN_EFFECT_ATTENTION_REASON),
+        "the wedged watchdog must only run on an already-escalated attempt"
+    );
+
+    let outcome = block_recovery_attempt(
+        state,
+        wedged,
+        "RalphX could not finish publishing this repair and has stopped retrying on its own. Retry publication to have it try again.",
+    )
+    .await?;
+    if outcome == DurableRepairRecoveryOutcome::Blocked {
+        tracing::warn!(
+            attempt_id = %current.id,
+            effect_id = %effect.id,
+            effect_created_at = %effect.created_at,
+            "Workspace repair attempt force-settled to Blocked after its open effect exceeded the wedged bound"
+        );
+        state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id,
+                CONTINUATION_WEDGED_ATTEMPT_BLOCKED_STEP,
+                "blocked",
+                "RalphX stopped retrying this repair because a publish step never finished. Retry publication to try again."
+                    .to_string(),
+                fingerprint,
+            ))
+            .await?;
+        surface_open_effect_continuation_attention(
+            state,
+            current,
+            "RalphX could not finish publishing this repair and has stopped retrying on its own. Retry publication to have it try again.",
+        )
+        .await?;
+    }
+    Ok(Some(outcome))
 }
 
 async fn surface_open_effect_continuation_attention(
@@ -2395,8 +2525,18 @@ async fn surface_open_effect_continuation_attention(
 async fn record_continuation_effect_not_applied(
     state: &AppState,
     attempt: &AgentWorkspaceRepairAttempt,
+    reason: AgentWorkspaceRepairPushEffectNotAppliedReason,
 ) {
-    let summary = "Workspace repair push effect was not applied: the remote still matches the recorded pre-push state, proving the push never reached the remote. The effect fence is now clear.";
+    // The two proofs support different claims. Asserting "the remote still matches" for an effect
+    // that was never initialized would be false: no remote read happened on that path at all.
+    let summary = match reason {
+        AgentWorkspaceRepairPushEffectNotAppliedReason::RemoteUnchanged => {
+            "RalphX checked GitHub and the branch is still exactly where it was before the publish step, so that step never reached GitHub. RalphX cleared it and the repair is continuing."
+        }
+        AgentWorkspaceRepairPushEffectNotAppliedReason::NeverAuthorized => {
+            "RalphX found a publish step that was recorded but never started, so nothing was sent to GitHub. It has been cleared and the repair is continuing."
+        }
+    };
     if let Err(error) = state
         .agent_conversation_workspace_repo
         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(

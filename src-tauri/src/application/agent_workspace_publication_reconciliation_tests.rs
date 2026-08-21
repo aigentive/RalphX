@@ -345,3 +345,131 @@ async fn archived_conversation_prevents_status_restoration_and_inapplicable_work
         PublicationCorrectionOutcome::NotApplicable
     );
 }
+
+#[tokio::test]
+async fn matching_head_records_the_verified_association_exactly_once() {
+    let project = project();
+    let (project, workspace, workspace_repo, conversation_repo, github) =
+        setup(project.clone(), workspace(&project)).await;
+    github.will_return_pr_detail(PrDetail {
+        number: 41,
+        title: "Owned pull request".to_string(),
+        url: Some("https://github.com/owner/repo/pull/41".to_string()),
+        head_ref_name: workspace.branch_name.clone(),
+        base_ref_name: "main".to_string(),
+        body: None,
+        is_draft: false,
+        state: PrStatus::Merged {
+            merge_commit_sha: Some("merge-sha".to_string()),
+            merged_at: None,
+        },
+        author: None,
+        created_at: None,
+    });
+
+    assert_eq!(
+        correct_foreign_agent_workspace_publication(
+            workspace_repo.clone(),
+            conversation_repo.clone(),
+            github.clone(),
+            &project,
+            &workspace,
+        )
+        .await
+        .expect("correction should succeed"),
+        PublicationCorrectionOutcome::Skipped
+    );
+
+    let verified = workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    let stamped = verified
+        .publication_association_verified_at
+        .expect("a matching head must record the verified association");
+
+    github.will_return_pr_detail(PrDetail {
+        number: 41,
+        title: "Owned pull request".to_string(),
+        url: Some("https://github.com/owner/repo/pull/41".to_string()),
+        head_ref_name: verified.branch_name.clone(),
+        base_ref_name: "main".to_string(),
+        body: None,
+        is_draft: false,
+        state: PrStatus::Merged {
+            merge_commit_sha: Some("merge-sha".to_string()),
+            merged_at: None,
+        },
+        author: None,
+        created_at: None,
+    });
+    correct_foreign_agent_workspace_publication(
+        workspace_repo.clone(),
+        conversation_repo,
+        github,
+        &project,
+        &verified,
+    )
+    .await
+    .expect("correction should succeed");
+
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist")
+            .publication_association_verified_at,
+        Some(stamped),
+        "the original verification time must survive a repeat pass"
+    );
+}
+
+#[tokio::test]
+async fn rate_limited_pr_detail_is_distinguished_from_an_unverified_read() {
+    let project = project();
+    let (project, workspace, workspace_repo, conversation_repo, github) =
+        setup(project.clone(), workspace(&project)).await;
+    github.queue_pr_detail(Err(crate::error::AppError::GithubRateLimited {
+        message: "API rate limit exceeded".to_string(),
+    }));
+
+    assert_eq!(
+        correct_foreign_agent_workspace_publication(
+            workspace_repo.clone(),
+            conversation_repo.clone(),
+            github.clone(),
+            &project,
+            &workspace,
+        )
+        .await
+        .expect("correction should succeed"),
+        PublicationCorrectionOutcome::RateLimited
+    );
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist")
+            .publication_association_verified_at,
+        None,
+        "an unread PR proves nothing about the association"
+    );
+
+    github.will_fail_pr_detail("gh exploded");
+    assert_eq!(
+        correct_foreign_agent_workspace_publication(
+            workspace_repo,
+            conversation_repo,
+            github,
+            &project,
+            &workspace,
+        )
+        .await
+        .expect("correction should succeed"),
+        PublicationCorrectionOutcome::Unverified,
+        "non-rate-limit failures keep their existing classification"
+    );
+}

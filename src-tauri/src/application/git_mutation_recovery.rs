@@ -531,12 +531,35 @@ fn validate_repair_push_claim(
     Ok(())
 }
 
-fn is_uninitialized_repair_push_preflight(effect: &AgentWorkspaceRepairEffect) -> bool {
+/// True when a push effect was reserved but never had its intended/expected OIDs written.
+///
+/// `initialize_agent_workspace_repair_push_effect` durably persists those OIDs *before* the push
+/// command runs (`publish_resilience.rs`: init at the top of the push path, the `git push` itself
+/// strictly after it), so an effect with all three preconditions empty is positive proof that no
+/// push was ever authorized for it.
+///
+/// Shared with `publish_resilience::reconcile_open_agent_workspace_repair_push_effect`; the body is
+/// deliberately unchanged because startup claim recovery above depends on these exact semantics.
+pub(crate) fn is_uninitialized_repair_push_preflight(effect: &AgentWorkspaceRepairEffect) -> bool {
     effect.kind == AgentWorkspaceRepairEffectKind::PushBranch
         && effect.status == AgentWorkspaceRepairEffectStatus::InFlight
         && effect.intended_head_oid.is_none()
         && effect.expected_remote_oid.is_none()
         && !effect.expected_remote_absent
+}
+
+/// [`is_uninitialized_repair_push_preflight`] plus a quiescence window, so a push preflight that is
+/// merely mid-flight right now is never mistaken for one that will never be initialized.
+///
+/// The age is measured on `created_at`, never `updated_at`: `created_at` is the only field on the
+/// effect row guaranteed not to be advanced by an unrelated write, and the terminal watchdog reuses
+/// the same basis where that distinction is load-bearing.
+pub(crate) fn is_quiescent_uninitialized_repair_push_preflight(
+    effect: &AgentWorkspaceRepairEffect,
+    now: chrono::DateTime<chrono::Utc>,
+    min_age: chrono::Duration,
+) -> bool {
+    is_uninitialized_repair_push_preflight(effect) && now - effect.created_at >= min_age
 }
 
 /// Reads the exact commit `origin` currently publishes for a workspace branch, fetching first so

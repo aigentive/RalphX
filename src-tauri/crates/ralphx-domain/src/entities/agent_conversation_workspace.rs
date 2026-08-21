@@ -1153,6 +1153,11 @@ pub struct AgentConversationWorkspace {
     /// as ahead of its effective checkout ref. Cleared when the base becomes current again;
     /// untouched while base resolution is blocked.
     pub stale_base_detected_at: Option<DateTime<Utc>>,
+    /// When this workspace's publication PR was last confirmed to actually belong to its own
+    /// branch. Set once by the foreign-publication correction seam; cleared whenever the
+    /// publication PR number changes. A terminal PR plus this marker is what lets external-PR
+    /// reconciliation stop re-verifying the same settled workspace on every trigger.
+    pub publication_association_verified_at: Option<DateTime<Utc>>,
     pub status: AgentConversationWorkspaceStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -1211,6 +1216,7 @@ impl AgentConversationWorkspace {
             last_blocked_pr_health_fingerprint: None,
             last_blocked_pr_health_at: None,
             stale_base_detected_at: None,
+            publication_association_verified_at: None,
             status: AgentConversationWorkspaceStatus::Active,
             created_at: now,
             updated_at: now,

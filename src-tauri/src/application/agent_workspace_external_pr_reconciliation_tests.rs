@@ -1364,7 +1364,34 @@ fn skip_reason_covers_non_reconcilable_workspace_shapes() {
 
         workspace.publication_pr_number = Some(92);
         assert_eq!(external_pr_reconciliation_skip_reason(&workspace), None);
+
+        // Once the PR-to-branch association is proved, a terminal PR is fully settled and
+        // must never be reconciled again.
+        workspace.publication_association_verified_at = Some(chrono::Utc::now());
+        assert_eq!(
+            external_pr_reconciliation_skip_reason(&workspace),
+            Some("workspace_terminal_verified")
+        );
+
+        for status in [
+            AgentConversationWorkspaceStatus::Missing,
+            AgentConversationWorkspaceStatus::Archived,
+        ] {
+            workspace.status = status;
+            assert_eq!(
+                external_pr_reconciliation_skip_reason(&workspace),
+                Some("workspace_terminal_verified"),
+                "the verified terminal gate does not depend on workspace status"
+            );
+        }
     }
+
+    // A verified marker must not short-circuit a PR that can still change.
+    let mut verified_open = test_workspace_with_id(&project, "verified-open-pr");
+    verified_open.publication_pr_number = Some(93);
+    verified_open.publication_pr_status = Some("open".to_string());
+    verified_open.publication_association_verified_at = Some(chrono::Utc::now());
+    assert_eq!(external_pr_reconciliation_skip_reason(&verified_open), None);
 }
 
 #[tokio::test]
@@ -1561,19 +1588,16 @@ async fn scheduled_reconciliation_deduplicates_recent_workspace_loads_until_forc
     assert_eq!(factory_calls.load(Ordering::SeqCst), 2);
 }
 
-/// A workspace whose linked PR is already recorded terminal has nothing left to learn from
-/// GitHub. The 5s sidebar publication poll re-invalidates the mounted workspace query, which
-/// re-enters this path every reconciliation TTL for as long as the user keeps it open — so
-/// re-querying and re-writing forever is pure repetition.
 #[tokio::test]
-async fn reconciliation_short_circuits_a_recorded_merged_linked_pr() {
+async fn verified_terminal_workspace_is_reconciled_without_any_github_call() {
     let project = test_project();
     let mut workspace = test_workspace(&project);
     let conversation_id = workspace.conversation_id.clone();
-    workspace.publication_pr_number = Some(263);
-    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/263".to_string());
+    workspace.publication_pr_number = Some(1000);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/1000".to_string());
     workspace.publication_pr_status = Some("merged".to_string());
     workspace.publication_push_status = Some("pushed".to_string());
+    workspace.publication_association_verified_at = Some(chrono::Utc::now());
     let github = Arc::new(MockGithubService::new());
     let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
 
@@ -1587,68 +1611,14 @@ async fn reconciliation_short_circuits_a_recorded_merged_linked_pr() {
 
     assert_eq!(
         outcome,
-        AgentWorkspaceExternalPrReconciliationOutcome::Linked {
-            pr_number: 263,
-            pr_status: "merged".to_string()
-        }
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("workspace_terminal_verified")
     );
-
-    // Both round trips must be gone. `correct_foreign_agent_workspace_publication` calls
-    // `fetch_pr_detail` unconditionally for any recorded PR number, so a guard placed after it
-    // would still cost one request.
-    let github_state = github.state();
-    assert_eq!(github_state.fetch_pr_detail_calls, 0);
-    assert_eq!(github_state.check_pr_status_calls, 0);
-    assert_eq!(github_state.find_latest_pr_by_head_branch_calls, 0);
-    drop(github_state);
-
-    // No duplicate publication writes.
-    let events = workspace_repo
-        .list_publication_events(&conversation_id)
-        .await
-        .unwrap();
-    assert!(
-        events.is_empty(),
-        "recorded-terminal reconcile should append no publication events, got {events:?}"
-    );
-    let updated = workspace_repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .expect("workspace should exist");
-    assert_eq!(updated.publication_pr_status.as_deref(), Some("merged"));
-    assert_eq!(updated.publication_pr_number, Some(263));
-}
-
-#[tokio::test]
-async fn reconciliation_short_circuits_a_recorded_closed_linked_pr() {
-    let project = test_project();
-    let mut workspace = test_workspace(&project);
-    let conversation_id = workspace.conversation_id.clone();
-    workspace.publication_pr_number = Some(264);
-    workspace.publication_pr_status = Some("closed".to_string());
-    let github = Arc::new(MockGithubService::new());
-    let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
-
-    let outcome = reconcile_agent_workspace_external_pr(
-        deps,
-        conversation_id.clone(),
-        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
-    )
-    .await
-    .expect("reconciliation should succeed");
-
-    assert_eq!(
-        outcome,
-        AgentWorkspaceExternalPrReconciliationOutcome::Linked {
-            pr_number: 264,
-            pr_status: "closed".to_string()
-        }
-    );
-    let github_state = github.state();
-    assert_eq!(github_state.fetch_pr_detail_calls, 0);
-    assert_eq!(github_state.check_pr_status_calls, 0);
-    drop(github_state);
+    {
+        let state = github.state();
+        assert_eq!(state.check_pr_status_calls, 0);
+        assert_eq!(state.fetch_pr_detail_calls, 0);
+        assert_eq!(state.find_latest_pr_by_head_branch_calls, 0);
+    }
     assert!(workspace_repo
         .list_publication_events(&conversation_id)
         .await
@@ -1656,59 +1626,335 @@ async fn reconciliation_short_circuits_a_recorded_closed_linked_pr() {
         .is_empty());
 }
 
-/// Local terminal settlement still runs, so a workspace recorded terminal but never cleaned up
-/// converges instead of being stranded by the short-circuit — and running it twice is a no-op.
 #[tokio::test]
-async fn recorded_terminal_short_circuit_still_settles_locally_and_is_idempotent() {
+async fn verified_archived_workspace_skips_the_foreign_correction_carve_out() {
+    let project = test_project();
+    let mut workspace = archived_workspace_with_publication(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_association_verified_at = Some(chrono::Utc::now());
+    let github = Arc::new(MockGithubService::new());
+    let (deps, _workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id,
+        AgentWorkspaceExternalPrReconciliationTrigger::Startup,
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("workspace_terminal_verified")
+    );
+    assert_eq!(github.state().fetch_pr_detail_calls, 0);
+}
+
+#[tokio::test]
+async fn unverified_terminal_workspace_converges_after_one_verification_pass() {
     let project = test_project();
     let mut workspace = test_workspace(&project);
     let conversation_id = workspace.conversation_id.clone();
-    workspace.publication_pr_number = Some(265);
+    workspace.publication_pr_number = Some(1000);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/1000".to_string());
     workspace.publication_pr_status = Some("merged".to_string());
-    workspace.pr_supervision_status = Some("monitoring".to_string());
-    workspace.pr_supervision_summary = Some("RalphX is monitoring the pull request.".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
     let github = Arc::new(MockGithubService::new());
+    github.will_return_status(PrStatus::Merged {
+        merge_commit_sha: Some("merge-sha".to_string()),
+        merged_at: None,
+    });
     let (deps, workspace_repo) =
-        deps_with_workspace(project.clone(), workspace.clone(), github.clone()).await;
+        deps_with_workspace(project, workspace.clone(), github.clone()).await;
 
-    reconcile_agent_workspace_external_pr(
-        deps.clone(),
-        conversation_id.clone(),
-        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
-    )
-    .await
-    .expect("first reconciliation should succeed");
-
-    let after_first = workspace_repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .unwrap()
-        .expect("workspace should exist");
-
-    reconcile_agent_workspace_external_pr(
+    let outcome = reconcile_agent_workspace_external_pr(
         deps,
         conversation_id.clone(),
         AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
     )
     .await
-    .expect("second reconciliation should succeed");
+    .expect("reconciliation should succeed");
 
-    let after_second = workspace_repo
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Linked {
+            pr_number: 1000,
+            pr_status: "merged".to_string()
+        }
+    );
+    let converged = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(
+        converged.publication_association_verified_at.is_some(),
+        "one verification pass must record the marker"
+    );
+    assert_eq!(
+        external_pr_reconciliation_skip_reason(&converged),
+        Some("workspace_terminal_verified"),
+        "the next trigger must now skip"
+    );
+}
+
+#[tokio::test]
+async fn unchanged_terminal_reobservation_writes_nothing_but_still_terminalizes() {
+    let project = test_project();
+    let mut workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_pr_number = Some(1000);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/1000".to_string());
+    workspace.publication_pr_status = Some("merged".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    // A non-NULL supervision status proves the skipped write also skipped its terminal side
+    // effects: safe here precisely because the earlier terminal write already ran.
+    workspace.pr_supervision_status = Some("monitoring".to_string());
+    workspace.pr_supervision_summary = Some("RalphX is monitoring the pull request.".to_string());
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_status(PrStatus::Merged {
+        merge_commit_sha: Some("merge-sha".to_string()),
+        merged_at: None,
+    });
+    let (deps, workspace_repo) =
+        deps_with_workspace(project, workspace.clone(), github.clone()).await;
+    let before = workspace_repo
         .get_by_conversation_id(&conversation_id)
         .await
         .unwrap()
         .expect("workspace should exist");
 
-    assert_eq!(after_first.status, after_second.status);
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect("reconciliation should succeed");
+
     assert_eq!(
-        after_first.publication_pr_status,
-        after_second.publication_pr_status
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Linked {
+            pr_number: 1000,
+            pr_status: "merged".to_string()
+        }
     );
+    assert!(
+        workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "re-observing an unchanged terminal PR must not replay its publication event"
+    );
+    let after = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(after.updated_at, before.updated_at);
+    assert_eq!(after.pr_supervision_status.as_deref(), Some("monitoring"));
     assert_eq!(
-        after_first.pr_supervision_status,
-        after_second.pr_supervision_status
+        after.pr_supervision_summary.as_deref(),
+        Some("RalphX is monitoring the pull request.")
     );
-    let github_state = github.state();
-    assert_eq!(github_state.fetch_pr_detail_calls, 0);
-    assert_eq!(github_state.check_pr_status_calls, 0);
+    // The foreign-correction pass owns the only PR detail read; the ClickUp reconcile that
+    // would have bought a second one never runs.
+    assert_eq!(github.state().fetch_pr_detail_calls, 1);
+}
+
+#[tokio::test]
+async fn changed_terminal_status_still_takes_the_full_write_path() {
+    let project = test_project();
+    let mut workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_pr_number = Some(1000);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/1000".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace.pr_supervision_status = Some("monitoring".to_string());
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_status(PrStatus::Merged {
+        merge_commit_sha: Some("merge-sha".to_string()),
+        merged_at: None,
+    });
+    let (deps, workspace_repo) = deps_with_workspace(project, workspace, github).await;
+
+    reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].step, "pr_merged");
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_status.as_deref(), Some("merged"));
+    assert_eq!(updated.pr_supervision_status, None);
+}
+
+fn exhausted_rate_limit_registry() -> Arc<PrPollerRegistry> {
+    let registry = Arc::new(PrPollerRegistry::new(
+        None,
+        Arc::new(MemoryPlanBranchRepository::new()),
+    ));
+    registry.note_rate_limited();
+    registry
+}
+
+#[tokio::test]
+async fn an_exhausted_shared_budget_defers_before_any_github_call() {
+    let project = test_project();
+    let mut workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_pr_number = Some(1000);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    let github = Arc::new(MockGithubService::new());
+    let (mut deps, _workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+    deps.pr_poller_registry = Some(exhausted_rate_limit_registry());
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id,
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("a rate-limited pass is expected, not an error");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("github_rate_limited")
+    );
+    let state = github.state();
+    assert_eq!(state.check_pr_status_calls, 0);
+    assert_eq!(state.fetch_pr_detail_calls, 0);
+    assert_eq!(state.find_latest_pr_by_head_branch_calls, 0);
+}
+
+#[tokio::test]
+async fn a_rate_limited_status_read_feeds_the_shared_budget() {
+    let project = test_project();
+    let mut workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_pr_number = Some(1000);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    let github = Arc::new(MockGithubService::new());
+    github.state().check_pr_status_queue.push_back(Err(
+        crate::error::AppError::GithubRateLimited {
+            message: "API rate limit exceeded".to_string(),
+        },
+    ));
+    let registry = Arc::new(PrPollerRegistry::new(
+        None,
+        Arc::new(MemoryPlanBranchRepository::new()),
+    ));
+    let (mut deps, _workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+    deps.pr_poller_registry = Some(Arc::clone(&registry));
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id,
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("a rate-limited pass is expected, not an error");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("github_rate_limited")
+    );
+    let (remaining, _reset_at) = registry
+        .rate_limit_snapshot()
+        .expect("snapshot should be readable");
+    assert_eq!(
+        remaining, 0,
+        "what reconciliation learned must reach every other consumer"
+    );
+}
+
+#[tokio::test]
+async fn a_rate_limited_foreign_correction_defers_and_feeds_the_shared_budget() {
+    let project = test_project();
+    let mut workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_pr_number = Some(1000);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    let github = Arc::new(MockGithubService::new());
+    let registry = Arc::new(PrPollerRegistry::new(
+        None,
+        Arc::new(MemoryPlanBranchRepository::new()),
+    ));
+    let (mut deps, _workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
+    deps.pr_poller_registry = Some(Arc::clone(&registry));
+    // The queue is popped ahead of the head-matching detail `deps_with_workspace` configured,
+    // so this is what the foreign-correction read sees.
+    github.queue_pr_detail(Err(crate::error::AppError::GithubRateLimited {
+        message: "API rate limit exceeded".to_string(),
+    }));
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id,
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("a rate-limited pass is expected, not an error");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("foreign_publication_rate_limited")
+    );
+    assert_eq!(github.state().check_pr_status_calls, 0);
+    assert_eq!(
+        registry
+            .rate_limit_snapshot()
+            .expect("snapshot should be readable")
+            .0,
+        0
+    );
+}
+
+#[tokio::test]
+async fn reconciliation_without_a_registry_keeps_propagating_rate_limit_errors_unchanged() {
+    let project = test_project();
+    let mut workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_pr_number = Some(1000);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    let github = Arc::new(MockGithubService::new());
+    github.state().check_pr_status_queue.push_back(Err(
+        crate::error::AppError::GithubRateLimited {
+            message: "API rate limit exceeded".to_string(),
+        },
+    ));
+    let (deps, _workspace_repo) = deps_with_workspace(project, workspace, github).await;
+    assert!(deps.pr_poller_registry.is_none());
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id,
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("reconciliation should still settle");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("github_rate_limited"),
+        "the deferral does not depend on the registry being wired"
+    );
 }
