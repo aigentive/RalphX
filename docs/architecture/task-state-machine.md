@@ -650,7 +650,7 @@ Guards are pre-conditions checked before certain transitions fire. If a guard fa
 
 ### Merge Settings
 
-See the [Merge Pipeline User Guide](./merge.md) for full configuration options covering merge strategies, validation modes, retry budgets, and timing.
+See the [Merge Pipeline](merge-pipeline.md) for full configuration options covering merge strategies, validation modes, retry budgets, and timing.
 
 ---
 
@@ -670,6 +670,5 @@ See the [Merge Pipeline User Guide](./merge.md) for full configuration options c
 
 ## See Also
 
-- [Agent Orchestration](agent-orchestration.md)
-- [Execution Pipeline](execution.md)
-- [Merge Pipeline](merge.md)
+- [Task Execution](task-execution.md)
+- [Merge Pipeline](merge-pipeline.md)

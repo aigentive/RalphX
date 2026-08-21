@@ -16,7 +16,7 @@ RalphX automates the process of implementing a task — from scheduling the work
 | What is QA? | An optional automated testing phase after execution — a QA prep agent generates acceptance criteria, then a QA tester agent runs browser tests. |
 | AI review passed — what do I do? | Review the findings in the task detail view and click **Approve** or **Request Changes**. |
 | What does "Escalated" mean? | The AI reviewer couldn't decide. It's asking you to review manually. |
-| What happens after I approve? | The task automatically enters the merge pipeline. See the [Merge Pipeline User Guide](merge.md). |
+| What happens after I approve? | The task automatically enters the merge pipeline. See the [Merge Pipeline](merge-pipeline.md). |
 | If I restart the app mid-execution, what happens? | RalphX resumes agent-active tasks automatically on startup. |
 
 ---
@@ -240,7 +240,7 @@ From ReviewPassed or Escalated, you take action:
 | **Approve** | Task transitions to **Approved** → auto-transitions to **PendingMerge** → merge pipeline begins |
 | **Request Changes** | Task transitions to **RevisionNeeded** → auto-transitions to **ReExecuting** |
 
-Once a task is **Approved**, control passes entirely to the [Merge Pipeline](merge.md).
+Once a task is **Approved**, control passes entirely to the [Merge Pipeline](merge-pipeline.md).
 
 ---
 
@@ -662,6 +662,5 @@ Key reconciliation settings can be overridden via environment variables at runti
 
 ## See Also
 
-- [Merge Pipeline](merge.md)
-- [Agent Orchestration](agent-orchestration.md)
+- [Merge Pipeline](merge-pipeline.md)
 - [Task State Machine](task-state-machine.md)

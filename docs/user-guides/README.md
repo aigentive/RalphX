@@ -10,12 +10,15 @@ These guides are about **using** the app. They do not cover building RalphX from
 
 Then read [Finding your way around](02-tour-of-the-app.md), and follow the workflow guides in order. Together they take you from a fresh install to a merged change.
 
+If a word in these guides is doing more work than you expected — *worktree*, *harness*, *plan bundle* — [RalphX concepts](concepts.md) defines the seven that matter, in one page.
+
 ## I want to…
 
 | I want to… | Guide |
 |---|---|
 | Install RalphX and get it running | [Installing RalphX and running it for the first time](01-install-and-first-run.md) |
 | Understand what I'm looking at | [Finding your way around](02-tour-of-the-app.md) |
+| Know what a worktree, harness, or plan bundle is | [RalphX concepts](concepts.md) |
 | Plan a feature before building it | [Planning a feature with RalphX](workflows/planning-a-feature.md) |
 | Build the thing I just planned | [Implementing a feature with RalphX](workflows/implementing-a-feature.md) |
 | Check my changes before publishing them | [Reviewing your own work with RalphX](workflows/reviewing-your-own-work.md) |
