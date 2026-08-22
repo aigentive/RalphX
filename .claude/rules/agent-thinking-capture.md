@@ -9,7 +9,7 @@ paths:
   - "frontend/src/components/Chat/**"
   - "docs/architecture/agent-thinking-capture.md"
   - "docs/architecture/claude-spawning-system.md"
-  - "docs/user-guides/agent-harnesses.md"
+  - "docs/architecture/agent-harnesses.md"
   - "CLAUDE.md"
   - "AGENTS.md"
 ---

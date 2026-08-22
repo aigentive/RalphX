@@ -54,6 +54,10 @@ import {
 } from "@/api-mock/plan-branch";
 import { mockPlanApi } from "@/api-mock/plan";
 import { mockArtifactApi } from "@/api-mock/artifact";
+import {
+  GUIDE_JIRA_ISSUE,
+  GUIDE_JIRA_SEARCH_RESULTS,
+} from "@/api-mock/guide-scenarios";
 import type { IdeationSessionResponse } from "@/api/ideation.types";
 import type { ContextType } from "@/types/chat-conversation";
 import type { ChatConversation } from "@/types/chat-conversation";
@@ -1017,6 +1021,34 @@ const mockWorkspaceCommits = [
   },
 ] as const;
 
+function mockGuideReviewArtifact(id: string) {
+  const contentById: Record<string, string> = {
+    "guide-release-review":
+      "# Overview\n\nThe release is close to ready. The workspace review found two concrete safeguards to resolve before publishing.\n\n## What is working\n\n- The release checklist now covers validation and handoff.\n- The workspace branch is ready for a final review pass.",
+    "guide-release-requested-changes":
+      "# Requested Changes\n\n- Add the final rollback owner to the checklist.\n- Confirm the migration validation command in CI.",
+  };
+  const content = contentById[id];
+  if (!content) return null;
+  return {
+    id,
+    name:
+      id === "guide-release-review"
+        ? "Release readiness review"
+        : "Requested Changes",
+    artifact_type: "workspace_review",
+    content_type: "inline",
+    content,
+    created_at: "2026-06-15T10:00:00.000Z",
+    created_by: "RalphX Workspace Review",
+    version: 1,
+    bucket_id: null,
+    task_id: null,
+    process_id: null,
+    derived_from: [],
+  };
+}
+
 function mockWorkspaceFileDiff(filePath: string) {
   const language = filePath.endsWith(".tsx")
     ? "tsx"
@@ -1292,6 +1324,8 @@ const commandHandlers: Record<
   list_workflows: async () => mockWorkflowsApi.list(),
   get_artifact_version_history: async (args) =>
     mockArtifactApi.getVersionHistory(args.id as string),
+  get_artifact: async (args) =>
+    mockGuideReviewArtifact(args.id as string),
 
   // Project commands
   list_projects: async () => mockProjectsApi.list(),
@@ -1403,7 +1437,10 @@ const commandHandlers: Record<
       },
     ],
   }),
-  get_agent_provider_settings: async () => mockAgentProviderSettings,
+  get_agent_provider_settings: async () =>
+    window.__mockProviderRequiresOnboarding
+      ? { providers: [], defaultProvider: null, requiresOnboarding: true }
+      : mockAgentProviderSettings,
   get_managed_provider_cli_status: async () => mockManagedProviderCliStatuses,
   get_mcp_catalog: async () => mockMcpCatalog,
   refresh_mcp_catalog: async () => mockMcpCatalog,
@@ -1451,7 +1488,20 @@ const commandHandlers: Record<
     };
   },
   get_atlassian_integration_settings: async () =>
-    mockAtlassianIntegrationSettings,
+    window.__mockGuideAtlassianConnected
+      ? {
+          ...mockAtlassianIntegrationSettings,
+          enabled: true,
+          authMethod: "api_token" as const,
+          siteUrl: "https://acme.atlassian.net",
+          email: "you@acme.com",
+          hasApiToken: true,
+          validationStatus: "valid",
+          jiraAvailable: true,
+          confluenceAvailable: true,
+          lastValidatedAt: "2026-06-15T09:55:00.000Z",
+        }
+      : mockAtlassianIntegrationSettings,
   save_atlassian_integration_settings: async (args) => {
     const input = args.input as {
       authMethod?: "api_token" | "oauth";
@@ -1569,6 +1619,17 @@ const commandHandlers: Record<
     const query = input.query?.trim() ?? "";
     if (input.kind !== "jira" || query.length === 0) {
       return { resources: [] };
+    }
+    if (window.__mockGuideAtlassianConnected) {
+      const needle = query.toLowerCase();
+      const matches = GUIDE_JIRA_SEARCH_RESULTS.filter((resource) =>
+        `${resource.key} ${resource.title} ${resource.excerpt}`
+          .toLowerCase()
+          .includes(needle),
+      );
+      return {
+        resources: matches.length > 0 ? matches : GUIDE_JIRA_SEARCH_RESULTS,
+      };
     }
     const key = /^[a-z]+-\d+$/i.test(query) ? query.toUpperCase() : "RX-42";
     return {
@@ -2002,9 +2063,13 @@ const commandHandlers: Record<
   },
   get_agent_conversation_jira_issue: async (args) => {
     const input = args.input as { conversationId: string };
-    return {
-      issue: mockAgentConversationJiraIssues.get(input.conversationId) ?? null,
-    };
+    const stored = mockAgentConversationJiraIssues.get(input.conversationId);
+    if (!stored && window.__mockGuideAtlassianConnected) {
+      return {
+        issue: { ...GUIDE_JIRA_ISSUE, conversationId: input.conversationId },
+      };
+    }
+    return { issue: stored ?? null };
   },
   assign_agent_conversation_jira_issue: async (args) => {
     const input = args.input as {

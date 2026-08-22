@@ -39,7 +39,33 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
+      testIgnore: /docs-capture/,
       use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "docs-capture",
+      testDir: "./tests/docs-capture",
+      testMatch: "**/*.spec.ts",
+      snapshotDir: "./tests/docs-capture/snapshots",
+      use: {
+        ...devices["Desktop Chrome"],
+        // 1728x1080 is the MacBook Pro 16" default scaled resolution, and it is
+        // the smallest realistic window that fits the whole Agents split layout:
+        // 72px rail + 340px session list + AGENTS_CHAT_MIN_WIDTH (600) +
+        // AGENTS_ARTIFACT_MIN_WIDTH (600) = 1612px. Anything narrower clips the
+        // right artifact pane, which is the subject of most guide screenshots.
+        viewport: { width: 1728, height: 1080 },
+        deviceScaleFactor: 2,
+        scale: "device",
+      },
+      expect: {
+        toHaveScreenshot: {
+          // Docs-capture screenshots illustrate documentation; they tolerate
+          // cross-environment rendering variance (font hinting, subpixel AA)
+          // that the stricter visual-regression suite does not.
+          maxDiffPixelRatio: 0.03,
+        },
+      },
     },
   ],
 

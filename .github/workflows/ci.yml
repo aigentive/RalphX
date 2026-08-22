@@ -1005,6 +1005,30 @@ jobs:
         run: npm run test:visual
         working-directory: frontend
 
+      # Guide screenshots double as regression baselines: if a captured surface
+      # drifts, this fails and the matching guide in docs/user-guides/ is stale.
+      # Must stay on macOS — baselines carry the `-darwin` suffix.
+      - name: Run docs capture snapshots
+        run: npm run test:docs-capture
+        working-directory: frontend
+
+      # Catches a capture re-baselined without re-running the publish script,
+      # which would leave a stale image embedded in the published guides.
+      - name: Check published guide images are fresh
+        run: |
+          if ! diff -u assets/public/guides/baselines.sha256 <(
+            find frontend/tests/docs-capture/snapshots -name '*-docs-capture-darwin.png' \
+              | while read -r f; do
+                  printf '%s  %s\n' \
+                    "$(shasum -a 256 "$f" | cut -d' ' -f1)" \
+                    "$(basename "$f" -docs-capture-darwin.png).png"
+                done | sort -k2
+          ); then
+            echo "::error::assets/public/guides/ is out of sync with the docs-capture baselines."
+            echo "Run: python3 assets/scripts/publish-guide-images.py && git add assets/public/guides/"
+            exit 1
+          fi
+
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@v7
