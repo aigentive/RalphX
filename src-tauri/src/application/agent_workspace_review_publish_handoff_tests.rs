@@ -674,3 +674,155 @@ async fn resume_records_blocked_state_when_publish_fails_after_review_passes() {
             && event.summary == "push rejected"
     }));
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Gap 5 — the full repair-continuation review cycle
+// ────────────────────────────────────────────────────────────────────
+
+/// The reviewer's own blocking summary, as `review_gate_publish_blocker` produces it for a
+/// `Blocking` gate. Deliberately arbitrary text: it is whatever the reviewer wrote.
+const REVIEWER_BLOCKING_SUMMARY: &str = "Error handling in the retry path is unsound.";
+
+fn blocking_monitor(target: &AgentWorkspaceReviewTarget) -> AgentWorkspaceReviewMonitor {
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id(), project_id());
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_blocking_summary = Some(REVIEWER_BLOCKING_SUMMARY.to_string());
+    monitor.current_target_scope = Some(target.scope);
+    monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());
+    monitor.workspace_head_sha = target.head_sha.clone();
+    monitor
+}
+
+/// Gap 5: the least-direct continuity chain, end to end.
+///
+/// CI fixer completes → continuation parks on `AwaitingReview` → the backend-started review settles
+/// **blocking** → a review fixer runs → the re-review settles **passed** → the publish handoff
+/// resumes the parked repair continuation. Asserted on the durable step trail, not on log text.
+///
+/// The load-bearing detail: a blocking review leaves `pr_supervision_summary` set to the reviewer's
+/// own free-text blocker, which `pr_supervision_block_is_workspace_review_gate` does not recognise.
+/// The handoff therefore survives purely because the blocking settlement writes no handoff-closing
+/// event, leaving the pending `pr_autofix_workspace_review` marker intact. If a future change makes
+/// the blocking path emit an aborted/passed/publish-failed event, this test fails — and the chain
+/// would silently strand the user at a blocked PR forever.
+#[tokio::test]
+async fn blocked_review_cycle_resumes_the_parked_repair_continuation_after_the_re_review_passes() {
+    let repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let target = review_target();
+    let mut workspace = pr_fix_workspace();
+
+    // 1. CI fixer completed and parked the continuation on Workspace Review.
+    workspace.pr_supervision_status = Some("reviewing".to_string());
+    workspace.pr_supervision_summary = Some(
+        "PR fix verified; Workspace Review must finish before publishing resumes.".to_string(),
+    );
+    repo.create_or_update(workspace.clone())
+        .await
+        .expect("seed parked workspace");
+    repo.append_publication_event(publication_event(
+        "pr_autofix_workspace_review",
+        "pending",
+        Some("workspace_review_pending"),
+    ))
+    .await
+    .expect("seed the AwaitingReview park");
+
+    let parked_events = repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("list events");
+    assert!(
+        has_pending_pr_fix_workspace_review_publish_handoff(&parked_events),
+        "the park must register a pending publish handoff"
+    );
+
+    // 2. The backend-started review settles blocking and routes a review fixer.
+    let blocking = blocking_monitor(&target);
+    let mut blocked_workspace = workspace.clone();
+    blocked_workspace.pr_supervision_status = Some("blocked".to_string());
+    blocked_workspace.pr_supervision_summary = Some(REVIEWER_BLOCKING_SUMMARY.to_string());
+    repo.create_or_update(blocked_workspace.clone())
+        .await
+        .expect("persist blocking settlement");
+
+    let blocked_events = repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("list events");
+    assert!(
+        !pr_supervision_block_is_workspace_review_gate(&blocked_workspace),
+        "a reviewer's free-text blocker is not a recognised review-gate summary, so the pending \
+         event is the only thing keeping this continuation alive"
+    );
+    assert!(
+        has_pending_pr_fix_workspace_review_publish_handoff(&blocked_events),
+        "a blocking review must NOT close the publish handoff — the review fixer still has to run"
+    );
+    assert!(
+        !pr_fix_publish_can_resume_after_workspace_review(
+            &blocked_workspace,
+            &blocking,
+            Some(&target),
+            &blocked_events,
+        ),
+        "a blocking review must not authorize publish on its own"
+    );
+
+    // 3. The review fixer runs and the re-review settles passed on the same target.
+    let passed = current_passed_monitor(&target);
+    assert!(
+        pr_fix_publish_can_resume_after_workspace_review(
+            &blocked_workspace,
+            &passed,
+            Some(&target),
+            &blocked_events,
+        ),
+        "a passing re-review must re-authorize the parked continuation from the blocked state"
+    );
+
+    // 4. The publish handoff resumes the parked repair continuation.
+    let outcome = resume_pr_fix_publish_after_passed_workspace_review(
+        Arc::clone(&repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+        &workspace.conversation_id,
+        &blocked_workspace,
+        &passed,
+        Some(&target),
+        |_conversation_id| async { Ok(Some(true)) },
+    )
+    .await
+    .expect("resume should not error");
+
+    assert_eq!(
+        outcome,
+        PrFixReviewPublishResumeOutcome::Published,
+        "the chain must end in a resumed publish, not a stranded blocked PR"
+    );
+    let resumed = repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+    assert_eq!(
+        resumed.pr_supervision_status.as_deref(),
+        Some("monitoring"),
+        "the resumed continuation must leave supervision monitoring, not blocked"
+    );
+
+    // 5. The step trail records the passed handoff, and the handoff is now closed.
+    let final_events = repo
+        .list_publication_events(&workspace.conversation_id)
+        .await
+        .expect("list events");
+    assert!(
+        final_events.iter().any(|event| {
+            event.step == "pr_autofix_workspace_review_passed" && event.status == "publishing"
+        }),
+        "the resumed continuation must stamp the passed-review step"
+    );
+    assert!(
+        !has_pending_pr_fix_workspace_review_publish_handoff(&final_events),
+        "a resumed handoff must be closed so it cannot be resumed twice"
+    );
+}

@@ -3978,3 +3978,276 @@ async fn reconciliation_cancels_interrupted_workspace_delta_restore_with_no_curr
         .auto_merge_guard
         .is_none());
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Review-owned worktree exclusion — manual Start Review
+// ────────────────────────────────────────────────────────────────────
+
+/// Seeds a running agent run on the workspace conversation, standing in for an in-flight CI or
+/// conflict fixer holding the worktree.
+async fn seed_active_workspace_run(state: &AppState, conversation_id: &ChatConversationId) {
+    let mut run = crate::domain::entities::AgentRun::new(conversation_id.clone());
+    run.status = crate::domain::entities::AgentRunStatus::Running;
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("active workspace run should persist");
+}
+
+/// Proof obligation 4: starting a review while a fixer is mutating the worktree produces a review
+/// that is doomed from the first commit, so the start is rejected with actionable guidance instead.
+#[tokio::test]
+async fn manual_review_start_is_rejected_while_a_workspace_fixer_run_is_active() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-active-fixer").await;
+    let preview = preview_manual_workspace_review_start(&state, &workspace)
+        .await
+        .expect("preview should resolve");
+    let confirmation = preview.confirmation;
+    github.state().fetch_pr_health_result =
+        Some(Ok(auto_merge_health("feature/review", &feature_head)));
+    seed_active_workspace_run(&state, &workspace.conversation_id).await;
+    let state = Arc::new(state);
+
+    let error = start_guarded_agent_workspace_review(
+        Arc::clone(&state),
+        &workspace,
+        false,
+        WorkspaceReviewStartOrigin::Manual,
+        Some(&confirmation),
+    )
+    .await
+    .expect_err("an active fixer run must block a manual review start");
+
+    assert!(matches!(error, AppError::Conflict(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("Start the review after it completes"),
+        "the rejection must tell the user what to do next: {error}"
+    );
+    assert!(
+        state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .is_none(),
+        "a rejected start must not transition the review monitor"
+    );
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 0);
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+}
+
+/// The guard is Manual-only. Automated origins already defer through their own routing seams, and
+/// the backend AwaitingReview start fires only after the fixer run has completed.
+#[tokio::test]
+async fn automated_review_start_is_unaffected_by_an_active_workspace_run() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-automated-active").await;
+    github.state().fetch_pr_health_result =
+        Some(Ok(auto_merge_health("feature/review", &feature_head)));
+    seed_active_workspace_run(&state, &workspace.conversation_id).await;
+    let state = Arc::new(state);
+
+    let result = start_guarded_agent_workspace_review(
+        Arc::clone(&state),
+        &workspace,
+        false,
+        WorkspaceReviewStartOrigin::Automated,
+        None,
+    )
+    .await;
+
+    assert!(
+        !matches!(&result, Err(AppError::Conflict(message)) if message.contains("Start the review after it completes")),
+        "the manual idle guard must never reject an automated start"
+    );
+}
+
+/// A run-repository failure must not be read as "the workspace is idle".
+#[tokio::test]
+async fn manual_review_start_is_rejected_when_workspace_idleness_cannot_be_confirmed() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (mut state, github, workspace, feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-idle-unreadable").await;
+    let preview = preview_manual_workspace_review_start(&state, &workspace)
+        .await
+        .expect("preview should resolve");
+    let confirmation = preview.confirmation;
+    github.state().fetch_pr_health_result =
+        Some(Ok(auto_merge_health("feature/review", &feature_head)));
+    state.agent_run_repo = Arc::new(ActiveRunLookupErrorRepository);
+    let state = Arc::new(state);
+
+    let error = start_guarded_agent_workspace_review(
+        Arc::clone(&state),
+        &workspace,
+        false,
+        WorkspaceReviewStartOrigin::Manual,
+        Some(&confirmation),
+    )
+    .await
+    .expect_err("an unreadable idle gate must reject the start");
+
+    assert!(matches!(error, AppError::Conflict(_)));
+    assert!(error.to_string().contains("could not confirm"));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .is_none());
+}
+
+/// An idle workspace still starts normally — the guard adds no friction to the ordinary path.
+#[tokio::test]
+async fn manual_review_start_proceeds_when_the_workspace_is_idle() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-idle-start").await;
+    let preview = preview_manual_workspace_review_start(&state, &workspace)
+        .await
+        .expect("preview should resolve");
+    let confirmation = preview.confirmation;
+    github.state().fetch_pr_health_result =
+        Some(Ok(auto_merge_health("feature/review", &feature_head)));
+    let state = Arc::new(state);
+
+    let result = start_guarded_agent_workspace_review(
+        Arc::clone(&state),
+        &workspace,
+        false,
+        WorkspaceReviewStartOrigin::Manual,
+        Some(&confirmation),
+    )
+    .await;
+
+    assert!(
+        !matches!(&result, Err(AppError::Conflict(message)) if message.contains("Start the review after it completes")),
+        "an idle workspace must not be rejected by the fixer guard"
+    );
+}
+
+/// Delegates to a memory run repository but fails the active-run lookup, so the manual start
+/// guard's fail-closed posture can be observed in isolation.
+struct ActiveRunLookupErrorRepository;
+
+fn active_run_lookup_error() -> AppError {
+    AppError::Database("forced agent run repository failure".to_string())
+}
+
+#[async_trait::async_trait]
+impl crate::domain::repositories::AgentRunRepository for ActiveRunLookupErrorRepository {
+    async fn get_active_for_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> crate::AppResult<Option<crate::domain::entities::AgentRun>> {
+        Err(active_run_lookup_error())
+    }
+
+    async fn create(
+        &self,
+        run: crate::domain::entities::AgentRun,
+    ) -> crate::AppResult<crate::domain::entities::AgentRun> {
+        Ok(run)
+    }
+    async fn get_by_id(
+        &self,
+        _id: &crate::domain::entities::AgentRunId,
+    ) -> crate::AppResult<Option<crate::domain::entities::AgentRun>> {
+        Ok(None)
+    }
+    async fn get_latest_for_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> crate::AppResult<Option<crate::domain::entities::AgentRun>> {
+        Ok(None)
+    }
+    async fn get_by_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> crate::AppResult<Vec<crate::domain::entities::AgentRun>> {
+        Ok(Vec::new())
+    }
+    async fn update_status(
+        &self,
+        _id: &crate::domain::entities::AgentRunId,
+        _status: crate::domain::entities::AgentRunStatus,
+    ) -> crate::AppResult<()> {
+        Ok(())
+    }
+    async fn update_usage(
+        &self,
+        _id: &crate::domain::entities::AgentRunId,
+        _usage: &crate::domain::entities::AgentRunUsage,
+    ) -> crate::AppResult<()> {
+        Ok(())
+    }
+    async fn update_attribution(
+        &self,
+        _id: &crate::domain::entities::AgentRunId,
+        _attribution: &crate::domain::entities::AgentRunAttribution,
+    ) -> crate::AppResult<()> {
+        Ok(())
+    }
+    async fn complete(&self, _id: &crate::domain::entities::AgentRunId) -> crate::AppResult<()> {
+        Ok(())
+    }
+    async fn complete_if_prune_cancelled(
+        &self,
+        _id: &crate::domain::entities::AgentRunId,
+    ) -> crate::AppResult<bool> {
+        Ok(false)
+    }
+    async fn fail(
+        &self,
+        _id: &crate::domain::entities::AgentRunId,
+        _error_message: &str,
+    ) -> crate::AppResult<()> {
+        Ok(())
+    }
+    async fn cancel(&self, _id: &crate::domain::entities::AgentRunId) -> crate::AppResult<()> {
+        Ok(())
+    }
+    async fn cancel_with_reason(
+        &self,
+        _id: &crate::domain::entities::AgentRunId,
+        _reason: &str,
+    ) -> crate::AppResult<()> {
+        Ok(())
+    }
+    async fn delete(&self, _id: &crate::domain::entities::AgentRunId) -> crate::AppResult<()> {
+        Ok(())
+    }
+    async fn delete_by_conversation(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> crate::AppResult<()> {
+        Ok(())
+    }
+    async fn count_by_status(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _status: crate::domain::entities::AgentRunStatus,
+    ) -> crate::AppResult<u32> {
+        Ok(0)
+    }
+    async fn cancel_all_running(&self) -> crate::AppResult<u32> {
+        Ok(0)
+    }
+    async fn cancel_running_started_before(
+        &self,
+        _cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> crate::AppResult<u32> {
+        Ok(0)
+    }
+    async fn get_interrupted_conversations(
+        &self,
+    ) -> crate::AppResult<Vec<crate::domain::entities::InterruptedConversation>> {
+        Ok(Vec::new())
+    }
+}

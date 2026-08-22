@@ -2270,3 +2270,132 @@ async fn blocked_repair_base_retry_dedupes_multiple_attempt_rows_for_one_convers
         "a duplicated candidate row must not supersede the blocked generation twice"
     );
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Review-owned worktree exclusion — unattended base updates
+// ────────────────────────────────────────────────────────────────────
+
+/// Persists a review monitor that reports the reviewer as in flight.
+async fn seed_reviewing_monitor(state: &AppState, workspace: &AgentConversationWorkspace) {
+    let mut monitor = crate::domain::entities::AgentWorkspaceReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+    );
+    monitor.status = crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Reviewing;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("review monitor should seed");
+}
+
+/// Proof obligation 6: the reviewer runs in a child conversation, so this scan's existing
+/// active-run gate cannot see it. Without the review gate, an unattended base merge would land
+/// under an in-flight review and invalidate the delta being reviewed.
+#[tokio::test]
+async fn base_freshness_scan_skips_auto_update_while_review_work_owns_the_worktree() {
+    let (_repo, project, workspace) = unpublished_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let state = AppState::new_test();
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should seed");
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should seed");
+    seed_reviewing_monitor(&state, &workspace).await;
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let updated = run_agent_workspace_base_freshness_scan_tick_from_app_handle(app.handle())
+        .await
+        .expect("tick should succeed even when the review gate blocks the update");
+
+    assert_eq!(
+        updated, 0,
+        "an in-flight review must block the unattended base auto-update"
+    );
+    let reloaded = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace should load")
+        .expect("workspace should exist");
+    assert!(
+        reloaded.stale_base_detected_at.is_some(),
+        "detection must still run under the review gate"
+    );
+}
+
+/// A review fixer holds the same worktree as the reviewer, so it excludes the scan just as well.
+#[tokio::test]
+async fn base_freshness_scan_skips_auto_update_while_a_review_fixer_is_active() {
+    let (_repo, project, workspace) = unpublished_git_workspace_fixture();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let state = AppState::new_test();
+    let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should seed");
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should seed");
+    let mut monitor = crate::domain::entities::AgentWorkspaceReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+    );
+    monitor.status = crate::domain::entities::AgentWorkspaceReviewMonitorStatus::Blocked;
+    monitor.review_fixer_status =
+        Some(crate::domain::entities::WORKSPACE_REVIEW_FIXER_STATUS_RUNNING.to_string());
+    workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("review monitor should seed");
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let updated = run_agent_workspace_base_freshness_scan_tick_from_app_handle(app.handle())
+        .await
+        .expect("tick should succeed");
+
+    assert_eq!(
+        updated, 0,
+        "an active review fixer must block the unattended base auto-update"
+    );
+}
+
+/// Proof obligation 6, second scan: the blocked-repair retry merges from base into the same
+/// worktree and must stand down for review-owned work too.
+#[tokio::test]
+async fn blocked_repair_base_retry_skips_while_review_work_owns_the_worktree() {
+    let (_repo, project, workspace) = published_git_workspace_fixture();
+    let conversation_id = workspace.conversation_id.clone();
+    let repo_path = Path::new(&project.working_directory).to_path_buf();
+    let workspace_for_monitor = workspace.clone();
+    let state = seed_blocked_repair_state(project, workspace, |_| {}).await;
+    let repair_repo = Arc::clone(&state.agent_workspace_repair_repo);
+    seed_reviewing_monitor(&state, &workspace_for_monitor).await;
+
+    commit_file(&repo_path, "drift.txt", "drift\n", "advance base");
+
+    let app = mock_app_with_state_and_execution(state, Arc::new(ExecutionState::new()));
+    let dispatched =
+        run_agent_workspace_blocked_repair_base_retry_scan_tick_from_app_handle(app.handle())
+            .await
+            .expect("tick should succeed");
+
+    assert_eq!(
+        dispatched, 0,
+        "an in-flight review must block the unattended blocked-repair base retry"
+    );
+    assert_no_repair_dispatch(&repair_repo, &conversation_id).await;
+}

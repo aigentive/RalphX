@@ -444,6 +444,27 @@ async fn attempt_gated_agent_workspace_base_auto_update(
         return false;
     }
 
+    // The active-run gate above is blind to the reviewer, which runs in a dedicated child
+    // conversation. Without this, an unattended base merge can land under an in-flight review and
+    // invalidate the delta it is reviewing.
+    match crate::application::agent_workspace_review::workspace_review_owns_worktree(
+        state.agent_conversation_workspace_repo.as_ref(),
+        conversation_id,
+    )
+    .await
+    {
+        Ok(true) => return false,
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Skipping unattended agent workspace base auto-update: Workspace Review gate failed closed"
+            );
+            return false;
+        }
+    }
+
     let repair_attempt = match state
         .agent_workspace_repair_repo
         .get_current_repair_attempt(conversation_id)

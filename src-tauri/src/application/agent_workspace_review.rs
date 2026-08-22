@@ -4469,6 +4469,31 @@ pub async fn load_or_create_monitor(
     ))
 }
 
+/// True while Workspace Review work owns this workspace's worktree: the reviewer is running
+/// (monitor `Reviewing`) or a review fixer is routing/queued/running.
+///
+/// Read-only. PR autofix dispatch, poller base updates, and the unattended base-update scans all
+/// consult it so that no unattended actor mutates the worktree under review-owned work — a
+/// mid-review commit would invalidate the in-flight review and waste a reviewer generation.
+///
+/// A missing monitor means no review has ever run, so the worktree is free. Repo errors propagate
+/// so each caller can apply its own fail-closed posture.
+///
+/// # Errors
+/// Returns the underlying repository error when the review monitor cannot be read.
+pub(crate) async fn workspace_review_owns_worktree(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    conversation_id: &ChatConversationId,
+) -> AppResult<bool> {
+    let monitor = workspace_repo
+        .get_workspace_review_monitor(conversation_id)
+        .await?;
+    Ok(monitor.is_some_and(|monitor| {
+        monitor.status == AgentWorkspaceReviewMonitorStatus::Reviewing
+            || workspace_review_fixer_status_is_active(monitor.review_fixer_status.as_deref())
+    }))
+}
+
 pub fn apply_review_artifact_to_monitor(
     monitor: &mut AgentWorkspaceReviewMonitor,
     target_scope: AgentWorkspaceReviewTargetScope,
