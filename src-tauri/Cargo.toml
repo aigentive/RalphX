@@ -54,7 +54,7 @@ chrono-tz = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 async-trait = "0.1"
 tokio = { version = "1", features = ["full", "process"] }
-statig = { version = "0.3", features = ["async"] }
+statig = { version = "0.4", features = ["async"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 tracing-appender = "0.2"
