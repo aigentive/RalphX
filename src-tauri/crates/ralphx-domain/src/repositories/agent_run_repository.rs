@@ -3,6 +3,8 @@
 // This trait defines the contract for agent run persistence.
 // Agent runs track the execution status of provider-backed agents for conversations.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 
 use crate::agents::AgentHarnessKind;
@@ -45,6 +47,23 @@ pub trait AgentRunRepository: Send + Sync {
         &self,
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentRun>>;
+
+    /// Get the most recent run for each of several conversations.
+    ///
+    /// Conversations with no runs are absent from the map. Implementations should batch this when
+    /// backed by a database; the default loops so non-database implementations need no change.
+    async fn get_latest_for_conversations(
+        &self,
+        conversation_ids: &[ChatConversationId],
+    ) -> AppResult<HashMap<ChatConversationId, AgentRun>> {
+        let mut latest = HashMap::new();
+        for conversation_id in conversation_ids {
+            if let Some(run) = self.get_latest_for_conversation(conversation_id).await? {
+                latest.insert(*conversation_id, run);
+            }
+        }
+        Ok(latest)
+    }
 
     /// Get the latest successful run that owns one provider-native session.
     async fn get_latest_completed_for_provider_session(

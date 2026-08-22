@@ -740,6 +740,80 @@ async fn test_get_latest_for_conversation() {
     assert_eq!(latest.unwrap().id, new_run_id);
 }
 
+/// The sidebar listing replaces per-conversation latest-run reads with one batched pass, so the
+/// batched result must be exactly the map of the single-item results — including conversations
+/// with no runs, which must be absent rather than present-and-empty.
+#[tokio::test]
+async fn test_get_latest_for_conversations_matches_single_item_reads() {
+    let (db, repo) = setup_repo();
+
+    let with_runs: Vec<_> = (0..3).map(|_| db.seed_ideation_conversation()).collect();
+    let without_runs = db.seed_ideation_conversation();
+
+    let mut expected_latest = Vec::new();
+    for (index, conv) in with_runs.iter().enumerate() {
+        let mut old_run = AgentRun::new(conv.id.clone());
+        old_run.started_at = Utc::now() - chrono::Duration::hours(index as i64 + 1);
+        repo.create(old_run).await.unwrap();
+
+        let newest = AgentRun::new(conv.id.clone());
+        expected_latest.push(newest.id);
+        repo.create(newest).await.unwrap();
+    }
+
+    let conversation_ids: Vec<_> = with_runs
+        .iter()
+        .map(|conv| conv.id.clone())
+        .chain(std::iter::once(without_runs.id.clone()))
+        .collect();
+
+    let batched = repo
+        .get_latest_for_conversations(&conversation_ids)
+        .await
+        .unwrap();
+
+    assert_eq!(batched.len(), with_runs.len());
+    assert!(!batched.contains_key(&without_runs.id));
+    for (conv, expected_id) in with_runs.iter().zip(expected_latest) {
+        let single = repo
+            .get_latest_for_conversation(&conv.id)
+            .await
+            .unwrap()
+            .expect("single-item read should find a run");
+        assert_eq!(single.id, expected_id);
+        assert_eq!(batched.get(&conv.id).map(|run| run.id), Some(expected_id));
+    }
+}
+
+#[tokio::test]
+async fn test_get_latest_for_conversations_empty_input_hits_no_database() {
+    let (_db, repo) = setup_repo();
+
+    assert!(repo
+        .get_latest_for_conversations(&[])
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_get_latest_for_conversations_skips_unknown_conversations() {
+    let (_db, repo) = setup_repo();
+
+    let unknown = ChatConversationId::new();
+    let batched = repo
+        .get_latest_for_conversations(std::slice::from_ref(&unknown))
+        .await
+        .unwrap();
+
+    assert!(batched.is_empty());
+    assert!(repo
+        .get_latest_for_conversation(&unknown)
+        .await
+        .unwrap()
+        .is_none());
+}
+
 #[tokio::test]
 async fn test_get_latest_for_conversation_empty() {
     let (_db, repo) = setup_repo();

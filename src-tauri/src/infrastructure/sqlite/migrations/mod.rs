@@ -596,6 +596,7 @@ mod v20260811023943_agent_runs_routing_role_and_project;
 mod v20260811194643_workspace_review_settlement_evidence;
 mod v20260813175745_agent_workspace_pr_autofix_base_update_evidence;
 mod v20260820174706_publication_association_verified;
+mod v20260821101236_agent_runs_conversation_started_index;
 #[cfg(test)]
 mod v20260730161032_agent_workspace_pr_autofix_completion_evidence_tests;
 #[cfg(test)]
@@ -641,6 +642,8 @@ mod v20260811194643_workspace_review_settlement_evidence_tests;
 mod v20260813175745_agent_workspace_pr_autofix_base_update_evidence_tests;
 #[cfg(test)]
 mod v20260820174706_publication_association_verified_tests;
+#[cfg(test)]
+mod v20260821101236_agent_runs_conversation_started_index_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -735,7 +738,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260820174706;
+pub const SCHEMA_VERSION: i64 = 20260821101236;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -2015,6 +2018,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260820174706,
         name: "publication_association_verified",
         migrate: v20260820174706_publication_association_verified::migrate,
+    },
+    Migration {
+        version: 20260821101236,
+        name: "agent_runs_conversation_started_index",
+        migrate: v20260821101236_agent_runs_conversation_started_index::migrate,
     },
 ];
 

@@ -172,6 +172,9 @@ timeouts:
     # db_connection.rs — production warning thresholds for mutex wait and operation hold time
     db_lock_wait_warn_ms: 100 # Env: RALPHX_STREAM_DB_LOCK_WAIT_WARN_MS
     db_lock_hold_warn_ms: 250 # Env: RALPHX_STREAM_DB_LOCK_HOLD_WARN_MS
+    # Minimum spacing between slow-lock WARN lines; suppressed lines are counted and
+    # reported on the next emitted one. 0 disables limiting.
+    db_lock_warn_interval_ms: 5000 # Env: RALPHX_STREAM_DB_LOCK_WARN_INTERVAL_MS
 
 # Backend-held delegation waiting. Coordinators stop burning tokens on model-side polling:
 # short waits block inside `delegate_wait`, long waits park and are woken by delegate signals.

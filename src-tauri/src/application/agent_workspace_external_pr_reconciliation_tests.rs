@@ -1758,9 +1758,9 @@ async fn unchanged_terminal_reobservation_writes_nothing_but_still_terminalizes(
         after.pr_supervision_summary.as_deref(),
         Some("RalphX is monitoring the pull request.")
     );
-    // The foreign-correction pass owns the only PR detail read; the ClickUp reconcile that
-    // would have bought a second one never runs.
-    assert_eq!(github.state().fetch_pr_detail_calls, 1);
+    // The recorded-terminal early-exit guard fires before the foreign-correction pass, so
+    // no `fetch_pr_detail` call is made at all.
+    assert_eq!(github.state().fetch_pr_detail_calls, 0);
 }
 
 #[tokio::test]

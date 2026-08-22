@@ -667,6 +667,12 @@ where
     use tokio::io::AsyncReadExt;
 
     let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+
+    // A zero-second timeout means the caller wants an immediate expiry — return without spawning.
+    if timeout_secs == 0 {
+        return Ok(StreamedGitOutcome::TimedOut);
+    }
+
     let lane = current_git_command_lane(GitCommandLane::Clone);
     let _admission = acquire_git_admission(lane, "spawn_streaming", &args, cwd).await?;
     let started = Instant::now();
@@ -703,12 +709,12 @@ where
                 })?;
                 if read == 0 {
                     emit_pending_segment(&mut pending, &mut on_stderr_line);
-                    break StreamedGitOutcome::Completed(wait_for_streamed_exit(
+                    break wait_for_streamed_exit(
                         &mut child,
                         &args,
                         &mut deadline,
                         &mut cancel,
-                    ).await?);
+                    ).await?;
                 }
                 pending.extend_from_slice(&chunk[..read]);
                 emit_complete_segments(&mut pending, &mut on_stderr_line);
@@ -741,23 +747,19 @@ async fn wait_for_streamed_exit<C>(
     args: &[String],
     deadline: &mut std::pin::Pin<&mut tokio::time::Sleep>,
     cancel: &mut std::pin::Pin<&mut C>,
-) -> AppResult<std::process::ExitStatus>
+) -> AppResult<StreamedGitOutcome>
 where
     C: std::future::Future<Output = ()>,
 {
     tokio::select! {
         biased;
-        () = cancel.as_mut() => Err(AppError::GitOperation(format!(
-            "git {} was cancelled while exiting",
-            args.join(" ")
-        ))),
-        () = deadline.as_mut() => Err(AppError::GitOperation(format!(
-            "git {} timed out while exiting",
-            args.join(" ")
-        ))),
-        status = child.wait() => status.map_err(|error| {
-            AppError::GitOperation(format!("git {} failed: {error}", args.join(" ")))
-        }),
+        () = cancel.as_mut() => Ok(StreamedGitOutcome::Cancelled),
+        () = deadline.as_mut() => Ok(StreamedGitOutcome::TimedOut),
+        status = child.wait() => status
+            .map(StreamedGitOutcome::Completed)
+            .map_err(|error| {
+                AppError::GitOperation(format!("git {} failed: {error}", args.join(" ")))
+            }),
     }
 }
 

@@ -1,6 +1,7 @@
 // SQLite-based AgentRunRepository implementation
 // Uses DbConnection (spawn_blocking) for non-blocking rusqlite access
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -9,6 +10,10 @@ use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use rusqlite::{params_from_iter, Connection};
 
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, RoutingRole};
+
+/// SQLite's default `SQLITE_MAX_VARIABLE_NUMBER`, with headroom for bound values outside the
+/// `IN (...)` list.
+const SQLITE_BIND_PARAMETER_LIMIT: usize = 900;
 
 pub(crate) use crate::infrastructure::agent_run_error_message::truncate_persisted_error_message;
 
@@ -299,6 +304,61 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                     [&conversation_id],
                     |row| row_to_agent_run(row),
                 )
+            })
+            .await
+    }
+
+    async fn get_latest_for_conversations(
+        &self,
+        conversation_ids: &[ChatConversationId],
+    ) -> AppResult<HashMap<ChatConversationId, AgentRun>> {
+        if conversation_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conversation_ids: Vec<String> = conversation_ids
+            .iter()
+            .map(|conversation_id| conversation_id.as_str().to_string())
+            .collect();
+
+        self.db
+            .run(move |conn| {
+                let mut latest = HashMap::new();
+                for chunk in conversation_ids.chunks(SQLITE_BIND_PARAMETER_LIMIT) {
+                    let placeholders = std::iter::repeat_n("?", chunk.len())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    // `ORDER BY started_at DESC` is copied verbatim from
+                    // `get_latest_for_conversation` so latest-run semantics cannot drift
+                    // between the single and batched reads.
+                    let sql = format!(
+                        "SELECT id, conversation_id, status, started_at, completed_at, error_message,
+                                harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
+                                logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
+                                cache_creation_tokens, cache_read_tokens, estimated_usd,
+                                usage_provenance, raw_usage_input_tokens, raw_usage_output_tokens,
+                                raw_usage_cache_creation_tokens, raw_usage_cache_read_tokens, raw_usage_estimated_usd,
+                                approval_policy, sandbox_mode, agent_name, launch_role, routing_role, project_id, runtime_source, run_chain_id, parent_run_id,
+                                action_kind, action_context_id, action_target_id,
+                                persona_id, persona_slug, persona_version, persona_content_hash,
+                                persona_injected, persona_skipped_reason
+                         FROM (
+                             SELECT *, ROW_NUMBER() OVER (
+                                 PARTITION BY conversation_id ORDER BY started_at DESC
+                             ) AS rn
+                             FROM agent_runs
+                             WHERE conversation_id IN ({placeholders})
+                         )
+                         WHERE rn = 1"
+                    );
+                    let mut stmt = conn.prepare(&sql)?;
+                    let runs = stmt
+                        .query_map(params_from_iter(chunk.iter()), |row| row_to_agent_run(row))?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    for run in runs {
+                        latest.insert(run.conversation_id.clone(), run);
+                    }
+                }
+                Ok(latest)
             })
             .await
     }

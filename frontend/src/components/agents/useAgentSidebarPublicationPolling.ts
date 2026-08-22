@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { chatApi } from "@/api/chat";
+import { invalidateAgentSidebarConversations } from "@/hooks/agentSidebarConversationKeys";
 
 import type { AgentConversation } from "./agentConversations";
 import { invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
@@ -72,9 +73,18 @@ export function useAgentSidebarPublicationPolling(
           }
 
           if (changedConversationIds.length > 0) {
-            queryClient.invalidateQueries({
-              queryKey: agentSidebarConversationKeys.all,
-            });
+            // A sidebar listing already running will observe this drift when it
+            // settles; stacking another invalidation on it only adds work. The
+            // guard is self-clearing — the next tick re-evaluates drift against
+            // the freshly written cache — so it cannot wedge the sidebar.
+            const listingInFlight =
+              queryClient.isFetching({
+                queryKey: agentSidebarConversationKeys.all,
+              }) > 0;
+            if (!listingInFlight) {
+              void invalidateAgentSidebarConversations(queryClient);
+            }
+            // Per-workspace queries are cheap and have no such backstop.
             for (const conversationId of changedConversationIds) {
               void invalidateWorkspaceQueries(queryClient, conversationId);
             }

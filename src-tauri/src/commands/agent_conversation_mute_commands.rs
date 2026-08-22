@@ -7,7 +7,7 @@ use tauri::State;
 use crate::application::AppState;
 use crate::commands::agent_sidebar_commands::{
     attention_state_fingerprint, managed_team_activity_for_conversation,
-    normalized_supervision_status, publication_state_for_workspace,
+    normalized_supervision_status, publication_state_for_workspace, SidebarWorkspaceFacts,
 };
 use crate::commands::agent_sidebar_review_state::{
     lifecycle_monitor_for_sidebar, pr_review_state_for_row, SidebarPrReviewState,
@@ -78,6 +78,9 @@ pub async fn set_agent_conversation_muted_for_app_state(
         ),
         None => None,
     };
+    // Projected from the composed response, not the raw entity, so the mute fingerprint stays
+    // byte-identical to the one the sidebar listing derives.
+    let workspace_facts = workspace.as_ref().map(SidebarWorkspaceFacts::from_response);
     let latest_run = state
         .agent_run_repo
         .get_latest_for_conversation(&conversation_id)
@@ -102,10 +105,10 @@ pub async fn set_agent_conversation_muted_for_app_state(
         .and_then(|monitor| pr_review_state_for_row(Some(monitor), latest_run_status));
     let fingerprint = attention_state_fingerprint(
         conversation.is_archived(),
-        publication_state_for_workspace(workspace.as_ref(), latest_run_status),
+        publication_state_for_workspace(workspace_facts.as_ref(), latest_run_status),
         latest_run.as_ref().map(|run| run.id.to_string()).as_deref(),
         latest_run_status,
-        normalized_supervision_status(workspace.as_ref()).as_deref(),
+        normalized_supervision_status(workspace_facts.as_ref()).as_deref(),
         conversation.last_message_at,
         managed_team_activity
             .as_ref()

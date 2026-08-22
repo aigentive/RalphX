@@ -10,7 +10,7 @@ import { archivedConversationCountKey } from "./useArchivedConversationCounts";
 import {
   agentConversationKeys,
 } from "./useProjectAgentConversations";
-import { agentSidebarConversationKeys } from "./useAgentSidebarPublicationGroup";
+import { invalidateAgentSidebarConversations } from "@/hooks/agentSidebarConversationKeys";
 
 export function useAgentConversationInvalidation(queryClient: QueryClient) {
   return useCallback(
@@ -19,9 +19,7 @@ export function useAgentConversationInvalidation(queryClient: QueryClient) {
         queryClient.invalidateQueries({
           queryKey: agentConversationKeys.project(targetProjectId),
         }),
-        queryClient.invalidateQueries({
-          queryKey: agentSidebarConversationKeys.all,
-        }),
+        invalidateAgentSidebarConversations(queryClient),
         queryClient.invalidateQueries({
           queryKey: chatKeys.conversationList("project", targetProjectId),
         }),

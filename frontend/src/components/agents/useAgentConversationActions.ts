@@ -14,7 +14,7 @@ import { ideationApi } from "@/api/ideation";
 import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
 import { projectsApi } from "@/api/projects";
 import { projectKeys } from "@/hooks/useProjects";
-import { agentSidebarConversationKeys } from "@/hooks/agentSidebarConversationKeys";
+import { invalidateAgentSidebarConversations } from "@/hooks/agentSidebarConversationKeys";
 import type { Project } from "@/types/project";
 import type {
   AgentRuntimeSelection,
@@ -120,9 +120,7 @@ export function useAgentConversationActions({
         await invalidateProjectConversations(conversationProjectId);
         return;
       }
-      await queryClient.invalidateQueries({
-        queryKey: agentSidebarConversationKeys.all,
-      });
+      await invalidateAgentSidebarConversations(queryClient);
     },
     [invalidateProjectConversations, queryClient],
   );
@@ -497,9 +495,7 @@ export function useAgentConversationActions({
   const writeConversationMuted = useCallback(
     async (conversationId: string, muted: boolean) => {
       await setAgentConversationMuted(conversationId, muted);
-      await queryClient.invalidateQueries({
-        queryKey: agentSidebarConversationKeys.all,
-      });
+      await invalidateAgentSidebarConversations(queryClient);
     },
     [queryClient],
   );
@@ -536,9 +532,7 @@ export function useAgentConversationActions({
         await Promise.all(
           conversationIds.map((conversationId) => setAgentConversationMuted(conversationId, true))
         );
-        await queryClient.invalidateQueries({
-          queryKey: agentSidebarConversationKeys.all,
-        });
+        await invalidateAgentSidebarConversations(queryClient);
         const mutedLabel =
           conversationIds.length === 1
             ? "Muted 1 session — it returns on its next change"
@@ -550,9 +544,7 @@ export function useAgentConversationActions({
               void Promise.all(
                 conversationIds.map((conversationId) => setAgentConversationMuted(conversationId, false))
               )
-                .then(() =>
-                  queryClient.invalidateQueries({ queryKey: agentSidebarConversationKeys.all })
-                )
+                .then(() => invalidateAgentSidebarConversations(queryClient))
                 .catch((err: unknown) => {
                   toast.error(
                     err instanceof Error ? err.message : "Failed to update session mute"

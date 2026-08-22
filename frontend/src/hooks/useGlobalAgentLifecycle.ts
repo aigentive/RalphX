@@ -19,7 +19,7 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { agentSidebarConversationKeys } from "@/hooks/agentSidebarConversationKeys";
+import { invalidateAgentSidebarConversations } from "@/hooks/agentSidebarConversationKeys";
 import { useEventBus } from "@/providers/EventProvider";
 import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
@@ -116,13 +116,13 @@ export function useGlobalAgentLifecycle() {
 
     let sidebarInvalidationTimer: ReturnType<typeof setTimeout> | null = null;
 
-    function invalidateAgentSidebarConversations(contextType: string) {
+    function scheduleAgentSidebarInvalidation(contextType: string) {
       if (contextType !== "project" && contextType !== "standalone") return;
 
       if (sidebarInvalidationTimer !== null) clearTimeout(sidebarInvalidationTimer);
       sidebarInvalidationTimer = setTimeout(() => {
         sidebarInvalidationTimer = null;
-        void queryClient.invalidateQueries({ queryKey: agentSidebarConversationKeys.all });
+        void invalidateAgentSidebarConversations(queryClient);
       }, AGENT_SIDEBAR_INVALIDATION_DEBOUNCE_MS);
     }
 
@@ -239,7 +239,7 @@ export function useGlobalAgentLifecycle() {
           useChatStore.getState().setEffectiveModel(eventContextKey, model);
         }
 
-        invalidateAgentSidebarConversations(context_type);
+        scheduleAgentSidebarInvalidation(context_type);
       })
     );
 
@@ -265,7 +265,7 @@ export function useGlobalAgentLifecycle() {
           // Final heartbeat for accepted terminal events.
           useChatStore.getState().updateLastAgentEvent(eventContextKey);
           handleChildTerminationReverseLink(eventContextId);
-          invalidateAgentSidebarConversations(context_type);
+          scheduleAgentSidebarInvalidation(context_type);
         }
       })
     );
@@ -310,7 +310,7 @@ export function useGlobalAgentLifecycle() {
           useChatStore.getState().setAgentStatus(eventContextKey, "waiting_for_input");
         }
 
-        invalidateAgentSidebarConversations(context_type);
+        scheduleAgentSidebarInvalidation(context_type);
       })
     );
 
@@ -339,7 +339,7 @@ export function useGlobalAgentLifecycle() {
           )
         ) {
           handleChildTerminationReverseLink(eventContextId);
-          invalidateAgentSidebarConversations(context_type);
+          scheduleAgentSidebarInvalidation(context_type);
         }
       })
     );
@@ -372,7 +372,7 @@ export function useGlobalAgentLifecycle() {
           return;
         }
         handleChildTerminationReverseLink(eventContextId);
-        invalidateAgentSidebarConversations(context_type);
+        scheduleAgentSidebarInvalidation(context_type);
 
         // Error toast for execution contexts with deterministic id for deduplication.
         // Sonner does NOT auto-deduplicate — explicit id prevents duplicate toasts

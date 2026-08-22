@@ -1,3 +1,5 @@
+import type { QueryClient } from "@tanstack/react-query";
+
 import type {
   AgentSidebarAttentionLane,
   AgentSidebarPublicationState,
@@ -165,3 +167,28 @@ export const agentSidebarConversationKeys = {
       sort,
     ] as const,
 };
+
+/**
+ * Invalidate every sidebar listing query without cancelling one that is already
+ * running.
+ *
+ * TanStack Query v5 defaults `refetchQueries` to `cancelRefetch: true`, so a
+ * plain `invalidateQueries` aborts and restarts any in-flight fetch. The sidebar
+ * listing takes minutes on a large database and the publication poll invalidates
+ * every 5s, so the default turns a slow query into one that can never finish.
+ *
+ * `cancelRefetch: false` alone is not enough: when a fetch is already running it
+ * is simply awaited, and its success clears `isInvalidated` — so the cache can
+ * settle on a payload that predates the change that triggered us. One trailing
+ * pass closes that hole. It is a single pass, not a loop, because the 5s drift
+ * poll is the backstop.
+ */
+export async function invalidateAgentSidebarConversations(
+  queryClient: QueryClient,
+): Promise<void> {
+  const filters = { queryKey: agentSidebarConversationKeys.all };
+  const wasFetching = queryClient.isFetching(filters) > 0;
+  await queryClient.invalidateQueries(filters, { cancelRefetch: false });
+  if (!wasFetching) return;
+  await queryClient.invalidateQueries(filters, { cancelRefetch: false });
+}

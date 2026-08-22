@@ -39,7 +39,7 @@ import {
   type AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
-import { agentSidebarConversationKeys } from "@/hooks/agentSidebarConversationKeys";
+import { invalidateAgentSidebarConversations } from "@/hooks/agentSidebarConversationKeys";
 import { conversationFolderReferencesApi } from "@/api/conversation-folder-references";
 import type { ChatConversation } from "@/types/chat-conversation";
 
@@ -735,9 +735,7 @@ export function useStartAgentConversation({
         if (targetProjectId) {
           await invalidateProjectConversations(targetProjectId);
         } else {
-          await queryClient.invalidateQueries({
-            queryKey: agentSidebarConversationKeys.all,
-          });
+          await invalidateAgentSidebarConversations(queryClient);
         }
         handleAutoManagedTitle({
           content,
@@ -821,9 +819,7 @@ export function useStartAgentConversation({
               queryClient,
               seededConversationId,
             );
-            await queryClient.invalidateQueries({
-              queryKey: agentSidebarConversationKeys.all,
-            });
+            await invalidateAgentSidebarConversations(queryClient);
             setOptimisticSelectedConversationId(seededConversationId);
             setFocusedProject(targetProjectId);
             selectConversation(targetProjectId, seededConversationId);

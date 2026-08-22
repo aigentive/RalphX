@@ -8,6 +8,7 @@ fn db_lock_slow_threshold_covers_wait_and_hold_directions() {
     let thresholds = DbLockTelemetryThresholds {
         wait_warn_ms: 100,
         hold_warn_ms: 250,
+        warn_interval_ms: 0,
     };
 
     assert!(!db_lock_observation_is_slow(99, 249, thresholds));
@@ -380,5 +381,46 @@ async fn test_from_shared_in_memory_uses_single_backend() {
     assert!(
         matches!(db.backend.as_ref(), DbBackend::Single(_)),
         "In-memory shared connections should stay on the isolated single-connection path"
+    );
+}
+
+#[test]
+fn slow_lock_warns_are_spaced_and_carry_the_suppressed_count() {
+    const INTERVAL_MS: u128 = 5_000;
+
+    // Never emitted: always report, so a single slow lock is never swallowed.
+    assert_eq!(slow_lock_warn_decision(0, None, INTERVAL_MS, 0), Some(0));
+
+    // Inside the window: suppress.
+    assert_eq!(
+        slow_lock_warn_decision(4_999, Some(0), INTERVAL_MS, 120),
+        None
+    );
+
+    // Exactly at the window boundary: emit, reporting what was suppressed.
+    assert_eq!(
+        slow_lock_warn_decision(5_000, Some(0), INTERVAL_MS, 120),
+        Some(120)
+    );
+    assert_eq!(
+        slow_lock_warn_decision(9_001, Some(4_000), INTERVAL_MS, 3),
+        Some(3)
+    );
+}
+
+#[test]
+fn a_zero_warn_interval_disables_limiting() {
+    assert_eq!(slow_lock_warn_decision(0, Some(0), 0, 0), Some(0));
+    assert_eq!(slow_lock_warn_decision(1, Some(1), 0, 7), Some(7));
+}
+
+#[test]
+fn a_backwards_clock_reading_does_not_wedge_the_limiter() {
+    // `saturating_sub` floors the elapsed time at zero rather than wrapping into a huge value
+    // that would emit every time, and the recorded timestamp is overwritten on the next emit.
+    assert_eq!(
+        slow_lock_warn_decision(10, Some(1_000), 5_000, 4),
+        None,
+        "an apparently backwards clock should suppress, not spam"
     );
 }
