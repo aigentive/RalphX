@@ -20,11 +20,11 @@
   "author": "RalphX",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "ignore": "^7.0.5",
-    "picomatch": "^4.0.4",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ignore": "^7.0.8",
+    "picomatch": "^4.0.7",
     "undici": "^6.21.0",
-    "yaml": "^2.8.3"
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
